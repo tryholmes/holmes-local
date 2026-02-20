@@ -33,6 +33,49 @@ struct NoirTextField: View {
     }
 }
 
+// MARK: - Form Field (for login/settings — small, left-aligned, with optional secure input)
+
+struct NoirFormField: View {
+    @Binding var text: String
+    let placeholder: String
+    let isSecure: Bool
+    @FocusState private var isFocused: Bool
+
+    init(_ placeholder: String, text: Binding<String>, isSecure: Bool = false) {
+        self.placeholder = placeholder
+        self._text = text
+        self.isSecure = isSecure
+    }
+
+    var body: some View {
+        Group {
+            if isSecure {
+                SecureField(placeholder, text: $text)
+            } else {
+                TextField(placeholder, text: $text)
+            }
+        }
+        .font(NoirFonts.body())
+        .foregroundStyle(NoirColors.paperWhite)
+        .textFieldStyle(.plain)
+        .focused($isFocused)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(NoirColors.smokeGray.opacity(isFocused ? 0.5 : 0.3))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(
+                    isFocused ? NoirColors.paperWhite.opacity(0.3) : NoirColors.glassStroke,
+                    lineWidth: 1
+                )
+        )
+        .animation(.easeInOut(duration: 0.15), value: isFocused)
+    }
+}
+
 struct NoirSearchField: View {
     @Binding var text: String
     let placeholder: String

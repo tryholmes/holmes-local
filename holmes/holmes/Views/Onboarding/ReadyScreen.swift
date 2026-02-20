@@ -11,20 +11,15 @@ struct ReadyScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
-            
+
             VStack(spacing: 32) {
                 ZStack {
+                    NoirCharacterView(size: 100, glowColor: .green, glowRadius: 24)
+
+                    // Green success ring
                     Circle()
-                        .fill(Color.green.opacity(0.15))
-                        .frame(width: 100, height: 100)
-                    
-                    Circle()
-                        .stroke(Color.green.opacity(0.3), lineWidth: 2)
-                        .frame(width: 100, height: 100)
-                    
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 44, weight: .medium))
-                        .foregroundColor(.green)
+                        .stroke(Color.green.opacity(0.5), lineWidth: 2)
+                        .frame(width: 120, height: 120)
                 }
                 .scaleEffect(checkmarkScale)
                 .opacity(checkmarkOpacity)
@@ -32,24 +27,24 @@ struct ReadyScreen: View {
                 VStack(spacing: 12) {
                     Text("You're All Set")
                         .font(NoirFonts.headline())
-                        .foregroundColor(NoirColors.paperWhite)
-                    
+                        .foregroundStyle(NoirColors.paperWhite)
+
                     Text("Holmes is now learning from\nyour desktop activity")
                         .font(NoirFonts.body())
-                        .foregroundColor(NoirColors.fogGray)
+                        .foregroundStyle(NoirColors.fogGray)
                         .multilineTextAlignment(.center)
                 }
                 .opacity(contentOpacity)
-                
+
                 Divider()
                     .background(NoirColors.smokeGray)
                     .frame(maxWidth: 300)
                     .opacity(contentOpacity)
-                
+
                 VStack(spacing: 16) {
                     Text("Quick Reference")
                         .font(NoirFonts.caption())
-                        .foregroundColor(NoirColors.fogGray)
+                        .foregroundStyle(NoirColors.fogGray)
                     
                     VStack(spacing: 12) {
                         HotkeyRow(keys: "^", secondKey: "Space", description: "Search")

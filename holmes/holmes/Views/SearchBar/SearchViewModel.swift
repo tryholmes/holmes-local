@@ -1,7 +1,7 @@
 import SwiftUI
-import Combine
 import Speech
 import AVFoundation
+import Observation
 
 enum SearchState {
     case idle
@@ -10,13 +10,18 @@ enum SearchState {
     case results
 }
 
-class SearchViewModel: ObservableObject {
-    @Published var searchText: String = ""
-    @Published var state: SearchState = .idle
-    @Published var isListening: Bool = false
-    @Published var audioLevel: CGFloat = 0
-    @Published var suggestions: [String] = []
-    
+@Observable
+@MainActor
+class SearchViewModel {
+    var searchText: String = ""
+    var state: SearchState = .idle
+    var isListening: Bool = false
+    var audioLevel: CGFloat = 0
+    var suggestions: [String] = []
+    var showResponse: Bool = false
+    var responseText: String = ""
+    var responseSubtitle: String = ""
+
     private var audioEngine: AVAudioEngine?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -40,13 +45,26 @@ class SearchViewModel: ObservableObject {
         
         state = .processing
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.state = .results
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self else { return }
             
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.reset()
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                self.showResponse = true
+            }
+            
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                self.state = .results
+                self.responseSubtitle = "Processing your request..."
+                self.responseText = ""
             }
         }
+    }
+    
+    func goBackToSearch() {
+        showResponse = false
+        state = .idle
+        responseText = ""
+        responseSubtitle = ""
     }
     
     func startListening() {
@@ -138,5 +156,8 @@ class SearchViewModel: ObservableObject {
         state = .idle
         isListening = false
         audioLevel = 0
+        showResponse = false
+        responseText = ""
+        responseSubtitle = ""
     }
 }

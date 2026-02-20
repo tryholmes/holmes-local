@@ -44,5 +44,16 @@
     <string>Holmes uses the microphone for voice input when you activate listening mode.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Holmes uses speech recognition to convert your voice commands to text.</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.grain.holmes.oauth</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>holmes</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

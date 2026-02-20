@@ -44,6 +44,12 @@
 		AA000001000000000000037 /* LottieView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000039 /* LottieView.swift */; };
 		AA000001000000000000038 /* noireye.json in Resources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000040 /* noireye.json */; };
 		AA000001000000000000039 /* Lottie in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000A000000000000001 /* Lottie */; };
+		AA000001000000000000041 /* ClerkConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000041 /* ClerkConfig.swift */; };
+		AA000001000000000000042 /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000042 /* KeychainManager.swift */; };
+		AA000001000000000000043 /* ClerkAuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000043 /* ClerkAuthManager.swift */; };
+		AA000001000000000000044 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000044 /* LoginView.swift */; };
+		AA000001000000000000045 /* LoginWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000045 /* LoginWindow.swift */; };
+		AA000001000000000000046 /* NoirCharacterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000046 /* NoirCharacterView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -85,6 +91,12 @@
 		AA000002000000000000036 /* holmes.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = holmes.entitlements; sourceTree = "<group>"; };
 		AA000002000000000000039 /* LottieView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LottieView.swift; sourceTree = "<group>"; };
 		AA000002000000000000040 /* noireye.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = noireye.json; sourceTree = "<group>"; };
+		AA000002000000000000041 /* ClerkConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClerkConfig.swift; sourceTree = "<group>"; };
+		AA000002000000000000042 /* KeychainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainManager.swift; sourceTree = "<group>"; };
+		AA000002000000000000043 /* ClerkAuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClerkAuthManager.swift; sourceTree = "<group>"; };
+		AA000002000000000000044 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		AA000002000000000000045 /* LoginWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginWindow.swift; sourceTree = "<group>"; };
+		AA000002000000000000046 /* NoirCharacterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoirCharacterView.swift; sourceTree = "<group>"; };
 		AA000003000000000000000 /* holmes.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = holmes.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -157,6 +169,7 @@
 				AA000002000000000000009 /* NoirButton.swift */,
 				AA000002000000000000010 /* NoirTextField.swift */,
 				AA000002000000000000039 /* LottieView.swift */,
+				AA000002000000000000046 /* NoirCharacterView.swift */,
 			);
 			path = Components;
 			sourceTree = "<group>";
@@ -169,6 +182,7 @@
 				AA000005000000000000011 /* SideIcon */,
 				AA000005000000000000012 /* MainPanel */,
 				AA000005000000000000013 /* NotchAnimation */,
+				AA000005000000000000014 /* Login */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -178,6 +192,9 @@
 			children = (
 				AA000002000000000000032 /* HotkeyManager.swift */,
 				AA000002000000000000033 /* MenuBarManager.swift */,
+				AA000002000000000000041 /* ClerkConfig.swift */,
+				AA000002000000000000042 /* KeychainManager.swift */,
+				AA000002000000000000043 /* ClerkAuthManager.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -247,6 +264,15 @@
 				AA000002000000000000031 /* NotchViewModel.swift */,
 			);
 			path = NotchAnimation;
+			sourceTree = "<group>";
+		};
+		AA000005000000000000014 /* Login */ = {
+			isa = PBXGroup;
+			children = (
+				AA000002000000000000044 /* LoginView.swift */,
+				AA000002000000000000045 /* LoginWindow.swift */,
+			);
+			path = Login;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -359,6 +385,12 @@
 				AA000001000000000000032 /* HotkeyManager.swift in Sources */,
 				AA000001000000000000033 /* MenuBarManager.swift in Sources */,
 				AA000001000000000000037 /* LottieView.swift in Sources */,
+				AA000001000000000000041 /* ClerkConfig.swift in Sources */,
+				AA000001000000000000042 /* KeychainManager.swift in Sources */,
+				AA000001000000000000043 /* ClerkAuthManager.swift in Sources */,
+				AA000001000000000000044 /* LoginView.swift in Sources */,
+				AA000001000000000000045 /* LoginWindow.swift in Sources */,
+				AA000001000000000000046 /* NoirCharacterView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

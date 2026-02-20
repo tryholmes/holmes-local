@@ -21,8 +21,15 @@ class MenuBarManager: NSObject {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         
         if let button = statusItem?.button {
-            button.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Holmes")
-            button.image?.isTemplate = true
+            if let img = NSImage(named: "NoirCharacter") {
+                img.size = NSSize(width: 18, height: 18)
+                img.isTemplate = true
+                button.image = img
+            } else {
+                // Fallback if asset not loaded yet
+                button.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Holmes")
+                button.image?.isTemplate = true
+            }
         }
         
         setupMenu()
@@ -83,11 +90,17 @@ class MenuBarManager: NSObject {
         }
         
         if let button = statusItem?.button {
-            button.image = NSImage(
-                systemSymbolName: isPaused ? "pause.circle" : "magnifyingglass",
-                accessibilityDescription: "Holmes"
-            )
-            button.image?.isTemplate = true
+            if !isPaused, let img = NSImage(named: "NoirCharacter") {
+                img.size = NSSize(width: 18, height: 18)
+                img.isTemplate = true
+                button.image = img
+            } else {
+                button.image = NSImage(
+                    systemSymbolName: isPaused ? "pause.circle" : "magnifyingglass",
+                    accessibilityDescription: "Holmes"
+                )
+                button.image?.isTemplate = true
+            }
         }
     }
     

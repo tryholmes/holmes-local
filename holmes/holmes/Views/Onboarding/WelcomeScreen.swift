@@ -2,52 +2,42 @@ import SwiftUI
 
 struct WelcomeScreen: View {
     @ObservedObject var viewModel: OnboardingViewModel
-    @State private var iconScale: CGFloat = 0.8
+    @State private var iconScale: CGFloat = 0.82
     @State private var iconOpacity: CGFloat = 0
     @State private var textOpacity: CGFloat = 0
     @State private var buttonOpacity: CGFloat = 0
-    
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
-            
-            VStack(spacing: 24) {
-                ZStack {
-                    Circle()
-                        .fill(NoirColors.smokeGray.opacity(0.3))
-                        .frame(width: 120, height: 120)
-                        .blur(radius: 20)
-                    
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 56, weight: .thin))
-                        .foregroundColor(NoirColors.paperWhite)
-                        .rotationEffect(.degrees(-45))
-                }
-                .scaleEffect(iconScale)
-                .opacity(iconOpacity)
-                
-                VStack(spacing: 12) {
+
+            VStack(spacing: 28) {
+                NoirCharacterHeroView(size: 140)
+                    .scaleEffect(iconScale)
+                    .opacity(iconOpacity)
+
+                VStack(spacing: 10) {
                     Text("holmes")
-                        .font(.system(size: 48, weight: .light, design: .default))
-                        .foregroundColor(NoirColors.paperWhite)
+                        .font(.system(size: 48, weight: .light))
+                        .foregroundStyle(NoirColors.paperWhite)
                         .tracking(4)
-                    
+
                     Text("Zero Prompt AI for macOS")
                         .font(NoirFonts.body())
-                        .foregroundColor(NoirColors.fogGray)
+                        .foregroundStyle(NoirColors.fogGray)
                 }
                 .opacity(textOpacity)
-                
+
                 Text("I learn from your actions and help\nbefore you even ask.")
                     .font(NoirFonts.body())
-                    .foregroundColor(NoirColors.paperWhite.opacity(0.8))
+                    .foregroundStyle(NoirColors.paperWhite.opacity(0.8))
                     .multilineTextAlignment(.center)
                     .lineSpacing(4)
                     .opacity(textOpacity)
             }
-            
+
             Spacer()
-            
+
             NoirButton("Get Started", icon: "arrow.right") {
                 viewModel.nextStep()
             }
@@ -56,14 +46,14 @@ struct WelcomeScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            withAnimation(.easeOut(duration: 0.6)) {
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.72)) {
                 iconScale = 1.0
                 iconOpacity = 1.0
             }
-            withAnimation(.easeOut(duration: 0.6).delay(0.2)) {
+            withAnimation(.easeOut(duration: 0.5).delay(0.22)) {
                 textOpacity = 1.0
             }
-            withAnimation(.easeOut(duration: 0.6).delay(0.4)) {
+            withAnimation(.easeOut(duration: 0.5).delay(0.4)) {
                 buttonOpacity = 1.0
             }
         }

@@ -1,17 +1,17 @@
 import SwiftUI
 
 struct VoiceInputView: View {
-    @ObservedObject var viewModel: SearchViewModel
-    
+    var viewModel: SearchViewModel
+
     var body: some View {
         VStack(spacing: 24) {
             AudioWaveform(level: viewModel.audioLevel)
                 .frame(height: 60)
                 .padding(.horizontal, 40)
-            
+
             Text(viewModel.searchText.isEmpty ? "Listening..." : viewModel.searchText)
                 .font(.system(size: 32, weight: .light))
-                .foregroundColor(NoirColors.paperWhite)
+                .foregroundStyle(NoirColors.paperWhite)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .padding(.horizontal, 20)
@@ -61,7 +61,7 @@ struct ListenButton: View {
                 }
             }
             .font(NoirFonts.button())
-            .foregroundColor(isListening ? Color.red : NoirColors.paperWhite.opacity(0.8))
+            .foregroundStyle(isListening ? Color.red : NoirColors.paperWhite.opacity(0.8))
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             .background(
