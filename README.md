@@ -1,6 +1,15 @@
 # Holmes - Zero Prompt AI for macOS
 
 A sleek, macOS-native AI assistant with an iOS 26 Liquid Glass aesthetic and global hotkey access.
+<img width="518" height="648" alt="Screenshot 2026-02-20 at 9 57 21 AM" src="https://github.com/user-attachments/assets/612c5244-2fb5-479a-8e0a-914d6ef9461e" />
+<img width="389" height="521" alt="Screenshot 2026-02-20 at 9 57 38 AM" src="https://github.com/user-attachments/assets/3cf95c92-ca9d-4375-90fd-842c0fd5309d" />
+<img width="61" height="84" alt="Screenshot 2026-02-20 at 9 57 49 AM" src="https://github.com/user-attachments/assets/9d4d9edf-e992-4503-b574-ec251ae7743b" />
+<img width="940" height="205" alt="Screenshot 2026-02-20 at 9 58 04 AM" src="https://github.com/user-attachments/assets/05bfd2ae-f394-4ffc-9edd-547df8197147" />
+<img width="787" height="153" alt="Screenshot 2026-02-20 at 9 58 14 AM" src="https://github.com/user-attachments/assets/29f67c91-8980-4833-ae91-4f134001ae22" />
+<img width="227" height="257" alt="Screenshot 2026-02-20 at 9 58 25 AM" src="https://github.com/user-attachments/assets/8d98fd42-33a4-4172-8841-bed3621b9564" />
+<img width="281" height="82" alt="Screenshot 2026-02-20 at 9 58 38 AM" src="https://github.com/user-attachments/assets/5d974daa-c595-4e61-9168-b8d821876e6d" />
+
+
 
 ## Overview
 
