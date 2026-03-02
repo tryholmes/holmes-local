@@ -6,74 +6,104 @@ struct ActionSuggestions: View {
     let onApproveAll: () -> Void
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
                 Image(systemName: "sparkles")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(NoirColors.orangeAccent)
-
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(hex: "B8881C"))
                 Text("SUGGESTED ACTIONS")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(NoirColors.textSecondary)
-                    .tracking(1)
+                    .foregroundColor(Color(hex: "5A7A8A"))
+                    .tracking(2)
             }
 
-            VStack(spacing: 6) {
+            VStack(spacing: 2) {
                 ForEach(suggestions) { suggestion in
                     ActionRow(suggestion: suggestion) { onSelect(suggestion) }
                 }
             }
 
-            HStack(spacing: 10) {
-                NoirButton("Approve All", icon: "checkmark", style: .primary) { onApproveAll() }
-                NoirButton("Customize", style: .secondary) {}
+            HStack(spacing: 8) {
+                // Approve All
+                Button(action: onApproveAll) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        Text("Approve All")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundColor(Color(hex: "111820"))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(Color(hex: "B8881C"))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                }
+                .buttonStyle(.plain)
+
+                // Customize
+                Button(action: {}) {
+                    Text("Customize")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(hex: "5A7A8A"))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .background(Color(hex: "0D1318"))
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "1E2D38"), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
             }
+            .padding(.top, 4)
         }
         .padding(14)
-        .background(NoirColors.creamWhite)
+        .background(Color(hex: "111820"))
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .pixelBevel(cornerRadius: 6)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: "1E2D38"), lineWidth: 1))
     }
 }
 
 struct ActionRow: View {
     let suggestion: ActionSuggestion
     let onTap: () -> Void
-    
     @State private var isHovered = false
-    
+
     var body: some View {
         Button(action: onTap) {
             HStack(spacing: 10) {
+                // Checkbox
                 RoundedRectangle(cornerRadius: 3)
-                    .stroke(suggestion.isSelected ? NoirColors.goldAccent : NoirColors.iconSecondary, lineWidth: 1.5)
-                    .frame(width: 18, height: 18)
+                    .stroke(suggestion.isSelected ? Color(hex: "B8881C") : Color(hex: "2A3D4A"), lineWidth: 1.5)
+                    .frame(width: 16, height: 16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(suggestion.isSelected ? Color(hex: "B8881C").opacity(0.2) : Color.clear)
+                    )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(NoirColors.goldAccent)
-                            .frame(width: 10, height: 10)
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(Color(hex: "B8881C"))
                             .opacity(suggestion.isSelected ? 1 : 0)
                     )
 
                 Text(suggestion.title)
-                    .font(NoirFonts.body())
-                    .foregroundColor(NoirColors.charcoalDark)
+                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                    .foregroundColor(isHovered ? Color(hex: "E8D5A3") : Color(hex: "8FA8B0"))
 
                 Spacer()
 
                 if isHovered {
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(NoirColors.deepTeal)
+                    Text("❯")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(hex: "B8881C"))
                 }
             }
-            .padding(.vertical, 7)
+            .padding(.vertical, 9)
             .padding(.horizontal, 10)
-            .background(isHovered ? NoirColors.lightBlue.opacity(0.5) : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 2))
+            .background(isHovered ? Color(hex: "0D1318") : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
         }
         .buttonStyle(.plain)
-        .onHover { h in withAnimation(.easeInOut(duration: 0.12)) { isHovered = h } }
+        .onHover { h in withAnimation(.easeInOut(duration: 0.1)) { isHovered = h } }
     }
 }
 
@@ -84,9 +114,9 @@ struct ActionSuggestion: Identifiable {
     var isSelected: Bool = false
     
     static let samples: [ActionSuggestion] = [
-        ActionSuggestion(title: "Auto-sum columns A-D", action: "excel_sum"),
-        ActionSuggestion(title: "Format as currency", action: "format_currency"),
-        ActionSuggestion(title: "Create revenue chart", action: "create_chart")
+        ActionSuggestion(title: "/run  Complete this form automatically", action: "run_form"),
+        ActionSuggestion(title: "/watch  Monitor screen for changes",      action: "watch_screen"),
+        ActionSuggestion(title: "/plan  Break this task into steps",        action: "plan_task"),
     ]
 }
 

@@ -1,9 +1,6 @@
 import SwiftUI
 import AppKit
 
-extension Notification.Name {
-    static let searchBarWillHide = Notification.Name("searchBarWillHide")
-}
 
 class SearchBarWindowController: NSObject {
     static let shared = SearchBarWindowController()
@@ -65,8 +62,8 @@ class SearchBarWindowController: NSObject {
         guard let window, let screen = NSScreen.main else { return }
 
         let screenFrame = screen.visibleFrame
-        let windowWidth: CGFloat = 900
-        let windowHeight: CGFloat = 130
+        let windowWidth: CGFloat = 860
+        let windowHeight: CGFloat = 120
         let topOffset: CGFloat = 100
 
         let x = screenFrame.origin.x + (screenFrame.width - windowWidth) / 2
@@ -100,33 +97,22 @@ class SearchBarWindowController: NSObject {
     func hide() {
         guard isVisible, let window else { return }
         isVisible = false
+        isResizing = false
 
-        // Notify the SwiftUI view to reset state before we hide
-        NotificationCenter.default.post(name: .searchBarWillHide, object: nil)
-
-        // Fade out at current size — no resize during hide to prevent clipping
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             window.animator().alphaValue = 0
         } completionHandler: { [weak self, weak window] in
-            guard let self, let window else { return }
-            window.orderOut(nil)
-            // Reset size silently after hidden so next show() starts at input height
-            let currentFrame = window.frame
-            let defaultHeight: CGFloat = 130
-            window.setFrame(
-                NSRect(x: currentFrame.origin.x, y: self.fixedTopY - defaultHeight,
-                       width: currentFrame.width, height: defaultHeight),
-                display: false
-            )
-            self.isResizing = false
+            window?.orderOut(nil)
+            window?.close()
+            self?.window = nil  // destroy — next show() creates a fresh window with clean SwiftUI state
         }
     }
     
     private func createWindow() {
         let window = SearchBarPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 130),
+            contentRect: NSRect(x: 0, y: 0, width: 860, height: 120),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false

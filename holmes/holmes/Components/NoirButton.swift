@@ -77,7 +77,7 @@ struct NoirIconButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
+        Button(action: { action() }) {
             Image(systemName: icon)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
                 .foregroundColor(NoirColors.deepTeal)

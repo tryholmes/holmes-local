@@ -1,295 +1,412 @@
 import SwiftUI
 
-// MARK: - Appear Transition (opacity only — no positional shift)
+// MARK: - Appear modifier
 
 struct BarAppearTransition: ViewModifier {
     let isVisible: Bool
-
     func body(content: Content) -> some View {
         content
             .opacity(isVisible ? 1.0 : 0.0)
-            .animation(.easeOut(duration: 0.22), value: isVisible)
+            .animation(.easeOut(duration: 0.2), value: isVisible)
     }
 }
 
 extension View {
-    func barAppear(isVisible: Bool) -> some View {
-        modifier(BarAppearTransition(isVisible: isVisible))
-    }
-    // Keep old name so existing call sites compile
-    func glassAppear(isVisible: Bool) -> some View {
-        barAppear(isVisible: isVisible)
+    func barAppear(isVisible: Bool) -> some View { modifier(BarAppearTransition(isVisible: isVisible)) }
+    func glassAppear(isVisible: Bool) -> some View { barAppear(isVisible: isVisible) }
+}
+
+// MARK: - Blinking cursor
+
+struct BlinkingCursor: View {
+    @State private var visible = true
+    var body: some View {
+        Rectangle()
+            .fill(Color(hex: "B8881C"))
+            .frame(width: 9, height: 17)
+            .opacity(visible ? 1 : 0)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.5).repeatForever()) {
+                    visible.toggle()
+                }
+            }
     }
 }
 
-// MARK: - SearchBarView
+// MARK: - Dimensions (single source of truth)
+
+private enum BarDimensions {
+    static let width: CGFloat        = 860
+    static let inputHeight: CGFloat  = 120
+    static let outputHeight: CGFloat = 300  // input + output panel
+}
+
+// MARK: - SearchBarView (Command Bar)
 
 struct SearchBarView: View {
-    @State private var viewModel = SearchViewModel()
+    @State private var vm = CommandViewModel()
     @Binding var isVisible: Bool
-    @FocusState private var isTextFieldFocused: Bool
-
-    // Both views share the same fixed frame so no layout shift occurs.
-    private let panelWidth: CGFloat  = 900
-    private let inputHeight: CGFloat = 130
-    private let responseHeight: CGFloat = 260
+    @FocusState private var focused: Bool
 
     var body: some View {
-        // Single ZStack with a fixed frame — both layers sit in the same space.
-        ZStack(alignment: .top) {
-            searchInputView
-                .opacity(viewModel.showResponse ? 0 : 1)
-
-            responseView
-                .opacity(viewModel.showResponse ? 1 : 0)
+        VStack(spacing: 0) {
+            inputPanel
+            if vm.showOutput {
+                outputPanel
+                    .transition(.asymmetric(
+                        insertion: .push(from: .bottom).combined(with: .opacity),
+                        removal: .push(from: .top).combined(with: .opacity)
+                    ))
+            }
         }
-        .frame(width: panelWidth)
-        .animation(.easeInOut(duration: 0.22), value: viewModel.showResponse)
+        .frame(width: BarDimensions.width)
+        .background(Color(hex: "111820"))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(hex: "2A3D4A"), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.45), radius: 20, x: 0, y: 8)
+        .animation(.spring(response: 0.32, dampingFraction: 0.82), value: vm.showOutput)
         .barAppear(isVisible: isVisible)
-        .onAppear {
-            isTextFieldFocused = true
-        }
-        .onChange(of: viewModel.showResponse) { _, newValue in
+        .onAppear { focused = true }
+        .onChange(of: vm.showOutput) { _, show in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 SearchBarWindowController.shared.resize(
-                    to: newValue ? responseHeight : inputHeight,
+                    to: show ? BarDimensions.outputHeight : BarDimensions.inputHeight,
                     animated: true
                 )
             }
         }
-        .onExitCommand { dismissSearchBar() }
-        .onReceive(NotificationCenter.default.publisher(for: .searchBarWillHide)) { _ in
-            viewModel.reset()
-            isVisible = false
-        }
+        .onExitCommand { dismiss() }
     }
 
-    // MARK: Search Input
+    // MARK: Input panel
 
-    private var searchInputView: some View {
+    private var inputPanel: some View {
         VStack(spacing: 0) {
-            topBar
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 10)
-                .background(NoirColors.deepTeal)
+            // Top chrome bar
+            HStack(spacing: 10) {
+                // Holmes logo + name
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(hex: "B8881C"))
+                    Text("HOLMES")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(hex: "E8D5A3"))
+                        .tracking(3)
+                }
 
-            searchField
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background(NoirColors.skyBlue)
-        }
-        .frame(width: panelWidth, height: inputHeight, alignment: .top)
-        .background(NoirColors.skyBlue)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .pixelBevel(cornerRadius: 6)
-        .shadow(color: NoirColors.charcoalDark.opacity(0.12), radius: 12, x: 0, y: 4)
-    }
+                Spacer()
 
-    // MARK: Response View
+                // Status pill
+                statusPill
 
-    private var responseView: some View {
-        VStack(spacing: 0) {
-            responseHeader
+                // Quick action icons
+                chromeIcons
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color(hex: "0D1318"))
 
-            Divider()
-                .background(NoirColors.charcoalDark.opacity(0.12))
+            Divider().background(Color(hex: "1E2D38"))
 
-            responseContent
-        }
-        .frame(width: panelWidth, height: responseHeight, alignment: .top)
-        .background(NoirColors.warmWhite)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .pixelBevel(cornerRadius: 6)
-        .shadow(color: NoirColors.charcoalDark.opacity(0.12), radius: 12, x: 0, y: 4)
-    }
+            // Command input row
+            HStack(spacing: 0) {
+                // Prompt symbol
+                Text("❯")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(hex: "B8881C"))
+                    .padding(.leading, 16)
+                    .padding(.trailing, 10)
 
-    // MARK: Top Bar
+                // Active command badge
+                if let cmd = vm.matchedCommand {
+                    commandBadge(cmd)
+                        .padding(.trailing, 8)
+                }
 
-    private var topBar: some View {
-        HStack(spacing: 10) {
-            Text("HOLMES")
-                .font(.system(size: 15, weight: .bold, design: .monospaced))
-                .foregroundColor(NoirColors.creamWhite)
-                .tracking(3)
-
-            Spacer()
-
-            TopBarButton(label: "Saved")
-            TopBarButton(label: "1,000 credits")
-
-            IconButton(systemImage: "message")
-            IconButton(systemImage: "plus")
-            IconButton(systemImage: "bolt.fill")
-            IconButton(systemImage: "gearshape.fill")
-        }
-    }
-
-    // MARK: Search Field
-
-    private var searchField: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                .foregroundColor(NoirColors.iconSecondary)
-
-            TextField("", text: $viewModel.searchText, prompt:
-                Text("Ask Holmes anything...")
+                // Text input + blinking cursor overlay
+                ZStack(alignment: .leading) {
+                    if vm.inputText.isEmpty {
+                        HStack(spacing: 0) {
+                            BlinkingCursor()
+                            Text(placeholderText)
+                                .font(.system(size: 14, weight: .regular, design: .monospaced))
+                                .foregroundColor(Color(hex: "3D5A6A"))
+                                .padding(.leading, 4)
+                        }
+                    }
+                    TextField("", text: Binding(
+                        get: { vm.inputText },
+                        set: { vm.onInputChange($0) }
+                    ))
+                    .focused($focused)
                     .font(.system(size: 14, weight: .regular, design: .monospaced))
-                    .foregroundColor(NoirColors.textPlaceholder)
-            )
-            .focused($isTextFieldFocused)
-            .font(.system(size: 14, weight: .regular, design: .monospaced))
-            .foregroundColor(NoirColors.charcoalDark)
-            .textFieldStyle(.plain)
-            .onSubmit { viewModel.submitSearch() }
+                    .foregroundColor(Color(hex: "E8D5A3"))
+                    .textFieldStyle(.plain)
+                    .onSubmit { vm.submit() }
+                }
 
-            Button(action: { viewModel.submitSearch() }) {
-                Image(systemName: "return")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(NoirColors.creamWhite)
-                    .frame(width: 32, height: 28)
-                    .background(NoirColors.deepTeal)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .pixelBevel(cornerRadius: 6)
+                Spacer()
+
+                // Return key hint
+                if !vm.inputText.isEmpty {
+                    Text("↵")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(hex: "3D5A6A"))
+                        .padding(.trailing, 14)
+                }
             }
-            .buttonStyle(.plain)
+            .frame(height: 52)
+            .background(Color(hex: "111820"))
+
+            // Slash command autocomplete
+            if !vm.suggestions.isEmpty {
+                commandSuggestions
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(NoirColors.lightBlue.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .pixelBevel(raised: false, cornerRadius: 6)
+        .frame(width: BarDimensions.width, height: BarDimensions.inputHeight, alignment: .top)
     }
 
-    // MARK: Response Header
+    // MARK: Output panel
 
-    private var responseHeader: some View {
-        HStack(spacing: 10) {
-            Button(action: {
-                viewModel.goBackToSearch()
-            }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    Text("Back")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+    private var outputPanel: some View {
+        VStack(spacing: 0) {
+            Divider().background(Color(hex: "1E2D38"))
+
+            // Output header
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(stateColor)
+                    .frame(width: 7, height: 7)
+                    .overlay(
+                        Circle()
+                            .fill(stateColor)
+                            .frame(width: 7, height: 7)
+                            .opacity(vm.state == .running ? 0.4 : 0)
+                            .scaleEffect(vm.state == .running ? 2 : 1)
+                            .animation(.easeOut(duration: 0.8).repeatForever(autoreverses: false), value: vm.state == .running)
+                    )
+
+                Text(outputHeaderText)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(hex: "5A7A8A"))
+                    .tracking(2)
+
+                Spacer()
+
+                Button(action: { vm.reset() }) {
+                    Text("✕  NEW")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(hex: "3D5A6A"))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color(hex: "0D1318"))
+                        .clipShape(RoundedRectangle(cornerRadius: 4))
                 }
-                .foregroundColor(NoirColors.creamWhite)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(NoirColors.deepTeal)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .pixelBevel(cornerRadius: 6)
+                .buttonStyle(.plain)
+                .onHover { h in }
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(Color(hex: "0D1318"))
 
-            RoundedRectangle(cornerRadius: 2)
-                .fill(NoirColors.charcoalDark.opacity(0.2))
-                .frame(width: 1, height: 20)
+            // Log lines
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(vm.log) { line in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(line.prefix)
+                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                    .foregroundColor(line.color)
+                                    .frame(width: 14, alignment: .center)
+                                Text(line.text)
+                                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                                    .foregroundColor(Color(hex: "BDD0D8"))
+                                    .lineSpacing(2)
+                                Spacer()
+                            }
+                            .id(line.id)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        }
 
-            Image("HolmesLogo")
-                .resizable()
-                .renderingMode(.template)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: 20, height: 20)
-                .foregroundColor(NoirColors.deepTeal)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Holmes")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(NoirColors.charcoalDark)
-
-                Text(viewModel.responseSubtitle.isEmpty ? "Ready" : viewModel.responseSubtitle)
-                    .font(.system(size: 10, weight: .regular, design: .monospaced))
-                    .foregroundColor(NoirColors.textSecondary)
+                        if vm.state == .running {
+                            HStack(spacing: 6) {
+                                BlinkingCursor()
+                                    .frame(width: 6, height: 12)
+                            }
+                            .padding(.top, 2)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .animation(.easeOut(duration: 0.15), value: vm.log.count)
+                }
+                .onChange(of: vm.log.count) { _, _ in
+                    if let last = vm.log.last {
+                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                    }
+                }
             }
-
-            Spacer()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(NoirColors.skyBlue)
+        .frame(width: BarDimensions.width, height: BarDimensions.outputHeight - BarDimensions.inputHeight)
+        .background(Color(hex: "0A0F14"))
     }
 
-    // MARK: Response Content
+    // MARK: Command badge
 
-    private var responseContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if !viewModel.responseText.isEmpty {
-                Text(viewModel.responseText)
-                    .font(.system(size: 13, weight: .regular, design: .monospaced))
-                    .foregroundColor(NoirColors.charcoalDark)
-                    .lineSpacing(4)
-                    .fixedSize(horizontal: false, vertical: true)
+    private func commandBadge(_ cmd: HolmesCommand) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: cmd.icon)
+                .font(.system(size: 10, weight: .bold))
+            Text(cmd.trigger)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+        }
+        .foregroundColor(Color(hex: "111820"))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(hex: "B8881C"))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+    }
 
-                HStack(spacing: 10) {
-                    ActionButton(systemImage: "arrow.clockwise")
-                    ActionButton(systemImage: "doc.on.doc")
-                    ActionButton(systemImage: "square.and.arrow.up")
-                    ActionButton(systemImage: "bookmark")
-                    ActionButton(systemImage: "ellipsis")
-                    Spacer()
+    // MARK: Slash command suggestions
+
+    private var commandSuggestions: some View {
+        VStack(spacing: 0) {
+            Divider().background(Color(hex: "1E2D38"))
+            VStack(spacing: 0) {
+                ForEach(vm.suggestions) { cmd in
+                    Button(action: { vm.selectCommand(cmd) }) {
+                        HStack(spacing: 12) {
+                            Image(systemName: cmd.icon)
+                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .foregroundColor(Color(hex: "B8881C"))
+                                .frame(width: 16)
+                            Text(cmd.trigger)
+                                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                                .foregroundColor(Color(hex: "E8D5A3"))
+                            Text(cmd.description)
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .foregroundColor(Color(hex: "5A7A8A"))
+                            Spacer()
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
+                        .background(Color(hex: "0D1318"))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if cmd.id != vm.suggestions.last?.id {
+                        Divider().background(Color(hex: "1A2730")).padding(.leading, 44)
+                    }
                 }
-            } else {
-                HStack(spacing: 8) {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(NoirColors.iconSecondary)
-                    Text("Processing...")
-                        .font(.system(size: 13, weight: .regular, design: .monospaced))
-                        .foregroundColor(NoirColors.iconSecondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, 30)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+        .animation(.easeOut(duration: 0.12), value: vm.suggestions.count)
+    }
+
+    // MARK: Chrome icons
+
+    private var chromeIcons: some View {
+        HStack(spacing: 6) {
+            ForEach([
+                ("clock.arrow.circlepath", "History"),
+                ("gearshape.fill", "Settings")
+            ], id: \.0) { icon, tip in
+                Button(action: {}) {
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(Color(hex: "3D5A6A"))
+                        .frame(width: 28, height: 26)
+                        .background(Color(hex: "0D1318"))
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                }
+                .buttonStyle(.plain)
+                .help(tip)
+            }
+        }
+    }
+
+    // MARK: Status pill
+
+    private var statusPill: some View {
+        HStack(spacing: 5) {
+            Circle().fill(stateColor).frame(width: 5, height: 5)
+            Text(stateLabel)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(Color(hex: "5A7A8A"))
+                .tracking(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(hex: "0D1318"))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    // MARK: Helpers
+
+    private var placeholderText: String {
+        "Type a command or / for slash commands..."
+    }
+
+    private var stateLabel: String {
+        switch vm.state {
+        case .idle:    return "READY"
+        case .typing:  return "TYPING"
+        case .running: return "RUNNING"
+        case .done:    return "DONE"
+        case .error:   return "ERROR"
+        }
+    }
+
+    private var stateColor: Color {
+        switch vm.state {
+        case .idle:    return Color(hex: "3D5A6A")
+        case .typing:  return Color(hex: "B8881C")
+        case .running: return Color(hex: "5DBB7A")
+        case .done:    return Color(hex: "5DBB7A")
+        case .error:   return Color(hex: "E05252")
+        }
+    }
+
+    private var outputHeaderText: String {
+        switch vm.state {
+        case .running: return "EXECUTING"
+        case .done:    return "COMPLETE"
+        case .error:   return "ERROR"
+        default:       return "OUTPUT"
+        }
     }
 
     // MARK: Dismiss
 
-    private func dismissSearchBar() {
-        if viewModel.showResponse {
-            viewModel.goBackToSearch()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                viewModel.reset()
-                isVisible = false
-            }
-        } else {
-            viewModel.reset()
-            isVisible = false
-        }
+    private func dismiss() {
+        vm.reset()
+        isVisible = false
     }
 }
 
-// MARK: - Sub-Components
+// MARK: - Sub-components kept for MainPanel compatibility
 
 struct TopBarButton: View {
     let label: String
     @State private var isHovered = false
-    @FocusState private var isFocused: Bool
-
     var body: some View {
         Button(action: {}) {
             Text(label)
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .foregroundColor(isHovered ? NoirColors.deepTeal : NoirColors.creamWhite)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
+                .padding(.horizontal, 10).padding(.vertical, 7)
                 .frame(minWidth: 44, minHeight: 28)
                 .background(isHovered ? NoirColors.creamWhite : NoirColors.midBlue.opacity(0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .pixelBevel(cornerRadius: 6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(NoirColors.goldAccent, lineWidth: 2)
-                        .opacity(isFocused ? 1 : 0)
-                )
         }
         .buttonStyle(.plain)
-        .focused($isFocused)
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: 0.12), value: isHovered)
     }
@@ -298,8 +415,6 @@ struct TopBarButton: View {
 struct IconButton: View {
     let systemImage: String
     @State private var isHovered = false
-    @FocusState private var isFocused: Bool
-
     var body: some View {
         Button(action: {}) {
             Image(systemName: systemImage)
@@ -309,14 +424,8 @@ struct IconButton: View {
                 .background(isHovered ? NoirColors.creamWhite : NoirColors.midBlue.opacity(0.5))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .pixelBevel(cornerRadius: 6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(NoirColors.goldAccent, lineWidth: 2)
-                        .opacity(isFocused ? 1 : 0)
-                )
         }
         .buttonStyle(.plain)
-        .focused($isFocused)
         .frame(minWidth: 44, minHeight: 44)
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: 0.12), value: isHovered)
@@ -326,8 +435,6 @@ struct IconButton: View {
 struct ActionButton: View {
     let systemImage: String
     @State private var isHovered = false
-    @FocusState private var isFocused: Bool
-
     var body: some View {
         Button(action: {}) {
             Image(systemName: systemImage)
@@ -337,14 +444,8 @@ struct ActionButton: View {
                 .background(isHovered ? NoirColors.deepTeal : NoirColors.lightBlue.opacity(0.5))
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .pixelBevel(cornerRadius: 6)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(NoirColors.goldAccent, lineWidth: 2)
-                        .opacity(isFocused ? 1 : 0)
-                )
         }
         .buttonStyle(.plain)
-        .focused($isFocused)
         .frame(minWidth: 44, minHeight: 44)
         .onHover { isHovered = $0 }
         .animation(.easeInOut(duration: 0.12), value: isHovered)
@@ -353,8 +454,8 @@ struct ActionButton: View {
 
 #Preview {
     ZStack {
-        NoirColors.deepTeal.opacity(0.3).ignoresSafeArea()
+        Color(hex: "0A0F14").ignoresSafeArea()
         SearchBarView(isVisible: .constant(true))
     }
-    .frame(width: 1100, height: 400)
+    .frame(width: 960, height: 400)
 }

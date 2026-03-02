@@ -4,28 +4,27 @@ struct ContextCard: View {
     let context: DetectedContext
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
                 Image(systemName: context.icon)
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(NoirColors.deepTeal)
-
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(hex: "B8881C"))
                 Text("CONTEXT DETECTED")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(NoirColors.deepTeal)
-                    .tracking(1)
+                    .foregroundColor(Color(hex: "5A7A8A"))
+                    .tracking(2)
             }
-
             Text(context.description)
-                .font(NoirFonts.body())
-                .foregroundColor(NoirColors.charcoalDark)
+                .font(.system(size: 13, weight: .regular, design: .monospaced))
+                .foregroundColor(Color(hex: "BDD0D8"))
                 .lineLimit(2)
+                .lineSpacing(3)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(NoirColors.creamWhite)
+        .background(Color(hex: "111820"))
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .pixelBevel(cornerRadius: 6)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: "1E2D38"), lineWidth: 1))
     }
 }
 

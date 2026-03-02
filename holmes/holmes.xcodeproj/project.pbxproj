@@ -26,6 +26,7 @@
 		AA000001000000000000017 /* SearchBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000017 /* SearchBarView.swift */; };
 		AA000001000000000000018 /* SearchBarWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000018 /* SearchBarWindow.swift */; };
 		AA000001000000000000019 /* SearchViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000019 /* SearchViewModel.swift */; };
+		AA00000100000000000001A /* CommandViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000200000000000001A /* CommandViewModel.swift */; };
 		AA000001000000000000020 /* VoiceInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000020 /* VoiceInputView.swift */; };
 		AA000001000000000000021 /* SideIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000021 /* SideIconView.swift */; };
 		AA000001000000000000022 /* SideIconWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000022 /* SideIconWindow.swift */; };
@@ -72,6 +73,7 @@
 		AA000002000000000000017 /* SearchBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchBarView.swift; sourceTree = "<group>"; };
 		AA000002000000000000018 /* SearchBarWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchBarWindow.swift; sourceTree = "<group>"; };
 		AA000002000000000000019 /* SearchViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchViewModel.swift; sourceTree = "<group>"; };
+		AA00000200000000000001A /* CommandViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandViewModel.swift; sourceTree = "<group>"; };
 		AA000002000000000000020 /* VoiceInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputView.swift; sourceTree = "<group>"; };
 		AA000002000000000000021 /* SideIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SideIconView.swift; sourceTree = "<group>"; };
 		AA000002000000000000022 /* SideIconWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SideIconWindow.swift; sourceTree = "<group>"; };
@@ -229,6 +231,7 @@
 				AA000002000000000000017 /* SearchBarView.swift */,
 				AA000002000000000000018 /* SearchBarWindow.swift */,
 				AA000002000000000000019 /* SearchViewModel.swift */,
+				AA00000200000000000001A /* CommandViewModel.swift */,
 				AA000002000000000000020 /* VoiceInputView.swift */,
 			);
 			path = SearchBar;
@@ -370,6 +373,7 @@
 				AA000001000000000000017 /* SearchBarView.swift in Sources */,
 				AA000001000000000000018 /* SearchBarWindow.swift in Sources */,
 				AA000001000000000000019 /* SearchViewModel.swift in Sources */,
+				AA00000100000000000001A /* CommandViewModel.swift in Sources */,
 				AA000001000000000000020 /* VoiceInputView.swift in Sources */,
 				AA000001000000000000021 /* SideIconView.swift in Sources */,
 				AA000001000000000000022 /* SideIconWindow.swift in Sources */,

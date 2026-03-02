@@ -7,19 +7,22 @@ struct ActivityLog: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button(action: {
-                withAnimation(NoirAnimations.smooth) { isExpanded.toggle() }
+                withAnimation(.easeInOut(duration: 0.2)) { isExpanded.toggle() }
             }) {
                 HStack {
-                    Text("RECENT ACTIVITY")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(NoirColors.deepTeal)
-                        .tracking(1)
-
+                    HStack(spacing: 7) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(hex: "5A7A8A"))
+                        Text("RECENT ACTIVITY")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(hex: "5A7A8A"))
+                            .tracking(2)
+                    }
                     Spacer()
-
                     Image(systemName: "chevron.down")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(NoirColors.deepTeal)
+                        .foregroundColor(Color(hex: "3D5A6A"))
                         .rotationEffect(.degrees(isExpanded ? 0 : -90))
                 }
                 .padding(.horizontal, 14)
@@ -28,43 +31,41 @@ struct ActivityLog: View {
             .buttonStyle(.plain)
 
             if isExpanded {
-                Divider()
-                    .background(NoirColors.charcoalDark.opacity(0.25))
-
+                Divider().background(Color(hex: "1E2D38"))
                 VStack(spacing: 0) {
                     ForEach(activities) { ActivityRow(activity: $0) }
                 }
-                .padding(.vertical, 6)
             }
         }
-        .background(NoirColors.creamWhite)
+        .background(Color(hex: "111820"))
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .pixelBevel(cornerRadius: 6)
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: "1E2D38"), lineWidth: 1))
     }
 }
 
 struct ActivityRow: View {
     let activity: ActivityItem
-    
+
     var body: some View {
         HStack(spacing: 10) {
-            RoundedRectangle(cornerRadius: 1)
-                .fill(activity.statusColor)
-                .frame(width: 5, height: 5)
+            Text(activity.statusPrefix)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(activity.statusColor)
+                .frame(width: 12, alignment: .center)
 
             Text(activity.description)
-                .font(NoirFonts.caption())
-                .foregroundColor(NoirColors.charcoalDark)
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .foregroundColor(Color(hex: "8FA8B0"))
                 .lineLimit(1)
 
             Spacer()
 
             Text(activity.timeAgo)
                 .font(.system(size: 10, weight: .regular, design: .monospaced))
-                .foregroundColor(NoirColors.iconSecondary)
+                .foregroundColor(Color(hex: "3D5A6A"))
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 7)
+        .padding(.vertical, 8)
     }
 }
 
@@ -76,9 +77,17 @@ struct ActivityItem: Identifiable {
     
     var statusColor: Color {
         switch status {
-        case .completed: return NoirColors.deepTeal
-        case .pending:   return NoirColors.orangeAccent
-        case .failed:    return Color(hex: "#C0392B")
+        case .completed: return Color(hex: "5DBB7A")
+        case .pending:   return Color(hex: "B8881C")
+        case .failed:    return Color(hex: "E05252")
+        }
+    }
+
+    var statusPrefix: String {
+        switch status {
+        case .completed: return "✓"
+        case .pending:   return "·"
+        case .failed:    return "✗"
         }
     }
     
