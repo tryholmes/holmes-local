@@ -7,43 +7,39 @@ struct ActivityLog: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button(action: {
-                withAnimation(NoirAnimations.smooth) {
-                    isExpanded.toggle()
-                }
+                withAnimation(NoirAnimations.smooth) { isExpanded.toggle() }
             }) {
                 HStack {
-                    Text("Recent Activity")
-                        .font(NoirFonts.caption())
-                        .foregroundColor(NoirColors.fogGray)
-                    
+                    Text("RECENT ACTIVITY")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(NoirColors.deepTeal)
+                        .tracking(1)
+
                     Spacer()
-                    
+
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(NoirColors.fogGray)
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(NoirColors.deepTeal)
                         .rotationEffect(.degrees(isExpanded ? 0 : -90))
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
             }
             .buttonStyle(.plain)
-            
+
             if isExpanded {
                 Divider()
-                    .background(NoirColors.smokeGray)
-                
+                    .background(NoirColors.charcoalDark.opacity(0.25))
+
                 VStack(spacing: 0) {
-                    ForEach(activities) { activity in
-                        ActivityRow(activity: activity)
-                    }
+                    ForEach(activities) { ActivityRow(activity: $0) }
                 }
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(NoirColors.smokeGray.opacity(0.2))
-        )
+        .background(NoirColors.creamWhite)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .pixelBevel(cornerRadius: 6)
     }
 }
 
@@ -51,24 +47,24 @@ struct ActivityRow: View {
     let activity: ActivityItem
     
     var body: some View {
-        HStack(spacing: 12) {
-            Circle()
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 1)
                 .fill(activity.statusColor)
-                .frame(width: 6, height: 6)
-            
+                .frame(width: 5, height: 5)
+
             Text(activity.description)
                 .font(NoirFonts.caption())
-                .foregroundColor(NoirColors.paperWhite.opacity(0.8))
+                .foregroundColor(NoirColors.charcoalDark)
                 .lineLimit(1)
-            
+
             Spacer()
-            
+
             Text(activity.timeAgo)
-                .font(.system(size: 11, weight: .regular, design: .monospaced))
-                .foregroundColor(NoirColors.fogGray)
+                .font(.system(size: 10, weight: .regular, design: .monospaced))
+                .foregroundColor(NoirColors.iconSecondary)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
     }
 }
 
@@ -80,9 +76,9 @@ struct ActivityItem: Identifiable {
     
     var statusColor: Color {
         switch status {
-        case .completed: return .green
-        case .pending: return .orange
-        case .failed: return .red
+        case .completed: return NoirColors.deepTeal
+        case .pending:   return NoirColors.orangeAccent
+        case .failed:    return Color(hex: "#C0392B")
         }
     }
     
@@ -102,10 +98,8 @@ struct ActivityItem: Identifiable {
 
 #Preview {
     ZStack {
-        NoirColors.charcoalGray.ignoresSafeArea()
-        
-        ActivityLog(activities: ActivityItem.samples)
-            .padding()
+        NoirColors.skyBlue.ignoresSafeArea()
+        ActivityLog(activities: ActivityItem.samples).padding()
     }
     .frame(width: 400, height: 400)
 }

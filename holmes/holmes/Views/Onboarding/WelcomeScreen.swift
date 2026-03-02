@@ -17,20 +17,20 @@ struct WelcomeScreen: View {
                     .opacity(iconOpacity)
 
                 VStack(spacing: 10) {
-                    Text("holmes")
-                        .font(.system(size: 48, weight: .light))
-                        .foregroundStyle(NoirColors.paperWhite)
-                        .tracking(4)
+                    Text("HOLMES")
+                        .font(.system(size: 40, weight: .bold, design: .monospaced))
+                        .foregroundStyle(NoirColors.charcoalDark)
+                        .tracking(6)
 
                     Text("Zero Prompt AI for macOS")
                         .font(NoirFonts.body())
-                        .foregroundStyle(NoirColors.fogGray)
+                        .foregroundStyle(NoirColors.deepTeal)
                 }
                 .opacity(textOpacity)
 
                 Text("I learn from your actions and help\nbefore you even ask.")
                     .font(NoirFonts.body())
-                    .foregroundStyle(NoirColors.paperWhite.opacity(0.8))
+                    .foregroundStyle(NoirColors.textSecondary)
                     .multilineTextAlignment(.center)
                     .lineSpacing(4)
                     .opacity(textOpacity)
@@ -62,7 +62,7 @@ struct WelcomeScreen: View {
 
 #Preview {
     ZStack {
-        NoirColors.charcoalGray.ignoresSafeArea()
+        NoirColors.skyBlue.ignoresSafeArea()
         WelcomeScreen(viewModel: OnboardingViewModel())
     }
     .frame(width: 600, height: 700)

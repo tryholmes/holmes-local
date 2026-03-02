@@ -13,7 +13,8 @@ struct NotchDetector {
     
     static var notchWidth: CGFloat {
         guard hasNotch else { return 0 }
-        return 180
+        // Actual MacBook notch is about 200px wide
+        return 200
     }
     
     static var notchHeight: CGFloat {
@@ -26,6 +27,24 @@ struct NotchDetector {
         }
         
         return 32
+    }
+    
+    // Get the actual physical notch rectangle
+    static var physicalNotchFrame: NSRect {
+        guard hasNotch, let screen = NSScreen.main else {
+            return .zero
+        }
+        
+        let screenFrame = screen.frame
+        let notchX = screenFrame.midX - notchWidth / 2
+        let notchY = screenFrame.maxY - notchHeight
+        
+        return NSRect(
+            x: notchX,
+            y: notchY,
+            width: notchWidth,
+            height: notchHeight
+        )
     }
     
     static var notchFrame: NSRect {

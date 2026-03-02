@@ -9,37 +9,35 @@ struct LoginView: View {
 
     var body: some View {
         ZStack {
-            NoirColors.charcoalGray.ignoresSafeArea()
-            GrainOverlay(opacity: 0.05).ignoresSafeArea()
+            NoirColors.skyBlue.ignoresSafeArea()
 
             VStack(spacing: 0) {
                 Spacer()
 
-                // Character + title
                 VStack(spacing: 12) {
                     NoirCharacterHeroView(size: 110)
 
-                    Text("holmes")
-                        .font(.system(size: 40, weight: .light))
-                        .foregroundStyle(NoirColors.paperWhite)
-                        .tracking(4)
+                    Text("HOLMES")
+                        .font(.system(size: 36, weight: .bold, design: .monospaced))
+                        .foregroundStyle(NoirColors.charcoalDark)
+                        .tracking(5)
 
                     Text("Zero Prompt AI for macOS")
                         .font(NoirFonts.caption())
-                        .foregroundStyle(NoirColors.fogGray)
+                        .foregroundStyle(NoirColors.deepTeal)
                 }
 
                 Spacer()
 
                 // Form area
                 VStack(spacing: 14) {
-                    // Mode toggle
                     HStack(spacing: 0) {
                         modeTab("Sign In", target: .signIn)
                         modeTab("Create Account", target: .signUp)
                     }
-                    .background(NoirColors.smokeGray.opacity(0.4))
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .background(NoirColors.midBlue.opacity(0.35))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .pixelBevel(cornerRadius: 6)
 
                     NoirFormField("Email", text: $email)
                     NoirFormField("Password", text: $password, isSecure: true)
@@ -49,7 +47,6 @@ struct LoginView: View {
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
 
-                    // Primary action — auto-accepts, no backend
                     Button {
                         Task { @MainActor in
                             ClerkAuthManager.shared.acceptWebSession(
@@ -60,17 +57,15 @@ struct LoginView: View {
                     } label: {
                         Text(mode == .signIn ? "Sign In" : "Create Account")
                             .font(NoirFonts.button())
-                            .foregroundStyle(NoirColors.shadowBlack)
+                            .foregroundStyle(NoirColors.creamWhite)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 13)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .fill(NoirColors.paperWhite)
-                            )
+                            .background(NoirColors.deepTeal)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .pixelBevel(cornerRadius: 6)
                     }
                     .buttonStyle(.plain)
 
-                    // Google — auto-accepts too
                     Button {
                         Task { @MainActor in
                             ClerkAuthManager.shared.acceptWebSession(
@@ -81,28 +76,17 @@ struct LoginView: View {
                     } label: {
                         HStack(spacing: 8) {
                             Text("G")
-                                .font(.system(size: 15, weight: .bold))
-                                .foregroundStyle(
-                                    LinearGradient(
-                                        colors: [.blue, .red, .yellow, .green],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
+                                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                                .foregroundStyle(NoirColors.orangeAccent)
                             Text("Continue with Google")
                                 .font(NoirFonts.button())
-                                .foregroundStyle(NoirColors.paperWhite)
+                                .foregroundStyle(NoirColors.charcoalDark)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 13)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(NoirColors.smokeGray.opacity(0.5))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(NoirColors.glassStroke, lineWidth: 1)
-                        )
+                        .background(NoirColors.creamWhite)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .pixelBevel(cornerRadius: 6)
                     }
                     .buttonStyle(.plain)
                 }
@@ -119,14 +103,17 @@ struct LoginView: View {
         Button { withAnimation { mode = target } } label: {
             Text(title)
                 .font(NoirFonts.button())
-                .foregroundStyle(mode == target ? NoirColors.shadowBlack : NoirColors.fogGray)
+                .foregroundStyle(mode == target ? NoirColors.creamWhite : NoirColors.textPrimary)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 9)
                 .background(
                     Group {
                         if mode == target {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(NoirColors.paperWhite)
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(NoirColors.deepTeal)
+                        } else {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(NoirColors.warmCream)
                         }
                     }
                 )

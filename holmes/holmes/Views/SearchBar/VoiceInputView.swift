@@ -10,8 +10,8 @@ struct VoiceInputView: View {
                 .padding(.horizontal, 40)
 
             Text(viewModel.searchText.isEmpty ? "Listening..." : viewModel.searchText)
-                .font(.system(size: 32, weight: .light))
-                .foregroundStyle(NoirColors.paperWhite)
+                .font(.system(size: 28, weight: .bold, design: .monospaced))
+                .foregroundStyle(NoirColors.charcoalDark)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .padding(.horizontal, 20)
@@ -24,10 +24,10 @@ struct AudioWaveform: View {
     @State private var bars: [CGFloat] = Array(repeating: 0.2, count: 20)
     
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 3) {
             ForEach(0..<20, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(NoirColors.paperWhite.opacity(0.8))
+                Rectangle()
+                    .fill(NoirColors.textSecondary)
                     .frame(width: 4, height: bars[index] * 60)
             }
         }
@@ -61,17 +61,12 @@ struct ListenButton: View {
                 }
             }
             .font(NoirFonts.button())
-            .foregroundStyle(isListening ? Color.red : NoirColors.paperWhite.opacity(0.8))
+            .foregroundStyle(isListening ? NoirColors.orangeAccent : NoirColors.creamWhite)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(
-                Capsule()
-                    .fill(isListening ? Color.red.opacity(0.2) : NoirColors.glassWhite)
-            )
-            .overlay(
-                Capsule()
-                    .stroke(isListening ? Color.red.opacity(0.5) : NoirColors.glassStroke, lineWidth: 1)
-            )
+            .background(isListening ? NoirColors.orangeAccent.opacity(0.15) : NoirColors.deepTeal)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .pixelBevel(cornerRadius: 6)
         }
         .buttonStyle(.plain)
     }
@@ -79,11 +74,9 @@ struct ListenButton: View {
 
 #Preview {
     ZStack {
-        NoirColors.charcoalGray.ignoresSafeArea()
-        
+        NoirColors.skyBlue.ignoresSafeArea()
         VStack(spacing: 40) {
             VoiceInputView(viewModel: SearchViewModel())
-            
             HStack {
                 ListenButton(isListening: false) {}
                 ListenButton(isListening: true) {}

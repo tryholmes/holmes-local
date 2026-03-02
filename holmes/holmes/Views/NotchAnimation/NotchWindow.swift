@@ -1,6 +1,20 @@
 import SwiftUI
 import AppKit
 
+final class NotchHaptics {
+    static let shared = NotchHaptics()
+
+    private init() {}
+
+    func light() {
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+    }
+
+    func medium() {
+        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+    }
+}
+
 class NotchWindowController: NSObject, ObservableObject {
     static let shared = NotchWindowController()
     
@@ -36,8 +50,9 @@ class NotchWindowController: NSObject, ObservableObject {
     }
     
     private func createWindow() {
+        // MUCH WIDER to extend from sides of notch
         let window = NotchPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 100),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 32),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -62,13 +77,16 @@ class NotchWindowController: NSObject, ObservableObject {
     private func positionWindow() {
         guard let window = window, let screen = NSScreen.main else { return }
         
-        let notchFrame = NotchDetector.notchFrame
-        let windowWidth: CGFloat = 320
+        let screenFrame = screen.frame
+        let windowWidth = window.frame.width
+        let windowHeight = window.frame.height
         
-        let x = screen.frame.midX - windowWidth / 2
-        let y = notchFrame.origin.y - 10
+        // Simply position at the TOP CENTER of the screen
+        // This overlays the MacBook notch area
+        let x = screenFrame.midX - windowWidth / 2
+        let y = screenFrame.maxY - windowHeight
         
-        window.setFrame(NSRect(x: x, y: y, width: windowWidth, height: 100), display: true)
+        window.setFrame(NSRect(x: x, y: y, width: windowWidth, height: windowHeight), display: true)
     }
     
     func updateForState() {
@@ -76,11 +94,15 @@ class NotchWindowController: NSObject, ObservableObject {
         
         switch viewModel.state {
         case .idle:
-            window.setContentSize(NSSize(width: 320, height: 50))
+            let width: CGFloat = 600
+            let height: CGFloat = viewModel.isHovered ? 80 : 32
+            window.setContentSize(NSSize(width: width, height: height))
         case .active:
-            window.setContentSize(NSSize(width: 320, height: 80))
+            window.setContentSize(NSSize(width: 600, height: 90))
+        case .notification:
+            window.setContentSize(NSSize(width: 600, height: 64))
         case .expanded:
-            window.setContentSize(NSSize(width: 320, height: 140))
+            window.setContentSize(NSSize(width: 600, height: 160))
         }
         
         positionWindow()
@@ -100,10 +122,19 @@ struct NotchHostView: View {
             Spacer()
             
             NotchView(viewModel: controller.viewModel) {
+                NotchHaptics.shared.medium()
                 MainPanelWindowController.shared.toggle()
             }
         }
+        .onChange(of: controller.viewModel.isHovered) { _, hovered in
+            if hovered {
+                NotchHaptics.shared.light()
+            }
+        }
         .onChange(of: controller.viewModel.state) { _, _ in
+            controller.updateForState()
+        }
+        .onChange(of: controller.viewModel.isHovered) { _, _ in
             controller.updateForState()
         }
     }

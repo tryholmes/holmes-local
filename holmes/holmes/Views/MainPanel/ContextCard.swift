@@ -4,32 +4,28 @@ struct ContextCard: View {
     let context: DetectedContext
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
                 Image(systemName: context.icon)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(NoirColors.fogGray)
-                
-                Text("Context Detected")
-                    .font(NoirFonts.caption())
-                    .foregroundColor(NoirColors.fogGray)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(NoirColors.deepTeal)
+
+                Text("CONTEXT DETECTED")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(NoirColors.deepTeal)
+                    .tracking(1)
             }
-            
+
             Text(context.description)
                 .font(NoirFonts.body())
-                .foregroundColor(NoirColors.paperWhite)
+                .foregroundColor(NoirColors.charcoalDark)
                 .lineLimit(2)
         }
-        .padding(16)
+        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(NoirColors.smokeGray.opacity(0.3))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(NoirColors.glassStroke, lineWidth: 1)
-        )
+        .background(NoirColors.creamWhite)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .pixelBevel(cornerRadius: 6)
     }
 }
 
@@ -47,10 +43,8 @@ struct DetectedContext {
 
 #Preview {
     ZStack {
-        NoirColors.charcoalGray.ignoresSafeArea()
-        
-        ContextCard(context: .placeholder)
-            .padding()
+        NoirColors.skyBlue.ignoresSafeArea()
+        ContextCard(context: .placeholder).padding()
     }
     .frame(width: 400, height: 200)
 }

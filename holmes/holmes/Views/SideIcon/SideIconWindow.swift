@@ -11,9 +11,9 @@ class SideIconWindowController: NSObject, ObservableObject {
     @Published var isBlinking: Bool = false
     
     private var currentYPosition: CGFloat?
-    private let characterWidth: CGFloat = 120
-    private let characterHeight: CGFloat = 120
-    private let peekAmount: CGFloat = 60
+    private let characterWidth: CGFloat = 140
+    private let characterHeight: CGFloat = 140
+    private let peekAmount: CGFloat = 70
     
     private let positionKey = "SideCharacterYPosition"
     

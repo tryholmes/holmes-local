@@ -12,7 +12,7 @@ struct HowItWorksScreen: View {
             VStack(spacing: 40) {
                 Text("How Holmes Works")
                     .font(NoirFonts.headline())
-                    .foregroundColor(NoirColors.paperWhite)
+                    .foregroundColor(NoirColors.charcoalDark)
                 
                 HStack(spacing: 24) {
                     FeatureCard(
@@ -70,31 +70,32 @@ struct FeatureCard: View {
     let description: String
     
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
             ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(NoirColors.smokeGray.opacity(0.5))
-                    .frame(width: 80, height: 80)
-                
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(NoirColors.deepTeal)
+                    .frame(width: 72, height: 72)
+                    .pixelBevel(cornerRadius: 6)
+
                 VStack(spacing: 4) {
                     Image(systemName: icon)
-                        .font(.system(size: 24, weight: .light))
-                        .foregroundColor(NoirColors.paperWhite)
-                    
+                        .font(.system(size: 22, weight: .bold, design: .monospaced))
+                        .foregroundColor(NoirColors.creamWhite)
+
                     Text(shortcut)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(NoirColors.fogGray)
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(NoirColors.tanBrown)
                 }
             }
-            
-            VStack(spacing: 8) {
+
+            VStack(spacing: 6) {
                 Text(title)
                     .font(NoirFonts.title())
-                    .foregroundColor(NoirColors.paperWhite)
-                
+                    .foregroundColor(NoirColors.charcoalDark)
+
                 Text(description)
                     .font(NoirFonts.caption())
-                    .foregroundColor(NoirColors.fogGray)
+                    .foregroundColor(NoirColors.deepTeal)
                     .multilineTextAlignment(.center)
                     .lineSpacing(2)
             }
@@ -105,7 +106,7 @@ struct FeatureCard: View {
 
 #Preview {
     ZStack {
-        NoirColors.charcoalGray.ignoresSafeArea()
+        NoirColors.skyBlue.ignoresSafeArea()
         HowItWorksScreen(viewModel: OnboardingViewModel())
     }
     .frame(width: 600, height: 700)

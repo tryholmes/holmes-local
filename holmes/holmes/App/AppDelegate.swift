@@ -107,9 +107,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startMainApp() {
         SideIconWindowController.shared.show()
-
-        if NotchDetector.hasNotch {
-            NotchWindowController.shared.show()
-        }
+        // Notch animation removed — the notch is no longer used.
     }
 }

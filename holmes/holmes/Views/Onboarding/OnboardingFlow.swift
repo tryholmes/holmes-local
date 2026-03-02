@@ -6,10 +6,7 @@ struct OnboardingFlow: View {
     
     var body: some View {
         ZStack {
-            NoirColors.charcoalGray
-                .ignoresSafeArea()
-            
-            GrainOverlay(opacity: 0.05)
+            NoirColors.skyBlue
                 .ignoresSafeArea()
             
             VStack(spacing: 0) {
@@ -58,7 +55,7 @@ struct StepIndicator: View {
         HStack(spacing: 8) {
             ForEach(0..<totalSteps, id: \.self) { index in
                 Capsule()
-                    .fill(index <= currentStep ? NoirColors.paperWhite : NoirColors.smokeGray)
+                    .fill(index <= currentStep ? NoirColors.deepTeal : NoirColors.midBlue.opacity(0.4))
                     .frame(width: index == currentStep ? 24 : 8, height: 8)
                     .animation(NoirAnimations.smooth, value: currentStep)
             }

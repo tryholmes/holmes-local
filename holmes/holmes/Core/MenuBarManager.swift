@@ -21,18 +21,35 @@ class MenuBarManager: NSObject {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         
         if let button = statusItem?.button {
-            if let img = NSImage(named: "NoirCharacter") {
-                img.size = NSSize(width: 18, height: 18)
-                img.isTemplate = true
-                button.image = img
-            } else {
-                // Fallback if asset not loaded yet
-                button.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "Holmes")
+            // Use SF Symbol for clean, polished Apple look
+            let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .medium)
+            if let symbolImage = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Holmes")?
+                .withSymbolConfiguration(config) {
+                button.image = symbolImage
                 button.image?.isTemplate = true
             }
+            
+            // Add click action for toggle behavior
+            button.target = self
+            button.action = #selector(statusItemClicked(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         
         setupMenu()
+    }
+    
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        guard let event = NSApp.currentEvent else { return }
+        
+        if event.type == .rightMouseUp {
+            // Right click shows menu
+            statusItem?.menu = menu
+            statusItem?.button?.performClick(nil)
+            statusItem?.menu = nil
+        } else {
+            // Left click toggles search bar
+            SearchBarWindowController.shared.toggle()
+        }
     }
     
     private func setupMenu() {

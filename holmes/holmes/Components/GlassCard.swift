@@ -1,43 +1,31 @@
 import SwiftUI
 
+// Retro pixel bevel card — raised or recessed Mac OS classic style
 struct GlassCard<Content: View>: View {
     let cornerRadius: CGFloat
+    var raised: Bool = true
     let content: Content
-    
-    init(cornerRadius: CGFloat = 24, @ViewBuilder content: () -> Content) {
+
+    init(cornerRadius: CGFloat = 6, raised: Bool = true, @ViewBuilder content: () -> Content) {
         self.cornerRadius = cornerRadius
+        self.raised = raised
         self.content = content()
     }
-    
+
     var body: some View {
         content
-            .background(
-                ZStack {
-                    VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
-                    
-                    LinearGradient(
-                        colors: [
-                            Color.black.opacity(0.3),
-                            Color.black.opacity(0.2)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                }
-            )
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(NoirColors.glassStroke, lineWidth: 1.5)
-            )
-            .shadow(color: NoirColors.glassShadow, radius: 30, x: 0, y: 20)
+            .background(NoirColors.warmWhite)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .pixelBevel(raised: raised, cornerRadius: cornerRadius)
+            .shadow(color: NoirColors.glassShadow, radius: 8, x: 0, y: 3)
     }
 }
 
+// VisualEffectBlur retained for any callers that still need it
 struct VisualEffectBlur: NSViewRepresentable {
     let material: NSVisualEffectView.Material
     let blendingMode: NSVisualEffectView.BlendingMode
-    
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = material
@@ -46,7 +34,7 @@ struct VisualEffectBlur: NSViewRepresentable {
         view.wantsLayer = true
         return view
     }
-    
+
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
         nsView.blendingMode = blendingMode
@@ -54,42 +42,64 @@ struct VisualEffectBlur: NSViewRepresentable {
 }
 
 struct HeavyGlassBackground: View {
-    var cornerRadius: CGFloat = 24
-    
+    var cornerRadius: CGFloat = 4
+
     var body: some View {
-        ZStack {
-            VisualEffectBlur(material: .fullScreenUI, blendingMode: .behindWindow)
-            
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.4),
-                    Color.black.opacity(0.3)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .stroke(NoirColors.glassStroke, lineWidth: 1.5)
+        RoundedRectangle(cornerRadius: cornerRadius)
+            .fill(NoirColors.creamWhite)
+            .pixelBevel(cornerRadius: cornerRadius)
+    }
+}
+
+// MARK: - Refined Bevel Modifier
+// Subtle single-border with a soft directional highlight — professional, not chunky.
+struct PixelBevelModifier: ViewModifier {
+    var raised: Bool = true
+    var cornerRadius: CGFloat = 6
+
+    func body(content: Content) -> some View {
+        content.overlay(
+            ZStack {
+                // Main border — warm charcoal, just 1px
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .stroke(NoirColors.charcoalDark.opacity(0.22), lineWidth: 1)
+
+                // Subtle top-left highlight for depth
+                RoundedRectangle(cornerRadius: cornerRadius - 0.5)
+                    .stroke(
+                        LinearGradient(
+                            colors: raised
+                                ? [Color.white.opacity(0.55), Color.clear]
+                                : [NoirColors.charcoalDark.opacity(0.12), Color.white.opacity(0.35)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.75
+                    )
+                    .padding(0.75)
+            }
         )
+    }
+}
+
+extension View {
+    func pixelBevel(raised: Bool = true, cornerRadius: CGFloat = 6) -> some View {
+        modifier(PixelBevelModifier(raised: raised, cornerRadius: cornerRadius))
     }
 }
 
 #Preview {
     ZStack {
-        LinearGradient(colors: [.blue, .purple], startPoint: .top, endPoint: .bottom)
-            .ignoresSafeArea()
-        
+        NoirColors.skyBlue.ignoresSafeArea()
+
         GlassCard {
             VStack {
                 Text("Holmes")
                     .font(NoirFonts.headline())
-                    .foregroundColor(NoirColors.paperWhite)
+                    .foregroundColor(NoirColors.charcoalDark)
                 Text("Zero Prompt AI")
                     .font(NoirFonts.body())
-                    .foregroundColor(NoirColors.fogGray)
+                    .foregroundColor(NoirColors.deepTeal)
             }
             .padding(40)
         }

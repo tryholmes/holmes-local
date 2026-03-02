@@ -133,21 +133,22 @@ struct AboutSettingsView: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 48, weight: .thin))
-                .foregroundColor(.primary)
+                .font(.system(size: 44, weight: .bold, design: .monospaced))
+                .foregroundColor(NoirColors.deepTeal)
                 .rotationEffect(.degrees(-45))
-            
-            Text("Holmes")
-                .font(.title)
-            
+
+            Text("HOLMES")
+                .font(.system(size: 22, weight: .bold, design: .monospaced))
+                .foregroundColor(NoirColors.charcoalDark)
+
             Text("Zero Prompt AI for macOS")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-            
+                .font(.system(size: 13, weight: .regular, design: .monospaced))
+                .foregroundColor(NoirColors.deepTeal)
+
             Text("Version 1.0.0")
-                .font(.caption)
-                .foregroundColor(.secondary)
-            
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundColor(NoirColors.textTertiary)
+
             Spacer()
         }
         .padding()

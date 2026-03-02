@@ -64,15 +64,15 @@ struct SideIconView: View {
     private var iconContent: some View {
         ZStack {
             Circle()
-                .fill(NoirColors.charcoalGray)
+                .fill(NoirColors.deepTeal)
                 .overlay(
                     Circle()
-                        .stroke(NoirColors.glassStroke, lineWidth: 1)
+                        .stroke(NoirColors.charcoalDark, lineWidth: 2)
                 )
-            
+
             Image(systemName: iconName)
-                .font(.system(size: 24, weight: .light))
-                .foregroundColor(NoirColors.paperWhite)
+                .font(.system(size: 22, weight: .bold, design: .monospaced))
+                .foregroundColor(NoirColors.creamWhite)
                 .rotationEffect(.degrees(state == .thinking ? rotationAngle : 0))
         }
     }
@@ -88,10 +88,10 @@ struct SideIconView: View {
     
     private var glowColor: Color {
         switch state {
-        case .dormant: return NoirColors.fogGray
-        case .listening: return Color.blue
-        case .thinking: return Color.orange
-        case .acting: return Color.green
+        case .dormant:   return NoirColors.skyBlue
+        case .listening: return NoirColors.midBlue
+        case .thinking:  return NoirColors.warmBrown
+        case .acting:    return NoirColors.orangeAccent
         }
     }
     
@@ -126,31 +126,48 @@ struct SideCharacterView: View {
     @Binding var isExpanded: Bool
     @Binding var isBlinking: Bool
     let onTap: () -> Void
-    
+
+    @State private var bobOffset: CGFloat = 0
+
     var body: some View {
         Button(action: {
-            isBlinking = true
             withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
                 isExpanded.toggle()
             }
             onTap()
         }) {
-            LottieCharacterView(isBlinking: $isBlinking)
+            Image("NoirCharacter")
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 130, height: 130)
+                // -90° (counter-clockwise) — head points toward screen center
+                .rotationEffect(.degrees(-90))
+                .offset(y: bobOffset)
+                .shadow(color: NoirColors.charcoalDark.opacity(0.28), radius: 8, x: -4, y: 0)
         }
         .buttonStyle(.plain)
+        .onAppear {
+            withAnimation(
+                .easeInOut(duration: 2.4)
+                .repeatForever(autoreverses: true)
+            ) {
+                bobOffset = -5
+            }
+        }
     }
 }
 
+// Kept for any remaining references
 struct LottieCharacterView: View {
     @Binding var isBlinking: Bool
-    
+
     var body: some View {
-        LottieView(name: "noireye", loopMode: .playOnce, play: $isBlinking)
-            .frame(width: 350, height: 350)
-            .scaleEffect(0.20)
-            .rotationEffect(.degrees(-90))
-            .shadow(color: .black.opacity(0.5), radius: 10, x: -2, y: 2)
-            .offset(x: -125)
+        Image("NoirCharacter")
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: 110, height: 110)
     }
 }
 

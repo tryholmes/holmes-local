@@ -14,11 +14,11 @@ struct ReadyScreen: View {
 
             VStack(spacing: 32) {
                 ZStack {
-                    NoirCharacterView(size: 100, glowColor: .green, glowRadius: 24)
+                    NoirCharacterView(size: 100, glowColor: NoirColors.orangeAccent, glowRadius: 20)
 
-                    // Green success ring
+                    // Success ring using orange accent
                     Circle()
-                        .stroke(Color.green.opacity(0.5), lineWidth: 2)
+                        .stroke(NoirColors.orangeAccent.opacity(0.5), lineWidth: 2)
                         .frame(width: 120, height: 120)
                 }
                 .scaleEffect(checkmarkScale)
@@ -27,27 +27,27 @@ struct ReadyScreen: View {
                 VStack(spacing: 12) {
                     Text("You're All Set")
                         .font(NoirFonts.headline())
-                        .foregroundStyle(NoirColors.paperWhite)
+                        .foregroundStyle(NoirColors.charcoalDark)
 
                     Text("Holmes is now learning from\nyour desktop activity")
                         .font(NoirFonts.body())
-                        .foregroundStyle(NoirColors.fogGray)
+                        .foregroundStyle(NoirColors.deepTeal)
                         .multilineTextAlignment(.center)
                 }
                 .opacity(contentOpacity)
 
                 Divider()
-                    .background(NoirColors.smokeGray)
+                    .background(NoirColors.deepTeal.opacity(0.3))
                     .frame(maxWidth: 300)
                     .opacity(contentOpacity)
 
                 VStack(spacing: 16) {
                     Text("Quick Reference")
                         .font(NoirFonts.caption())
-                        .foregroundStyle(NoirColors.fogGray)
+                        .foregroundStyle(NoirColors.deepTeal)
                     
                     VStack(spacing: 12) {
-                        HotkeyRow(keys: "^", secondKey: "Space", description: "Search")
+                            HotkeyRow(keys: "^", secondKey: "Space", description: "Search")
                         HotkeyRow(keys: "⌥", secondKey: "Space", description: "Assistant")
                         HotkeyRow(keys: "⌘", secondKey: "\\", description: "Hide/Show")
                     }
@@ -87,18 +87,18 @@ struct HotkeyRow: View {
             HStack(spacing: 4) {
                 KeyCap(text: keys)
                 Text("+")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(NoirColors.fogGray)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(NoirColors.deepTeal)
                 KeyCap(text: secondKey)
             }
-            
+
             Image(systemName: "arrow.right")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(NoirColors.fogGray)
-            
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(NoirColors.deepTeal)
+
             Text(description)
                 .font(NoirFonts.caption())
-                .foregroundColor(NoirColors.paperWhite)
+                .foregroundColor(NoirColors.charcoalDark)
         }
     }
 }
@@ -108,24 +108,19 @@ struct KeyCap: View {
     
     var body: some View {
         Text(text)
-            .font(.system(size: 12, weight: .medium, design: .monospaced))
-            .foregroundColor(NoirColors.paperWhite)
+            .font(.system(size: 12, weight: .bold, design: .monospaced))
+            .foregroundColor(NoirColors.creamWhite)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(NoirColors.smokeGray.opacity(0.6))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .stroke(NoirColors.glassStroke, lineWidth: 1)
-            )
+            .background(NoirColors.deepTeal)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .pixelBevel(cornerRadius: 6)
     }
 }
 
 #Preview {
     ZStack {
-        NoirColors.charcoalGray.ignoresSafeArea()
+        NoirColors.skyBlue.ignoresSafeArea()
         ReadyScreen(viewModel: OnboardingViewModel()) {}
     }
     .frame(width: 600, height: 700)

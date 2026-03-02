@@ -5,70 +5,69 @@ struct NoirButton: View {
     let icon: String?
     let style: ButtonStyle
     let action: () -> Void
-    
+
+    @State private var isPressed = false
+    @FocusState private var isFocused: Bool
+
     enum ButtonStyle {
-        case primary
-        case secondary
-        case ghost
+        case primary    // teal fill, cream text
+        case secondary  // cream fill, teal text
+        case ghost      // transparent, dark border
     }
-    
+
     init(_ title: String, icon: String? = nil, style: ButtonStyle = .primary, action: @escaping () -> Void) {
         self.title = title
         self.icon = icon
         self.style = style
         self.action = action
     }
-    
+
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
-                if let icon = icon {
+            HStack(spacing: 7) {
+                if let icon {
                     Image(systemName: icon)
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.system(size: 13, weight: .bold, design: .monospaced))
                 }
                 Text(title)
                     .font(NoirFonts.button())
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(backgroundView)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(backgroundColor)
             .foregroundColor(foregroundColor)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .pixelBevel(raised: !isPressed, cornerRadius: 6)
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(strokeColor, lineWidth: style == .ghost ? 1 : 0)
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(NoirColors.goldAccent, lineWidth: 2)
+                    .opacity(isFocused ? 1 : 0)
             )
+            .scaleEffect(isPressed ? 0.97 : 1.0)
         }
         .buttonStyle(.plain)
+        .focused($isFocused)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in isPressed = true }
+                .onEnded   { _ in isPressed = false }
+        )
+        .animation(.easeInOut(duration: 0.08), value: isPressed)
     }
-    
-    @ViewBuilder
-    private var backgroundView: some View {
+
+    private var backgroundColor: Color {
         switch style {
-        case .primary:
-            NoirColors.paperWhite
-        case .secondary:
-            NoirColors.smokeGray.opacity(0.8)
-        case .ghost:
-            Color.clear
+        case .primary:   return NoirColors.deepTeal
+        case .secondary: return NoirColors.creamWhite
+        case .ghost:     return Color.clear
         }
     }
-    
+
     private var foregroundColor: Color {
         switch style {
-        case .primary:
-            return NoirColors.shadowBlack
-        case .secondary, .ghost:
-            return NoirColors.paperWhite
-        }
-    }
-    
-    private var strokeColor: Color {
-        switch style {
-        case .ghost:
-            return NoirColors.glassStroke
-        default:
-            return .clear
+        case .primary:   return NoirColors.creamWhite
+        case .secondary: return NoirColors.deepTeal
+        case .ghost:     return NoirColors.charcoalDark
         }
     }
 }
@@ -76,15 +75,16 @@ struct NoirButton: View {
 struct NoirIconButton: View {
     let icon: String
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(NoirColors.paperWhite.opacity(0.8))
-                .frame(width: 32, height: 32)
-                .background(NoirColors.glassWhite)
-                .clipShape(Circle())
+                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .foregroundColor(NoirColors.deepTeal)
+                .frame(width: 30, height: 30)
+                .background(NoirColors.warmWhite)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .pixelBevel(cornerRadius: 6)
         }
         .buttonStyle(.plain)
     }
@@ -92,8 +92,8 @@ struct NoirIconButton: View {
 
 #Preview {
     ZStack {
-        NoirColors.charcoalGray.ignoresSafeArea()
-        
+        NoirColors.skyBlue.ignoresSafeArea()
+
         VStack(spacing: 16) {
             NoirButton("Get Started", icon: "arrow.right") {}
             NoirButton("Continue", style: .secondary) {}

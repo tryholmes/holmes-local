@@ -11,7 +11,7 @@ struct PermissionsScreen: View {
             VStack(spacing: 32) {
                 Text("Permissions Needed")
                     .font(NoirFonts.headline())
-                    .foregroundColor(NoirColors.paperWhite)
+                    .foregroundColor(NoirColors.charcoalDark)
                 
                 VStack(spacing: 16) {
                     PermissionCard(
@@ -84,45 +84,41 @@ struct PermissionCard: View {
     
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 16) {
+            HStack(spacing: 14) {
                 ZStack {
-                    Circle()
-                        .fill(isGranted ? Color.green.opacity(0.2) : NoirColors.smokeGray.opacity(0.5))
-                        .frame(width: 48, height: 48)
-                    
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isGranted ? NoirColors.deepTeal : NoirColors.midBlue.opacity(0.5))
+                        .frame(width: 44, height: 44)
+                        .pixelBevel(cornerRadius: 6)
+
                     Image(systemName: isGranted ? "checkmark" : icon)
-                        .font(.system(size: 20, weight: .medium))
-                        .foregroundColor(isGranted ? .green : NoirColors.paperWhite)
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundColor(isGranted ? NoirColors.orangeAccent : NoirColors.creamWhite)
                 }
-                
-                VStack(alignment: .leading, spacing: 4) {
+
+                VStack(alignment: .leading, spacing: 3) {
                     Text(title)
                         .font(NoirFonts.title())
-                        .foregroundColor(NoirColors.paperWhite)
-                    
+                        .foregroundColor(NoirColors.charcoalDark)
+
                     Text(description)
                         .font(NoirFonts.caption())
-                        .foregroundColor(NoirColors.fogGray)
+                        .foregroundColor(NoirColors.deepTeal)
                         .lineLimit(2)
                 }
-                
+
                 Spacer()
-                
+
                 if !isGranted {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(NoirColors.fogGray)
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundColor(NoirColors.deepTeal)
                 }
             }
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(NoirColors.smokeGray.opacity(0.3))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(isGranted ? Color.green.opacity(0.3) : NoirColors.glassStroke, lineWidth: 1)
-            )
+            .padding(14)
+            .background(NoirColors.creamWhite)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .pixelBevel(cornerRadius: 6)
         }
         .buttonStyle(.plain)
         .frame(maxWidth: 450)
@@ -131,7 +127,7 @@ struct PermissionCard: View {
 
 #Preview {
     ZStack {
-        NoirColors.charcoalGray.ignoresSafeArea()
+        NoirColors.skyBlue.ignoresSafeArea()
         PermissionsScreen(viewModel: OnboardingViewModel())
     }
     .frame(width: 600, height: 700)

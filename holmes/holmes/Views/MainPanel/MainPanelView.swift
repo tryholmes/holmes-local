@@ -9,83 +9,57 @@ struct MainPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             headerView
-            
+
             ScrollView {
                 VStack(spacing: 16) {
                     ContextCard(context: context)
-                    
+
                     ActionSuggestions(
                         suggestions: suggestions,
-                        onSelect: { suggestion in
-                            selectSuggestion(suggestion)
-                        },
-                        onApproveAll: {
-                            approveAllSuggestions()
-                        }
+                        onSelect: { selectSuggestion($0) },
+                        onApproveAll: { approveAllSuggestions() }
                     )
-                    
+
                     ActivityLog(activities: activities)
                 }
                 .padding(16)
             }
         }
         .frame(width: 380, height: 520)
-        .background(glassBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(NoirColors.glassStroke, lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(0.4), radius: 30, x: 0, y: 15)
+        .background(NoirColors.skyBlue)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .pixelBevel(cornerRadius: 6)
+        .shadow(color: NoirColors.charcoalDark.opacity(0.12), radius: 14, x: 0, y: 5)
     }
-    
+
     private var headerView: some View {
         HStack {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundColor(NoirColors.paperWhite)
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundColor(NoirColors.creamWhite)
                     .rotationEffect(.degrees(-45))
-                
-                Text("Holmes")
-                    .font(NoirFonts.title())
-                    .foregroundColor(NoirColors.paperWhite)
+
+                Text("HOLMES")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundColor(NoirColors.creamWhite)
+                    .tracking(2)
             }
-            
+
             Spacer()
-            
-            HStack(spacing: 8) {
-                WindowButton(icon: "minus") {
-                    isVisible = false
-                }
-                
-                WindowButton(icon: "xmark") {
-                    isVisible = false
-                }
+
+            HStack(spacing: 6) {
+                WindowButton(icon: "minus") { isVisible = false }
+                WindowButton(icon: "xmark") { isVisible = false }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .background(
-            NoirColors.charcoalGray.opacity(0.5)
-        )
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(NoirColors.deepTeal)
     }
-    
-    private var glassBackground: some View {
-        ZStack {
-            VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
-            
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.35),
-                    Color.black.opacity(0.25)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            
-            GrainOverlay(opacity: 0.04)
-        }
+
+    private var retroBackground: some View {
+        NoirColors.skyBlue
     }
     
     private func selectSuggestion(_ suggestion: ActionSuggestion) {
@@ -104,32 +78,34 @@ struct MainPanelView: View {
 struct WindowButton: View {
     let icon: String
     let action: () -> Void
-    
     @State private var isHovered = false
-    
+    @FocusState private var isFocused: Bool
+
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(NoirColors.paperWhite.opacity(0.6))
-                .frame(width: 24, height: 24)
-                .background(
-                    Circle()
-                        .fill(isHovered ? NoirColors.smokeGray : Color.clear)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(isHovered ? NoirColors.deepTeal : NoirColors.creamWhite)
+                .frame(width: 30, height: 28)
+                .background(isHovered ? NoirColors.creamWhite : NoirColors.midBlue.opacity(0.5))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .pixelBevel(cornerRadius: 6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(NoirColors.goldAccent, lineWidth: 2)
+                        .opacity(isFocused ? 1 : 0)
                 )
         }
         .buttonStyle(.plain)
-        .onHover { hovering in
-            isHovered = hovering
-        }
+        .focused($isFocused)
+        .frame(minWidth: 44, minHeight: 44)
+        .onHover { h in withAnimation(.easeInOut(duration: 0.12)) { isHovered = h } }
     }
 }
 
 #Preview {
     ZStack {
-        LinearGradient(colors: [.blue.opacity(0.2), .purple.opacity(0.2)], startPoint: .top, endPoint: .bottom)
-            .ignoresSafeArea()
-        
+        NoirColors.deepTeal.opacity(0.3).ignoresSafeArea()
         MainPanelView(isVisible: .constant(true))
     }
     .frame(width: 500, height: 600)

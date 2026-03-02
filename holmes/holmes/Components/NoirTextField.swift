@@ -16,20 +16,18 @@ struct NoirTextField: View {
         ZStack {
             if text.isEmpty {
                 Text(placeholder)
-                    .font(.system(size: fontSize, weight: .light))
-                    .foregroundColor(NoirColors.fogGray.opacity(0.5))
+                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                    .foregroundColor(NoirColors.textPlaceholder)
             }
-            
+
             TextField("", text: $text)
-                .font(.system(size: fontSize, weight: .light))
-                .foregroundColor(NoirColors.paperWhite)
+                .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                .foregroundColor(NoirColors.charcoalDark)
                 .textFieldStyle(.plain)
                 .multilineTextAlignment(.center)
                 .focused($isFocused)
         }
-        .onAppear {
-            isFocused = true
-        }
+        .onAppear { isFocused = true }
     }
 }
 
@@ -56,23 +54,15 @@ struct NoirFormField: View {
             }
         }
         .font(NoirFonts.body())
-        .foregroundStyle(NoirColors.paperWhite)
+        .foregroundStyle(NoirColors.charcoalDark)
         .textFieldStyle(.plain)
         .focused($isFocused)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(NoirColors.smokeGray.opacity(isFocused ? 0.5 : 0.3))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(
-                    isFocused ? NoirColors.paperWhite.opacity(0.3) : NoirColors.glassStroke,
-                    lineWidth: 1
-                )
-        )
-        .animation(.easeInOut(duration: 0.15), value: isFocused)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .background(isFocused ? NoirColors.lightBlue.opacity(0.4) : NoirColors.creamWhite)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .pixelBevel(raised: false, cornerRadius: 6)
+        .animation(.easeInOut(duration: 0.12), value: isFocused)
     }
 }
 
@@ -81,38 +71,38 @@ struct NoirSearchField: View {
     let placeholder: String
     
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(NoirColors.fogGray)
-            
+                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .foregroundColor(NoirColors.iconSecondary)
+
             TextField(placeholder, text: $text)
                 .font(NoirFonts.body())
-                .foregroundColor(NoirColors.paperWhite)
+                .foregroundColor(NoirColors.charcoalDark)
                 .textFieldStyle(.plain)
-            
+
             if !text.isEmpty {
                 Button(action: { text = "" }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(NoirColors.fogGray)
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(NoirColors.deepTeal)
                 }
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(NoirColors.smokeGray.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(NoirColors.creamWhite)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .pixelBevel(raised: false, cornerRadius: 6)
     }
 }
 
 #Preview {
     ZStack {
-        NoirColors.charcoalGray.ignoresSafeArea()
-        
+        NoirColors.skyBlue.ignoresSafeArea()
         VStack(spacing: 24) {
-            NoirTextField("Glass", text: .constant(""))
+            NoirTextField("Holmes", text: .constant(""))
             NoirSearchField(text: .constant(""), placeholder: "Search...")
         }
         .padding(40)

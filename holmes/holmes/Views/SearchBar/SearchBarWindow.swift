@@ -1,12 +1,17 @@
 import SwiftUI
 import AppKit
 
+extension Notification.Name {
+    static let searchBarWillHide = Notification.Name("searchBarWillHide")
+}
+
 class SearchBarWindowController: NSObject {
     static let shared = SearchBarWindowController()
     
     private var window: NSWindow?
     private var isVisible = false
     private var isResizing = false
+    private var fixedTopY: CGFloat = 0  // Store the fixed top position
     
     override private init() {
         super.init()
@@ -27,11 +32,11 @@ class SearchBarWindowController: NSObject {
         
         let currentFrame = window.frame
         let newHeight = height
-        let yOffset = currentFrame.height - newHeight
         
+        // Use the stored fixed top position - this ensures NO movement
         let newFrame = NSRect(
             x: currentFrame.origin.x,
-            y: currentFrame.origin.y + yOffset,
+            y: fixedTopY - newHeight,
             width: currentFrame.width,
             height: newHeight
         )
@@ -61,27 +66,32 @@ class SearchBarWindowController: NSObject {
 
         let screenFrame = screen.visibleFrame
         let windowWidth: CGFloat = 900
-        let windowHeight: CGFloat = 140
+        let windowHeight: CGFloat = 130
         let topOffset: CGFloat = 100
 
         let x = screenFrame.origin.x + (screenFrame.width - windowWidth) / 2
-        let y = screenFrame.origin.y + screenFrame.height - windowHeight - topOffset
+        let topY = screenFrame.origin.y + screenFrame.height - topOffset
+        let y = topY - windowHeight
 
-        window.setFrame(NSRect(x: x, y: y, width: windowWidth, height: windowHeight), display: true)
-        
-        // Ensure no shadow is rendered
-        window.hasShadow = false
-        window.invalidateShadow()
+        fixedTopY = topY
 
-        // Start invisible then fade + spring in
+        // Set alpha to 0 and set frame without displaying — content must not be
+        // visible until SwiftUI has had a chance to render at the correct size.
         window.alphaValue = 0
+        window.setFrame(NSRect(x: x, y: y, width: windowWidth, height: windowHeight), display: false)
+        window.hasShadow = false
+
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.28
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            window.animator().alphaValue = 1
+        // Wait one runloop pass so SwiftUI renders at the correct 130px height
+        // before we start the fade-in.
+        DispatchQueue.main.async {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.22
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                window.animator().alphaValue = 1
+            }
         }
 
         isVisible = true
@@ -90,32 +100,33 @@ class SearchBarWindowController: NSObject {
     func hide() {
         guard isVisible, let window else { return }
         isVisible = false
-        
-        // Reset to default size before hiding
-        let currentFrame = window.frame
-        let defaultHeight: CGFloat = 140
-        let yOffset = currentFrame.height - defaultHeight
-        
-        let resetFrame = NSRect(
-            x: currentFrame.origin.x,
-            y: currentFrame.origin.y + yOffset,
-            width: currentFrame.width,
-            height: defaultHeight
-        )
-        
+
+        // Notify the SwiftUI view to reset state before we hide
+        NotificationCenter.default.post(name: .searchBarWillHide, object: nil)
+
+        // Fade out at current size — no resize during hide to prevent clipping
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            window.animator().setFrame(resetFrame, display: true)
             window.animator().alphaValue = 0
-        } completionHandler: {
+        } completionHandler: { [weak self, weak window] in
+            guard let self, let window else { return }
             window.orderOut(nil)
+            // Reset size silently after hidden so next show() starts at input height
+            let currentFrame = window.frame
+            let defaultHeight: CGFloat = 130
+            window.setFrame(
+                NSRect(x: currentFrame.origin.x, y: self.fixedTopY - defaultHeight,
+                       width: currentFrame.width, height: defaultHeight),
+                display: false
+            )
+            self.isResizing = false
         }
     }
     
     private func createWindow() {
         let window = SearchBarPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 140),
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 130),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
