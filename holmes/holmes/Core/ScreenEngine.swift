@@ -94,7 +94,7 @@ final class ScreenEngine {
             guard let display = content.displays.first else { return nil }
             let holmesWindows = content.windows.filter {
                 let bid = $0.owningApplication?.bundleIdentifier ?? ""
-                let name = $0.owningApplication?.applicationName?.lowercased() ?? ""
+                let name = $0.owningApplication?.applicationName.lowercased() ?? ""
                 return bid.contains("holmes") || name.contains("holmes")
             }
             let filter = SCContentFilter(display: display, excludingWindows: holmesWindows)
