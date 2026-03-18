@@ -166,6 +166,10 @@ final class CommandViewModel {
         }
 
         if !LocalModelEngine.shared.isAvailable {
+            // Re-probe in case Ollama was started after Holmes launched
+            await LocalModelEngine.shared.probe()
+        }
+        if !LocalModelEngine.shared.isAvailable {
             appendLog("Ollama not running. Start it with: ollama serve", kind: .error)
             state = .error
             return
