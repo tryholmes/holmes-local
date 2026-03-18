@@ -38,7 +38,7 @@ struct BlinkingCursor: View {
 private enum BarDimensions {
     static let width: CGFloat        = 860
     static let inputHeight: CGFloat  = 120
-    static let outputHeight: CGFloat = 300  // input + output panel
+    static let outputHeight: CGFloat = 460  // input + output panel
 }
 
 // MARK: - SearchBarView (Command Bar)

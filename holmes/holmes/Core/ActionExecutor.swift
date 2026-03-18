@@ -120,30 +120,23 @@ final class ActionExecutor {
     // MARK: - Main entry point
 
     /// Puts text into the frontmost/target app's message field.
-    /// Uses AppleScript for Electron apps (Discord, Slack) — most reliable method.
+    /// For iMessage/Messages: uses AX + CGEvent (no Automation permission required).
+    /// For Electron apps (Discord, Slack): uses AppleScript.
     func sendMessageInApp(_ appName: String, message: String) -> Bool {
-        // Escape double quotes in the message for AppleScript safety
-        let safe = message.replacingOccurrences(of: "\\", with: "\\\\")
-                          .replacingOccurrences(of: "\"", with: "\\\"")
-
         let lower = appName.lowercased()
 
-        // AppleScript approach: set clipboard, activate app, Cmd+V paste
-        let script = """
-set the clipboard to "\(safe)"
-tell application "\(appName)" to activate
-delay 0.4
-tell application "System Events"
-    key code 125 -- arrow down to dismiss any autocomplete
-    key code 36  -- enter to clear selection if needed
-    delay 0.1
-    keystroke "a" using command down
-    delay 0.05
-    keystroke "v" using command down
-end tell
-"""
-        // For Discord/Slack the message box is always focused when the app is active
-        // Just simpler: set clipboard, activate, Cmd+A to clear draft, Cmd+V to paste
+        // iMessage / Messages.app — use AX to find text area, then CGEvent paste
+        // This avoids needing Automation permission which AppleScript requires.
+        if lower.contains("messages") {
+            guard let app = runningApp(named: appName) ?? runningApp(named: "Messages") else {
+                return typeViaKeyboard(text: message)
+            }
+            return pasteIntoMessagesApp(app, message: message)
+        }
+
+        // Electron apps (Discord, Slack, Teams) — clipboard + AppleScript
+        let safe = message.replacingOccurrences(of: "\\", with: "\\\\")
+                          .replacingOccurrences(of: "\"", with: "\\\"")
         let simpleScript = """
 set the clipboard to "\(safe)"
 tell application "\(appName)" to activate
@@ -155,6 +148,49 @@ tell application "System Events"
 end tell
 """
         return runAppleScript(simpleScript)
+    }
+
+    /// AX-based paste for Messages.app — no Automation permission needed.
+    private func pasteIntoMessagesApp(_ app: NSRunningApplication, message: String) -> Bool {
+        // 1. Set clipboard
+        let pasteboard = NSPasteboard.general
+        let prev = pasteboard.string(forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(message, forType: .string)
+
+        // 2. Bring Messages to front
+        app.activate(options: [.activateIgnoringOtherApps])
+        Thread.sleep(forTimeInterval: 0.4)
+
+        // 3. Try to AX-focus the text input area
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        if let textArea = findTextAreaDeep(in: axApp) {
+            AXUIElementSetAttributeValue(textArea, kAXFocusedAttribute as CFString, true as CFTypeRef)
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+
+        // 4. Cmd+A to clear any existing draft, then Cmd+V to paste
+        let src = CGEventSource(stateID: .hidSystemState)
+        func post(_ key: CGKeyCode, flags: CGEventFlags = []) {
+            let d = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: true)
+            let u = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: false)
+            d?.flags = flags; u?.flags = flags
+            d?.post(tap: .cghidEventTap)
+            Thread.sleep(forTimeInterval: 0.04)
+            u?.post(tap: .cghidEventTap)
+            Thread.sleep(forTimeInterval: 0.04)
+        }
+        post(0x00, flags: .maskCommand)  // Cmd+A (select all in input)
+        post(0x09, flags: .maskCommand)  // Cmd+V (paste)
+
+        // 5. Restore clipboard after a delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            if let prev {
+                pasteboard.clearContents()
+                pasteboard.setString(prev, forType: .string)
+            }
+        }
+        return true
     }
 
     private func runAppleScript(_ source: String) -> Bool {

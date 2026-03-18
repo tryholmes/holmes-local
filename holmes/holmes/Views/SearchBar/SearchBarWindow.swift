@@ -55,6 +55,9 @@ class SearchBarWindowController: NSObject {
     func show() {
         guard !isVisible else { return }
 
+        // Capture screen state NOW before Holmes becomes frontmost app
+        Task { @MainActor in ScreenEngine.shared.captureNow() }
+
         if window == nil {
             createWindow()
         }

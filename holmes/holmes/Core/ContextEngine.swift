@@ -309,10 +309,15 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
         let noise = ["today", "yesterday", "now", "delivered", "read", "send", "imessage",
                      "message", "new message", "sms", "mms", "facetime", "audio", "video",
                      "details", "cancel", "edit", "back", "search", "reactions",
-                     // Holmes UI noise
+                     // Holmes UI noise — status labels, button text, log headers
                      "holmes", "debug", "ocr", "context", "detected", "suggested",
                      "approve", "customize", "upcoming", "heuristics", "actions",
-                     "run", "ask", "plan", "watch", "done", "error", "via", "chars"]
+                     "run", "ask", "plan", "watch", "done", "error", "via", "chars",
+                     "complete", "new", "failed", "running", "sending", "drafting",
+                     "preview", "dismiss", "join", "skip", "typing", "idle", "ready",
+                     "analyzing", "starting", "success", "activity", "recent",
+                     "meeting", "executing", "output", "wanted", "act", "send it",
+                     "join now", "approve all", "suggested actions", "wants to act"]
         for line in lines.prefix(10) {
             let l = line.lowercased()
             if noise.contains(where: { l == $0 || l.hasPrefix($0 + " ") }) { continue }

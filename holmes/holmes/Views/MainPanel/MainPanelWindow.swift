@@ -21,11 +21,14 @@ class MainPanelWindowController: NSObject, ObservableObject {
     
     func show() {
         guard !isVisible else { return }
-        
+
+        // Capture screen state NOW before Holmes becomes frontmost app
+        Task { @MainActor in ScreenEngine.shared.captureNow() }
+
         if window == nil {
             createWindow()
         }
-        
+
         positionWindow()
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

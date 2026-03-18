@@ -17,7 +17,7 @@ final class ScreenEngine {
     private var lastKnownWindowTitle: String = ""
 
     private var timer: Timer?
-    private let interval: TimeInterval = 10
+    private let interval: TimeInterval = 3
     private var cachedFilter: SCContentFilter?
     private var cachedConfig: SCStreamConfiguration?
 
