@@ -12,6 +12,10 @@ final class ScreenEngine {
     private(set) var latestActiveWindowTitle: String = ""
     private(set) var latestOCROverride: String? = nil
 
+    // Last non-Holmes app — persists even when Holmes panel is frontmost
+    private var lastKnownApp: String = ""
+    private var lastKnownWindowTitle: String = ""
+
     private var timer: Timer?
     private let interval: TimeInterval = 10
     private var cachedFilter: SCContentFilter?
@@ -140,27 +144,48 @@ final class ScreenEngine {
     // MARK: - Active app detection
 
     private func updateActiveApp() {
-        let front = NSWorkspace.shared.runningApplications
-            .filter { $0.isActive }
-            .first { !($0.bundleIdentifier?.contains("holmes") == true || $0.localizedName?.lowercased() == "holmes") }
-            ?? NSWorkspace.shared.frontmostApplication
-
-        if let app = front, let name = app.localizedName, name.lowercased() != "holmes" {
-            latestActiveApp = name
+        // Find the frontmost non-Holmes app
+        let allApps = NSWorkspace.shared.runningApplications
+        let nonHolmes = allApps.filter { app in
+            guard let name = app.localizedName else { return false }
+            let n = name.lowercased()
+            let bid = app.bundleIdentifier ?? ""
+            return !n.contains("holmes") && !bid.contains("holmes")
         }
 
-        // Window title via AX
-        if let app = NSWorkspace.shared.frontmostApplication {
+        // Primary: the currently active non-Holmes app
+        if let active = nonHolmes.first(where: { $0.isActive }),
+           let name = active.localizedName, !name.isEmpty {
+            latestActiveApp = name
+            lastKnownApp = name
+        } else if !lastKnownApp.isEmpty {
+            // Holmes panel is frontmost — use the last known real app
+            latestActiveApp = lastKnownApp
+        }
+
+        // Window title: prefer the focused window of the last known real app
+        let targetApp: NSRunningApplication?
+        if let active = nonHolmes.first(where: { $0.isActive }) {
+            targetApp = active
+        } else {
+            // Fall back to finding the last known app by name
+            targetApp = nonHolmes.first { $0.localizedName == lastKnownApp }
+        }
+
+        if let app = targetApp {
             let axApp = AXUIElementCreateApplication(app.processIdentifier)
             var winRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
                let win = winRef {
                 var titleRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(win as! AXUIElement, kAXTitleAttribute as CFString, &titleRef) == .success,
-                   let title = titleRef as? String {
+                   let title = titleRef as? String, !title.isEmpty {
                     latestActiveWindowTitle = title
+                    lastKnownWindowTitle = title
                 }
             }
+        } else if !lastKnownWindowTitle.isEmpty {
+            latestActiveWindowTitle = lastKnownWindowTitle
         }
     }
 }

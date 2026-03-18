@@ -128,6 +128,7 @@ struct SideCharacterView: View {
     let onTap: () -> Void
 
     @State private var bobOffset: CGFloat = 0
+    @State private var agent = HolmesAgent.shared
 
     var body: some View {
         Button(action: {
@@ -136,15 +137,27 @@ struct SideCharacterView: View {
             }
             onTap()
         }) {
-            Image("NoirCharacter")
-                .resizable()
-                .interpolation(.high)
-                .scaledToFit()
-                .frame(width: 130, height: 130)
-                // -90° (counter-clockwise) — head points toward screen center
-                .rotationEffect(.degrees(-90))
-                .offset(y: bobOffset)
-                .shadow(color: NoirColors.charcoalDark.opacity(0.28), radius: 8, x: -4, y: 0)
+            ZStack(alignment: .topLeading) {
+                Image("NoirCharacter")
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 130, height: 130)
+                    .rotationEffect(.degrees(-90))
+                    .offset(y: bobOffset)
+                    .shadow(color: NoirColors.charcoalDark.opacity(0.28), radius: 8, x: -4, y: 0)
+
+                // Badge dot — shows when actionable context is detected
+                if agent.hasNewContext {
+                    Circle()
+                        .fill(Color(hex: "E05252"))
+                        .frame(width: 10, height: 10)
+                        .overlay(Circle().stroke(Color(hex: "0A0F14"), lineWidth: 2))
+                        .offset(x: 6, y: 6)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .animation(.spring(response: 0.3), value: agent.hasNewContext)
         }
         .buttonStyle(.plain)
         .onAppear {

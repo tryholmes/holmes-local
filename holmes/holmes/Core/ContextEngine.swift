@@ -1,5 +1,13 @@
 import Foundation
 import AppKit
+import EventKit
+
+// MARK: - Character emoji helper
+private extension Character {
+    var isEmoji: Bool {
+        unicodeScalars.first.map { $0.properties.isEmoji && $0.value > 0x238C } ?? false
+    }
+}
 
 // MARK: - ContextEngine
 // Takes OCR text + active app/window and produces a structured DetectedContext.
@@ -26,22 +34,24 @@ final class ContextEngine {
 
     // MARK: - Build context from snapshot + OCR
 
-    func buildContext(from snapshot: ContextSnapshot) -> DetectedContext {
+    func buildContext(from snapshot: ContextSnapshot, meetings: [UpcomingMeeting] = []) -> DetectedContext {
         let app = snapshot.appName
         let title = snapshot.windowTitle
         let text = snapshot.ocrText
 
-        // OCR-first: detect what's actually on screen regardless of app name
-        let description = inferDescription(app: app, title: title, text: text)
+        let description = inferDescription(app: app, title: title, text: text, meetings: meetings)
         let icon = iconForScreen(app: app, text: text)
 
         return DetectedContext(icon: icon, description: description, appName: app)
     }
 
-    // MARK: - Build prompt for LLM
+    // MARK: - Build prompt for LLM (calendar-aware)
+    // Callers on @MainActor pass CalendarEngine.shared.upcomingMeetings directly
+    // so ContextEngine never touches @MainActor state itself.
 
-    func buildLLMPrompt(from snapshot: ContextSnapshot) -> String {
+    func buildLLMPrompt(from snapshot: ContextSnapshot, meetings: [UpcomingMeeting] = []) -> String {
         let truncated = String(snapshot.ocrText.prefix(1500))
+        let calendarContext = buildCalendarContext(meetings: meetings)
         return """
 You are Holmes, an AI assistant on macOS. Read this screen content and respond with ONLY a JSON object.
 
@@ -49,19 +59,39 @@ App: \(snapshot.appName)
 Window: \(snapshot.windowTitle)
 Screen text (OCR):
 \(truncated)
-
+\(calendarContext)
 Output ONLY this JSON (no markdown, no explanation):
 {"summary":"<what user is doing, specific, under 15 words>","actions":["<action1>","<action2>","<action3>"]}
 
 Rules for actions — be SPECIFIC to what's on screen:
 - If composing email: suggest filling To/Subject/body, drafting reply
 - If reading email: suggest replying, summarizing, archiving
-- If on Discord/Slack: suggest drafting reply to the specific person visible
+- If on iMessage/Discord/Slack: suggest drafting reply to the specific person visible
+- If someone asked about availability: check the calendar context above and suggest a reply
 - If coding: suggest explaining, fixing, or improving the visible code
 - If browsing: suggest summarizing, saving, or acting on the visible content
 Each action must start with /ask, /run, or /plan and be under 8 words.
 """
     }
+
+    /// Builds a calendar status string to inject into LLM prompts.
+    /// Takes meetings as a value so this can be called from any actor context.
+    func buildCalendarContext(meetings: [UpcomingMeeting]) -> String {
+        guard !meetings.isEmpty else {
+            return "\nCalendar: Free — no meetings in the next 30 minutes.\n"
+        }
+        let lines = meetings.prefix(3).map { m -> String in
+            let time = Self.timeFormatter.string(from: m.startDate)
+            return "  · \(m.title) at \(time) (\(m.timeLabel))"
+        }.joined(separator: "\n")
+        return "\nCalendar (upcoming meetings):\n\(lines)\n"
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "h:mm a"
+        return f
+    }()
 
     // MARK: - Parse LLM response
 
@@ -88,7 +118,7 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
 
     // MARK: - OCR-first heuristics
 
-    private func inferDescription(app: String, title: String, text: String) -> String {
+    private func inferDescription(app: String, title: String, text: String, meetings: [UpcomingMeeting] = []) -> String {
         let t = text.lowercased()
         let appL = app.lowercased()
         print("[Context] app='\(app)' title='\(title)' emailCompose=\(isEmailCompose(text: t)) emailInbox=\(isEmailInbox(text: t))")
@@ -112,6 +142,27 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
                 return "Reading email from \(sender) in \(webServiceName(t) ?? app)"
             }
             return "Reading emails in \(webServiceName(t) ?? app)"
+        }
+
+        // ── iMessage ─────────────────────────────────────────────────────────
+        if isIMessage(app: app) {
+            // Window title for Messages IS the contact name (e.g. "nandan.pericherla@gm...")
+            let sender = extractIMessageSender(from: text)
+                ?? (title.isEmpty || title.lowercased() == "messages" ? nil : title)
+            let lastMsg = extractLastMessage(from: text)
+            let availability = lastMsg.map { isAvailabilityQuestion(text: $0) } ?? isAvailabilityQuestion(text: t)
+            if let sender {
+                if availability {
+                    let calCtx = meetings.isEmpty ? "— you're free" : "— you have a meeting soon"
+                    return "iMessage with \(sender) — asking about availability \(calCtx)"
+                }
+                return "iMessage with \(sender)"
+            }
+            if availability {
+                let calCtx = meetings.isEmpty ? "you're free" : "you have a meeting soon"
+                return "iMessage — availability question (\(calCtx))"
+            }
+            return "iMessage conversation"
         }
 
         // ── Messaging (Discord, Slack, iMessage in browser or app) ──────────
@@ -197,6 +248,10 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
 
     func isEmailComposePublic(text: String) -> Bool { isEmailCompose(text: text) }
     func isEmailInboxPublic(text: String) -> Bool { isEmailInbox(text: text) }
+    func isIMessagePublic(app: String) -> Bool { isIMessage(app: app) }
+    func isAvailabilityQuestionPublic(text: String) -> Bool { isAvailabilityQuestion(text: text) }
+    func extractIMessageSenderPublic(from text: String) -> String? { extractIMessageSender(from: text) }
+    func extractLastMessagePublic(from text: String) -> String? { extractLastMessage(from: text) }
 
     // MARK: - OCR signal detectors
 
@@ -218,6 +273,79 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
         return app.contains("discord") || app.contains("slack") ||
                text.contains("discord") || text.contains("slack") ||
                text.contains("direct message") || text.contains("# general")
+    }
+
+    func isIMessage(app: String) -> Bool {
+        let a = app.lowercased()
+        return a == "messages" || a.contains("messages")
+    }
+
+    /// Detects questions about availability / scheduling in any messaging app.
+    func isAvailabilityQuestion(text: String) -> Bool {
+        let t = text.lowercased()
+        let patterns = [
+            "are you free", "you free", "are you busy", "you busy",
+            "available", "free tonight", "free tomorrow", "free today",
+            "free this week", "free later", "free now",
+            "wanna hang", "want to hang", "wanna meet", "want to meet",
+            "can we meet", "can you meet", "let's meet", "lets meet",
+            "can you talk", "wanna talk", "wanna call", "wanna jump on",
+            "you around", "you there", "hop on a call", "jump on a call",
+            "do you have time", "have time", "got time", "any time",
+            "free for a call", "free to chat", "quick call", "quick chat",
+            "catch up", "sync up", "grab coffee", "get lunch", "get dinner"
+        ]
+        return patterns.contains { t.contains($0) }
+    }
+
+    /// Extracts the conversation partner's name from iMessage OCR.
+    func extractIMessageSender(from text: String) -> String? {
+        let lines = text.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        // iMessage layout: conversation name appears near the top, before messages.
+        // Also filter out Holmes UI words that leak into OCR when the panel is visible.
+        let noise = ["today", "yesterday", "now", "delivered", "read", "send", "imessage",
+                     "message", "new message", "sms", "mms", "facetime", "audio", "video",
+                     "details", "cancel", "edit", "back", "search", "reactions",
+                     // Holmes UI noise
+                     "holmes", "debug", "ocr", "context", "detected", "suggested",
+                     "approve", "customize", "upcoming", "heuristics", "actions",
+                     "run", "ask", "plan", "watch", "done", "error", "via", "chars"]
+        for line in lines.prefix(10) {
+            let l = line.lowercased()
+            if noise.contains(where: { l == $0 || l.hasPrefix($0 + " ") }) { continue }
+            // Skip phone numbers
+            if line.contains("+") && line.filter({ $0.isNumber }).count > 7 { continue }
+            // Skip email addresses
+            if line.contains("@") { continue }
+            // Skip lines with "/" (command syntax)
+            if line.contains("/") { continue }
+            // Must look like a name: 2–40 chars, starts with capital or emoji
+            if line.count >= 2 && line.count <= 40 {
+                if line.first?.isUppercase == true || line.first?.isEmoji == true {
+                    return line
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Extracts the most recent received message text from the OCR blob.
+    func extractLastMessage(from text: String) -> String? {
+        let lines = text.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.count > 3 }
+        let noise = ["delivered", "read", "today", "yesterday", "imessage", "send", "reactions",
+                     "tapback", "details", "edit", "cancel", "back", "search", "new message"]
+        // Return the last substantive line that isn't a UI element
+        for line in lines.reversed() {
+            let l = line.lowercased()
+            if noise.contains(where: { l.contains($0) }) { continue }
+            if line.count > 6 && line.count < 300 { return line }
+        }
+        return nil
     }
 
     // MARK: - Field extractors
@@ -338,6 +466,7 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
         let t = text.lowercased()
         let a = app.lowercased()
         if isEmailCompose(text: t) || isEmailInbox(text: t) { return "envelope" }
+        if isIMessage(app: app) { return "message.fill" }
         if isDiscordOrSlack(text: t, app: a) { return "bubble.left.and.bubble.right" }
         if t.contains("youtube") { return "play.rectangle" }
         if t.contains("github") { return "chevron.left.forwardslash.chevron.right" }

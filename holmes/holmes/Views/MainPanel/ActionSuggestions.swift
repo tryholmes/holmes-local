@@ -68,7 +68,11 @@ struct ActionRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: onTap) {
+        Button(action: {
+            onTap()
+            // Dispatch to command bar with the full action string
+            CommandBus.shared.dispatch(suggestion.action)
+        }) {
             HStack(spacing: 10) {
                 // Checkbox
                 RoundedRectangle(cornerRadius: 3)

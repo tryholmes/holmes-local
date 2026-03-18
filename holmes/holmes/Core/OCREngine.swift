@@ -1,5 +1,5 @@
 import Foundation
-import Vision
+@preconcurrency import Vision
 import CoreGraphics
 
 // MARK: - OCREngine

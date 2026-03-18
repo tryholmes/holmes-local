@@ -79,6 +79,12 @@ struct SearchBarView: View {
             }
         }
         .onExitCommand { dismiss() }
+        .onAppear {
+            // Small delay so the window is fully visible before auto-executing
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                vm.checkPendingCommand()
+            }
+        }
     }
 
     // MARK: Input panel

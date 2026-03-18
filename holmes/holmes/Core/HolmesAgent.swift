@@ -157,15 +157,16 @@ final class HolmesAgent {
         lastOCRText = rawText
         lastSnapshot = snapshot
 
-        // 2. Immediate heuristic context
-        let heuristicContext = ContextEngine.shared.buildContext(from: snapshot)
+        // 2. Immediate heuristic context (pass meetings so ContextEngine stays actor-free)
+        let meetings = CalendarEngine.shared.upcomingMeetings
+        let heuristicContext = ContextEngine.shared.buildContext(from: snapshot, meetings: meetings)
         currentContext = heuristicContext
         lastUpdated = Date()
         isAnalyzing = false
 
         // 3. LLM enrichment for context + suggestions (non-blocking for proposals)
         if LocalModelEngine.shared.isAvailable {
-            let prompt = ContextEngine.shared.buildLLMPrompt(from: snapshot)
+            let prompt = ContextEngine.shared.buildLLMPrompt(from: snapshot, meetings: CalendarEngine.shared.upcomingMeetings)
             let raw = await LocalModelEngine.shared.generate(prompt: prompt)
             if let parsed = ContextEngine.shared.parseLLMResponse(raw), !parsed.summary.isEmpty {
                 currentContext = DetectedContext(
@@ -204,7 +205,10 @@ final class HolmesAgent {
     private var lastProposedTime: Date = .distantPast
 
     private func proposeAutomaticAction(snapshot: ContextSnapshot, context: DetectedContext) async {
-        guard LocalModelEngine.shared.isAvailable else { return }
+        // iMessage availability checks run even without Ollama
+        let isIMsg = ContextEngine.shared.isIMessagePublic(app: snapshot.appName)
+        let hasAvailQ = isIMsg && ContextEngine.shared.isAvailabilityQuestionPublic(text: snapshot.ocrText)
+        guard LocalModelEngine.shared.isAvailable || hasAvailQ else { return }
         guard !isRunningProposal else { return }
 
         let app = snapshot.appName.lowercased()
@@ -213,7 +217,8 @@ final class HolmesAgent {
                           app.contains("messages") || app.contains("mail") || app.contains("outlook")
         let isEmailCompose = ContextEngine.shared.isEmailComposePublic(text: ocr)
         let isEmailInbox = ContextEngine.shared.isEmailInboxPublic(text: ocr)
-        guard isMessaging || isEmailCompose || isEmailInbox else { return }
+        let isIMessage = ContextEngine.shared.isIMessagePublic(app: snapshot.appName)
+        guard isMessaging || isEmailCompose || isEmailInbox || isIMessage else { return }
         guard !snapshot.ocrText.isEmpty else { return }
 
         // Throttle — only re-run if we haven't proposed for this app in the last 60s
@@ -224,7 +229,6 @@ final class HolmesAgent {
         isRunningProposal = true
         defer { isRunningProposal = false }
 
-        // Route to the right detector
         let ocrLower = snapshot.ocrText.lowercased()
         let emailCompose = ContextEngine.shared.isEmailComposePublic(text: ocrLower)
         let emailInbox   = ContextEngine.shared.isEmailInboxPublic(text: ocrLower)
@@ -241,8 +245,20 @@ final class HolmesAgent {
                 lastProposedTime = Date()
                 ConfirmationBus.shared.propose(proposal)
             }
+        } else if isIMessage {
+            // Fast path: heuristic availability reply (no LLM needed)
+            if ContextEngine.shared.isAvailabilityQuestionPublic(text: snapshot.ocrText),
+               let proposal = heuristicAvailabilityReply(snapshot: snapshot) {
+                lastProposedFingerprint = fingerprint
+                lastProposedTime = Date()
+                ConfirmationBus.shared.propose(proposal)
+            } else if let proposal = await detectIMessageReply(snapshot: snapshot) {
+                lastProposedFingerprint = fingerprint
+                lastProposedTime = Date()
+                ConfirmationBus.shared.propose(proposal)
+            }
         } else {
-            // Discord/Slack/Messages
+            // Discord/Slack
             if let proposal = await detectUnreadMessage(snapshot: snapshot) {
                 lastProposedFingerprint = fingerprint
                 lastProposedTime = Date()
@@ -327,6 +343,93 @@ If no reply needed: NONE
         return PendingAction(title: "Reply to \(sender)", preview: reply, appName: snapshot.appName, actionType: .typeMessage)
     }
 
+    // MARK: - Heuristic availability reply (instant, no LLM needed)
+
+    private func heuristicAvailabilityReply(snapshot: ContextSnapshot) -> PendingAction? {
+        let windowSender = snapshot.windowTitle.isEmpty ? "them" : snapshot.windowTitle
+        let sender = ContextEngine.shared.extractIMessageSenderPublic(from: snapshot.ocrText) ?? windowSender
+        let meetings = CalendarEngine.shared.upcomingMeetings
+        let f = DateFormatter(); f.dateFormat = "h:mm a"
+
+        let reply: String
+        if let next = meetings.first {
+            let time = f.string(from: next.startDate)
+            reply = "No sorry, I have \(next.title) at \(time)"
+        } else {
+            reply = "Yeah I'm free! What's up?"
+        }
+
+        let title = "Reply to \(sender) about availability"
+        return PendingAction(title: title, preview: reply, appName: "Messages", actionType: .typeMessage)
+    }
+
+    // MARK: - iMessage reply (calendar-aware availability detection)
+
+    private func detectIMessageReply(snapshot: ContextSnapshot) async -> PendingAction? {
+        let ocr = snapshot.ocrText
+        guard !ocr.isEmpty else { return nil }
+
+        let sender = ContextEngine.shared.extractIMessageSenderPublic(from: ocr) ?? "your contact"
+        let lastMessage = ContextEngine.shared.extractLastMessagePublic(from: ocr) ?? ""
+        let isAvailabilityQ = ContextEngine.shared.isAvailabilityQuestionPublic(text: lastMessage)
+            || ContextEngine.shared.isAvailabilityQuestionPublic(text: ocr)
+
+        // Build calendar status for the prompt
+        let calendarStatus: String
+        let meetings = CalendarEngine.shared.upcomingMeetings
+        if meetings.isEmpty {
+            calendarStatus = "Your calendar is clear for the next 30 minutes. You are free."
+        } else {
+            let items = meetings.prefix(2).map { m -> String in
+                let f = DateFormatter()
+                f.dateFormat = "h:mm a"
+                return "\(m.title) at \(f.string(from: m.startDate)) (\(m.timeLabel))"
+            }.joined(separator: ", ")
+            calendarStatus = "You have upcoming meetings: \(items). You are NOT free right now."
+        }
+
+        let prompt: String
+        if isAvailabilityQ {
+            prompt = """
+You are Holmes. \(sender) just sent a message asking about your availability.
+
+Their message: "\(String(lastMessage.prefix(200)))"
+
+\(calendarStatus)
+
+Write a natural, casual reply (under 20 words) that answers whether you're free or busy.
+If busy, mention the meeting name and time.
+If free, say yes and invite them to continue.
+
+Output ONLY the reply text. No quotes, no labels.
+"""
+        } else {
+            prompt = """
+You are Holmes. You have iMessage open with \(sender).
+
+Screen text:
+\(String(ocr.prefix(1000)))
+
+\(calendarStatus)
+
+Is there an unanswered message from \(sender) that needs a reply?
+If yes, write a casual reply under 20 words.
+If no reply is needed, output: NONE
+
+Output ONLY the reply or NONE.
+"""
+        }
+
+        let raw = await LocalModelEngine.shared.generate(prompt: prompt)
+        let reply = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !reply.uppercased().hasPrefix("NONE"), !reply.isEmpty else { return nil }
+
+        let title = isAvailabilityQ
+            ? "Reply to \(sender) about availability"
+            : "Reply to \(sender) on iMessage"
+        return PendingAction(title: title, preview: reply, appName: "Messages", actionType: .typeMessage)
+    }
+
     // MARK: - Message reply (Discord/Slack)
 
     private func detectUnreadMessage(snapshot: ContextSnapshot) async -> PendingAction? {
@@ -364,7 +467,6 @@ Or: NONE
 
     private func heuristicSuggestions(for snapshot: ContextSnapshot) -> [ActionSuggestion] {
         let app = snapshot.appName.lowercased()
-        let text = snapshot.ocrText.lowercased()
 
         var actions: [ActionSuggestion] = []
 
@@ -392,6 +494,21 @@ Or: NONE
                 ActionSuggestion(title: "/run  Rename files with date", action: "/run rename files"),
                 ActionSuggestion(title: "/watch  Watch for new files", action: "/watch folder"),
             ]
+        } else if app == "messages" || app.contains("messages") {
+            let hasMeeting = !CalendarEngine.shared.upcomingMeetings.isEmpty
+            if hasMeeting {
+                actions = [
+                    ActionSuggestion(title: "/run  Say I'm busy (meeting soon)", action: "/run reply busy"),
+                    ActionSuggestion(title: "/run  Reply to this message", action: "/run reply imessage"),
+                    ActionSuggestion(title: "/ask  What should I reply?", action: "/ask suggest imessage reply"),
+                ]
+            } else {
+                actions = [
+                    ActionSuggestion(title: "/run  Say I'm free", action: "/run reply free"),
+                    ActionSuggestion(title: "/run  Reply to this message", action: "/run reply imessage"),
+                    ActionSuggestion(title: "/ask  What should I reply?", action: "/ask suggest imessage reply"),
+                ]
+            }
         } else if app.contains("mail") || app.contains("outlook") {
             actions = [
                 ActionSuggestion(title: "/ask  Summarize this email", action: "/ask summarize email"),

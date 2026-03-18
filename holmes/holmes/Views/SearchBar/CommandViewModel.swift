@@ -69,6 +69,14 @@ final class CommandViewModel {
     var matchedCommand: HolmesCommand? = nil
     var suggestions: [HolmesCommand] = []
 
+    // Called by SearchBarView on appear — picks up any pending suggestion tap
+    func checkPendingCommand() {
+        if let cmd = CommandBus.shared.consume(), !cmd.isEmpty {
+            onInputChange(cmd)
+            submit()
+        }
+    }
+
     func onInputChange(_ text: String) {
         inputText = text
         state = text.isEmpty ? .idle : .typing
@@ -118,70 +126,220 @@ final class CommandViewModel {
         let cmd = matchedCommand
         let arg = text.drop(while: { !$0.isWhitespace }).trimmingCharacters(in: .whitespaces)
 
-        simulateExecution(command: cmd, argument: arg)
+        Task {
+            await executeWithLLM(command: cmd, argument: arg)
+        }
     }
 
-    // Simulated streaming execution — replace with real API calls
-    private func simulateExecution(command: HolmesCommand?, argument: String) {
-        let lines: [LogLine]
+    // MARK: - Real LLM execution
 
-        switch command?.trigger {
-        case "/run":
-            let task = argument.isEmpty ? "task" : argument
-            lines = [
-                LogLine(text: "Preparing to run: \(task)", kind: .info),
-                LogLine(text: "Analyzing current context...", kind: .step),
-                LogLine(text: "Detecting active app and screen state", kind: .step),
-                LogLine(text: "Building execution plan", kind: .step),
-                LogLine(text: "Executing \(task)", kind: .info),
-                LogLine(text: "Done", kind: .success),
-            ]
-        case "/watch":
-            lines = [
-                LogLine(text: "Starting screen monitor", kind: .info),
-                LogLine(text: "Capturing screen state every 3s", kind: .step),
-                LogLine(text: "Watching for changes...", kind: .info),
-            ]
-        case "/ask":
-            let q = argument.isEmpty ? "your question" : argument
-            lines = [
-                LogLine(text: "Processing: \(q)", kind: .info),
-                LogLine(text: "Searching knowledge base", kind: .step),
-                LogLine(text: "Generating answer", kind: .step),
-                LogLine(text: "Ready", kind: .success),
-            ]
-        case "/plan":
-            let goal = argument.isEmpty ? "goal" : argument
-            lines = [
-                LogLine(text: "Planning: \(goal)", kind: .info),
-                LogLine(text: "Step 1 — Identify requirements", kind: .step),
-                LogLine(text: "Step 2 — Break into sub-tasks", kind: .step),
-                LogLine(text: "Step 3 — Estimate effort", kind: .step),
-                LogLine(text: "Plan ready", kind: .success),
-            ]
-        case "/done":
-            lines = [
-                LogLine(text: "Marking task complete", kind: .info),
-                LogLine(text: "Logging to activity history", kind: .step),
-                LogLine(text: "Task closed", kind: .success),
-            ]
-        default:
-            lines = [
-                LogLine(text: "Running: \(argument)", kind: .info),
-                LogLine(text: "Processing...", kind: .step),
-                LogLine(text: "Done", kind: .success),
-            ]
+    private func executeWithLLM(command: HolmesCommand?, argument: String) async {
+        let agent = HolmesAgent.shared
+        let appName = agent.currentContext.appName.isEmpty
+            ? ScreenEngine.shared.latestActiveApp
+            : agent.currentContext.appName
+        let contextSummary = agent.currentContext.description
+        let ocrText = agent.lastOCRText
+        let trigger = command?.trigger ?? "/ask"
+
+        // ── Instant commands: bypass Ollama entirely ──────────────────────────
+        // These work even when Ollama is offline.
+        let argL = argument.lowercased()
+        if trigger == "/run" {
+            // "reply busy meeting …" or "reply imessage" or "reply free"
+            if argL.hasPrefix("reply busy") || argL.hasPrefix("reply imessage") || argL.hasPrefix("reply free") {
+                handleDirectAvailabilityReply(isBusy: argL.hasPrefix("reply busy") || argL.hasPrefix("reply imessage"))
+                return
+            }
+            // "join meeting"
+            if argL.hasPrefix("join meeting") {
+                if let meeting = CalendarEngine.shared.upcomingMeetings.first {
+                    MeetingJoinEngine.shared.joinMeeting(meeting)
+                    appendLog("Joining \(meeting.title)…", kind: .success)
+                    state = .done
+                } else {
+                    appendLog("No upcoming meetings found.", kind: .error)
+                    state = .error
+                }
+                return
+            }
         }
 
-        // Stream lines in with delays
-        for (i, line) in lines.enumerated() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.18) { [weak self] in
-                guard let self else { return }
-                self.log.append(line)
-                if i == lines.count - 1 {
-                    self.state = line.kind == .error ? .error : .done
-                }
+        if !LocalModelEngine.shared.isAvailable {
+            appendLog("Ollama not running. Start it with: ollama serve", kind: .error)
+            state = .error
+            return
+        }
+
+        let prompt = buildActionPrompt(
+            trigger: trigger,
+            argument: argument,
+            appName: appName,
+            contextSummary: contextSummary,
+            ocrText: ocrText
+        )
+
+        // Stream tokens directly into one growing text block — no thinking noise
+        var fullResponse = ""
+        var displayedLines: Set<String> = []
+
+        _ = await LocalModelEngine.shared.generate(prompt: prompt) { [weak self] token in
+            guard let self else { return }
+            fullResponse += token
+
+            // Update the last log line live (streaming feel)
+            let clean = fullResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+            if self.log.isEmpty {
+                self.log.append(LogLine(text: clean, kind: .info))
+            } else {
+                self.log[self.log.count - 1] = LogLine(text: clean, kind: .info)
             }
+        }
+
+        // Final: split into lines for readability
+        log = []
+        let lines = fullResponse
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        for line in lines {
+            appendLog(line, kind: .info)
+        }
+
+        state = .done
+
+        // If we're in a messaging app and answered /ask, offer to send the reply
+        let isMessaging = ["discord","slack","messages","mail","outlook","teams"]
+            .contains(where: { appName.lowercased().contains($0) })
+        let isAsk = trigger == "/ask"
+
+        if isMessaging && isAsk && !fullResponse.isEmpty {
+            let clean = fullResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                let action = PendingAction(
+                    title: "Send this reply on \(appName)",
+                    preview: clean,
+                    appName: appName,
+                    actionType: .typeMessage
+                )
+                ConfirmationBus.shared.propose(action)
+            }
+        }
+    }
+
+    private func appendLog(_ text: String, kind: LogLine.Kind) {
+        log.append(LogLine(text: text, kind: kind))
+    }
+
+    // MARK: - Direct availability reply (no Ollama needed)
+
+    private func handleDirectAvailabilityReply(isBusy: Bool) {
+        let meetings = CalendarEngine.shared.upcomingMeetings
+        let f = DateFormatter(); f.dateFormat = "h:mm a"
+        let appName = ScreenEngine.shared.latestActiveApp.isEmpty ? "Messages" : ScreenEngine.shared.latestActiveApp
+        let ocrText = HolmesAgent.shared.lastOCRText
+        let sender = ContextEngine.shared.extractIMessageSenderPublic(from: ocrText)
+            ?? ScreenEngine.shared.latestActiveWindowTitle
+
+        let reply: String
+        if let next = meetings.first {
+            let time = f.string(from: next.startDate)
+            reply = "No sorry, I have \(next.title) at \(time)"
+        } else if isBusy {
+            reply = "Busy right now, can we do later?"
+        } else {
+            reply = "Yeah I'm free! What's up?"
+        }
+
+        let title = sender.isEmpty ? "Reply on \(appName)" : "Reply to \(sender)"
+        appendLog("Drafting: \"\(reply)\"", kind: .success)
+        state = .done
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            let action = PendingAction(
+                title: title,
+                preview: reply,
+                appName: appName,
+                actionType: .typeMessage
+            )
+            ConfirmationBus.shared.propose(action)
+        }
+    }
+
+    // MARK: - Action prompt builder
+
+    private func buildActionPrompt(trigger: String, argument: String, appName: String, contextSummary: String, ocrText: String) -> String {
+        // Strip the command trigger from the argument if present
+        var userArg = argument
+        for cmd in HolmesCommand.all {
+            if userArg.lowercased().hasPrefix(cmd.trigger) {
+                userArg = String(userArg.dropFirst(cmd.trigger.count)).trimmingCharacters(in: .whitespaces)
+                break
+            }
+        }
+
+        let screenContext = ocrText.isEmpty ? contextSummary : String(ocrText.prefix(1200))
+        let taskDesc = userArg.isEmpty ? contextSummary : userArg
+
+        switch trigger {
+        case "/ask":
+            let question = userArg.isEmpty ? "What should I do next based on what's on my screen?" : userArg
+            return """
+You are Holmes, a direct AI assistant on macOS. The user is on \(appName).
+
+Screen content:
+\(screenContext)
+
+Question: \(question)
+
+Answer directly and concisely. No intro, no "I see that...", just the answer. Max 80 words.
+"""
+
+        case "/run":
+            return """
+You are Holmes, an AI assistant on macOS. The user is on \(appName).
+
+Screen content:
+\(screenContext)
+
+Task to run: \(taskDesc)
+
+Give a direct, numbered action plan. No intro. Max 5 steps, each under 12 words.
+"""
+
+        case "/plan":
+            return """
+You are Holmes on macOS. User is on \(appName).
+
+Screen content:
+\(screenContext)
+
+Goal: \(taskDesc)
+
+Output a numbered plan, max 6 steps. No intro. Each step under 10 words.
+"""
+
+        case "/watch":
+            return """
+You are Holmes on macOS. User is on \(appName).
+Screen: \(contextSummary)
+Task: Monitor \(taskDesc)
+
+In 2-3 sentences: what to watch for and when to alert the user.
+"""
+
+        default:
+            return """
+You are Holmes on macOS. User is on \(appName).
+
+Screen content:
+\(screenContext)
+
+Request: \(taskDesc)
+
+Answer directly. No intro. Max 80 words.
+"""
         }
     }
 }
