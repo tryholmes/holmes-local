@@ -86,9 +86,18 @@ final class ScreenEngine {
 
     private func captureScreen() async -> CGImage? {
         guard #available(macOS 13.0, *),
-              let filter = cachedFilter,
               let config = cachedConfig else { return nil }
         do {
+            // Rebuild filter each capture to exclude Holmes windows — no permission re-prompt,
+            // just refreshes window list so OCR only sees the background app.
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard let display = content.displays.first else { return nil }
+            let holmesWindows = content.windows.filter {
+                let bid = $0.owningApplication?.bundleIdentifier ?? ""
+                let name = $0.owningApplication?.applicationName?.lowercased() ?? ""
+                return bid.contains("holmes") || name.contains("holmes")
+            }
+            let filter = SCContentFilter(display: display, excludingWindows: holmesWindows)
             return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
         } catch {
             print("[Holmes] SCK capture error: \(error.localizedDescription)")
@@ -100,8 +109,8 @@ final class ScreenEngine {
 
     private func extractTextViaAccessibility() -> String {
         guard let app = NSWorkspace.shared.frontmostApplication else { return "" }
-        // When Holmes itself is frontmost, return "" so we fall through to the
-        // SCK screenshot path — that captures the real background app correctly.
+        // When Holmes is frontmost, skip AX — fall through to screenshot which
+        // now excludes Holmes windows, so OCR sees only the background app.
         let frontName = app.localizedName?.lowercased() ?? ""
         guard !frontName.contains("holmes") else { return "" }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
