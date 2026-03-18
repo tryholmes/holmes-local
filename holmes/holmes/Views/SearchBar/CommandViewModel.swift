@@ -166,13 +166,7 @@ final class CommandViewModel {
         }
 
         if !LocalModelEngine.shared.isAvailable {
-            // Re-probe in case Ollama was started after Holmes launched
-            appendLog("Checking Ollama at 127.0.0.1:11434...", kind: .info)
-            await LocalModelEngine.shared.probe()
-        }
-        if !LocalModelEngine.shared.isAvailable {
-            appendLog("Ollama not reachable at 127.0.0.1:11434 or localhost:11434", kind: .error)
-            appendLog("Run: ollama serve   (or check System Preferences → Network)", kind: .error)
+            appendLog("Ollama not running. Start it with: ollama serve", kind: .error)
             state = .error
             return
         }

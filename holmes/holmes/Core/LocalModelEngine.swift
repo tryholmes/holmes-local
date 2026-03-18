@@ -17,7 +17,7 @@ final class LocalModelEngine {
     private(set) var activeBackend: ModelBackend = .none
     private(set) var isAvailable: Bool = false
 
-    private let ollamaBase = "http://127.0.0.1:11434"
+    private let ollamaBase = "http://localhost:11434"
     private let preferredModel = "llama3.2:3b"    // small + fast, ~2GB
     private let fallbackModel  = "mistral:7b-instruct-q4_0"
 
@@ -57,27 +57,27 @@ final class LocalModelEngine {
     // MARK: - Ollama
 
     private func probeOllama() async -> Bool {
-        let endpoints = ["\(ollamaBase)/api/tags", "http://localhost:11434/api/tags"]
-        for endpoint in endpoints {
-            guard let url = URL(string: endpoint) else { continue }
-            var req = URLRequest(url: url)
-            req.timeoutInterval = 5
-            do {
-                let (data, response) = try await URLSession.shared.data(for: req)
-                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { continue }
-                // Accept any running Ollama regardless of which models are pulled
-                print("[Holmes] Ollama reachable at \(endpoint)")
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let models = json["models"] as? [[String: Any]] {
-                    let names = models.compactMap { $0["name"] as? String }
-                    print("[Holmes] Ollama models: \(names)")
+        guard let url = URL(string: "\(ollamaBase)/api/tags") else { return false }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
+            // Check if our preferred model is available; if not, try to pull it
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let models = json["models"] as? [[String: Any]] {
+                let names = models.compactMap { $0["name"] as? String }
+                if names.contains(where: { $0.hasPrefix("llama3.2") || $0.hasPrefix("llama3") }) {
+                    return true
                 }
-                return true
-            } catch {
-                print("[Holmes] Ollama probe failed at \(endpoint): \(error.localizedDescription)")
+                if names.contains(where: { $0.hasPrefix("mistral") || $0.hasPrefix("phi") }) {
+                    return true
+                }
+                // Ollama is running but no model pulled yet
+                return !names.isEmpty
             }
+            return true
+        } catch {
+            return false
         }
-        return false
     }
 
     private func activeOllamaModel() async -> String {
