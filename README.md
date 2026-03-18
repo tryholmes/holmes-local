@@ -1,201 +1,162 @@
-# Holmes - Zero Prompt AI for macOS
+# Holmes — Zero Prompt AI for macOS
 
-A sleek, macOS-native AI assistant with an iOS 26 Liquid Glass aesthetic and global hotkey access.
-<img width="518" height="648" alt="Screenshot 2026-02-20 at 9 57 21 AM" src="https://github.com/user-attachments/assets/612c5244-2fb5-479a-8e0a-914d6ef9461e" />
-<img width="389" height="521" alt="Screenshot 2026-02-20 at 9 57 38 AM" src="https://github.com/user-attachments/assets/3cf95c92-ca9d-4375-90fd-842c0fd5309d" />
-<img width="61" height="84" alt="Screenshot 2026-02-20 at 9 57 49 AM" src="https://github.com/user-attachments/assets/9d4d9edf-e992-4503-b574-ec251ae7743b" />
-<img width="940" height="205" alt="Screenshot 2026-02-20 at 9 58 04 AM" src="https://github.com/user-attachments/assets/05bfd2ae-f394-4ffc-9edd-547df8197147" />
-<img width="787" height="153" alt="Screenshot 2026-02-20 at 9 58 14 AM" src="https://github.com/user-attachments/assets/29f67c91-8980-4833-ae91-4f134001ae22" />
-<img width="227" height="257" alt="Screenshot 2026-02-20 at 9 58 25 AM" src="https://github.com/user-attachments/assets/8d98fd42-33a4-4172-8841-bed3621b9564" />
-<img width="281" height="82" alt="Screenshot 2026-02-20 at 9 58 38 AM" src="https://github.com/user-attachments/assets/5d974daa-c595-4e61-9168-b8d821876e6d" />
+Holmes is a local-first AI desktop agent that lives in your menubar. It watches your screen, understands what you're doing, and proactively suggests actions — without you ever needing to type a prompt.
 
+Everything runs on your machine. No cloud. No API keys. No data leaves your device.
 
-
-## Overview
-
-Holmes is a zero-prompt AI assistant designed for macOS that brings AI capabilities to your fingertips with a beautiful, modern interface. Access it instantly from anywhere with a simple keyboard shortcut.
-
-## Recent Updates (February 2026)
-
-### Major UI/UX Improvements
-
-#### 🎨 iOS 26 Liquid Glass Aesthetic
-- **Advanced Glass Morphism**: Multi-layer blur effects with `VisualEffectBlur` for authentic glass material
-- **Refined Gradients**: Teal/gray-green color scheme (RGB: 0.3, 0.38, 0.38) with radial lighting
-- **Film Grain Texture**: Subtle overlay at 3-4% opacity for premium feel
-- **Sleeker Design**: Reduced button sizes by ~30%, tighter spacing, refined typography (11-18pt range)
-- **Clean Borders**: Gradient stroke overlays with 0.5px lineWidth for sharp definition
-
-#### ⌨️ Fixed Global Hotkey
-- **Control+Space**: Now works globally from anywhere, not just when menu bar is selected
-- **Switched to Carbon API**: More reliable global hotkey registration using `HotkeyManager`
-- **Consistent Activation**: Works across all spaces and full-screen apps
-
-#### 🎬 Smooth Transitions
-- **Dynamic Window Resizing**: Automatically animates from 140px → 280px when showing response
-- **Fluid State Changes**: Spring animations (0.4-0.5s response, 0.85 damping) throughout
-- **Clean Appearance**: Removed blur artifacts and shadow glitches from glass transitions
-- **Back Navigation**: Smooth transition back to search input with chevron button
-
-#### 🪟 Movable Window
-- **Drag Anywhere**: Click and drag the window to reposition on screen
-- **Constraint Fix**: Resolved NSException errors during window movement
-- **Resize Protection**: Prevents conflicts between user drag and programmatic resize
-- **Smart Hiding**: Window doesn't auto-dismiss while being dragged
-
-#### 🎯 UI Refinements
-- **Brand Integration**: Holmes logo from SVG assets replaces generic sparkle icon
-- **Consistent Theming**: Both search and response use matching teal glass background
-- **Back Button**: Added chevron navigation to return from response to search
-- **Blank Response State**: Ready for LLM integration with placeholder text
-- **Reset Behavior**: Properly returns to search input when closing, not response state
-
-#### 🔧 Technical Improvements
-- **Window Management**: Enhanced `SearchBarWindowController` with drag tracking and resize locking
-- **State Management**: Improved `SearchViewModel` with `goBackToSearch()` method
-- **Panel Behavior**: Custom `SearchBarPanel` with mouse event tracking for drag detection
-- **Shadow Removal**: Eliminated all unwanted shadows with `invalidateShadow()` and layer opacity controls
-
-### Authentication System
-- **Clerk Integration**: Full authentication flow with `ClerkAuthManager` and `ClerkConfig`
-- **Keychain Storage**: Secure session token management with `KeychainManager`
-- **Login Window**: Beautiful glass-styled login interface
-- **Session Validation**: Automatic token validation on app launch
-
-### Project Cleanup
-- **Removed Web Files**: Deleted Next.js website directory, keeping only native macOS app
-- **Focused Codebase**: Holmes iOS app in SwiftUI only
-- **Asset Organization**: Logo and icon assets properly integrated into Xcode project
+---
 
 ## Features
 
-### Current
-- ⚡ **Global Hotkey Access**: Control+Space from anywhere
-- 🎨 **iOS 26 Liquid Glass UI**: Premium blur effects and animations
-- 🪟 **Movable Window**: Drag to reposition anywhere on screen
-- 🔐 **Secure Authentication**: Clerk-based login with keychain storage
-- 🎯 **Smooth Transitions**: Fluid animations between states
-- 🎨 **Film Grain Effects**: Subtle texture for visual depth
+- **Context-aware** — reads your screen via OCR + Accessibility APIs to understand what app you're in and what you're doing
+- **Proactive suggestions** — auto-drafts email replies, message replies, meeting prep notes
+- **Calendar integration** — monitors Apple Calendar and auto-joins Zoom / Google Meet / Teams meetings 2 minutes before they start
+- **Gmail browser extension** — reads compose/inbox context directly from the browser
+- **Local LLM** — powered by Ollama (llama3.2:3b by default), fully offline
+- **Zero prompt** — Holmes acts without you typing anything; just approve or dismiss
 
-### Coming Soon
-- 🤖 **LLM Integration**: Connect your preferred AI model
-- 🎤 **Voice Input**: Speech-to-text with audio level visualization
-- 📊 **Context Awareness**: Screen recording and accessibility permissions for smart assistance
-- 🔔 **Notch Animations**: Dynamic island-style notifications (for MacBooks with notch)
+---
 
-## Tech Stack
+## Requirements
 
-- **SwiftUI**: Modern declarative UI framework
-- **AppKit**: Native macOS window management
-- **Carbon API**: Global hotkey registration
-- **Clerk**: Authentication and user management
-- **Keychain Services**: Secure credential storage
-- **Speech Framework**: Voice input (coming soon)
-- **AVFoundation**: Audio processing (coming soon)
+- macOS 14 (Sonoma) or later
+- [Ollama](https://ollama.com) installed and running
+- Xcode 15+
 
-## Installation
+---
 
-1. Clone the repository:
+## Setup
+
+### 1. Install Ollama
+
 ```bash
-git clone https://github.com/Noir-Zero-Prompt-AI/Frontend-UI.git
+brew install ollama
+```
+
+Or download from [ollama.com](https://ollama.com).
+
+### 2. Pull the model
+
+```bash
+ollama pull llama3.2:3b
+```
+
+Holmes will auto-select the best available model. Supported: `llama3.2:3b`, `llama3.2`, `llama3`, `phi3`, `mistral`.
+
+### 3. Start Ollama
+
+```bash
+ollama serve &
+```
+
+> The `&` runs it in the background. Ollama must be running before you launch Holmes, otherwise the LLM features will be unavailable (context detection still works via heuristics).
+
+### 4. Clone the repo
+
+```bash
+git clone https://github.com/tryholmes/Frontend-UI.git
 cd Frontend-UI/holmes
 ```
 
-2. Open in Xcode:
+### 5. Open in Xcode
+
 ```bash
 open holmes.xcodeproj
 ```
 
-3. Build and run (⌘R)
+### 6. Build & Run
 
-## Usage
+Select the `holmes` scheme and hit **Run** (⌘R).
 
-1. **Launch Holmes**: Open the app from Applications or Xcode
-2. **Complete Onboarding**: First-time setup wizard
-3. **Login**: Authenticate with Clerk
-4. **Access Anywhere**: Press `Control+Space` to summon the search bar
-5. **Ask Questions**: Type your query and press Enter or click the arrow button
-6. **View Response**: AI response appears with smooth transition
-7. **Go Back**: Click the chevron button or press Escape
+On first launch Holmes will ask for:
+- **Accessibility** — required to control apps (type messages, click buttons)
+- **Screen Recording** — required to capture and analyse your screen
+- **Calendar** — required for meeting detection and auto-join
 
-## Keyboard Shortcuts
-
-- `Control+Space`: Open search bar
-- `Option+Space`: Open assistant panel
-- `Command+\`: Toggle side icon
-- `Escape`: Close/go back
-
-## Project Structure
-
-```
-holmes/
-├── App/
-│   ├── holmesApp.swift          # App entry point
-│   ├── AppDelegate.swift        # Hotkey setup, auth flow
-│   └── Permissions.swift        # System permissions
-├── Core/
-│   ├── HotkeyManager.swift      # Global hotkey registration
-│   ├── MenuBarManager.swift     # Menu bar controls
-│   ├── ClerkAuthManager.swift   # Authentication
-│   └── KeychainManager.swift    # Secure storage
-├── Views/
-│   ├── SearchBar/               # Main search interface
-│   │   ├── SearchBarView.swift
-│   │   ├── SearchBarWindow.swift
-│   │   └── SearchViewModel.swift
-│   ├── Login/                   # Auth screens
-│   ├── Onboarding/              # First-run experience
-│   └── MainPanel/               # Assistant panel
-├── Components/
-│   ├── GlassCard.swift          # Reusable glass UI
-│   ├── NoirTextField.swift      # Custom input field
-│   └── GrainOverlay.swift       # Film grain effect
-└── Design/
-    ├── NoirColors.swift         # Color palette
-    └── NoirFonts.swift          # Typography
-```
-
-## Design System
-
-### Colors (Liquid Glass)
-- **Search/Response Background**: Teal-Gray (RGB: 0.3, 0.38, 0.38, opacity: 0.85-0.9)
-- **Radial Highlights**: Lighter teal (RGB: 0.35, 0.43, 0.43, opacity: 0.12)
-- **Button Backgrounds**: White (opacity: 0.08)
-- **Border Strokes**: White gradient (0.15 → 0.05, lineWidth: 0.5)
-- **Text**: White (opacity: 0.75-0.95)
-
-### Typography
-- **Brand Name**: 18pt Semibold Monospaced
-- **Labels**: 11-13pt Medium
-- **Body**: 13-15pt Regular
-- **Placeholders**: 11pt Regular
-
-### Spacing
-- **Padding**: 16-20px (reduced from 24px)
-- **Button Spacing**: 12-16px
-- **Element Gaps**: 16px vertical
-
-### Components
-- **Buttons**: 28-30px icons, 8-10px text padding
-- **Corners**: 16-24px continuous radius
-- **Input Fields**: 10-14px padding, 16px radius
-
-## Contributing
-
-This is a private repository for the Holmes project. For collaboration inquiries, please contact the team.
-
-## License
-
-Proprietary - All rights reserved
-
-## Credits
-
-Developed by the Noir Zero Prompt AI team
-Design inspired by iOS 26 Liquid Glass aesthetic
+Grant all three when prompted, or open **System Settings → Privacy & Security** manually.
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: February 20, 2026  
-**macOS Requirement**: 14.0+  
-**Swift Version**: 5.x
+## Gmail Browser Extension
+
+The `holmes-extension/` folder contains a Chrome/Arc extension that gives Holmes richer Gmail context (compose fields, sender info) without OCR.
+
+To install:
+1. Open Chrome/Arc → `chrome://extensions`
+2. Enable **Developer mode**
+3. Click **Load unpacked** → select the `holmes-extension/` folder
+4. The extension runs silently and sends context to Holmes over localhost
+
+---
+
+## Calendar & Meeting Auto-Join
+
+Holmes monitors **Apple Calendar** every 60 seconds. Any calendar synced to Apple Calendar works — iCloud, Google Calendar (via system sync), Exchange, Outlook.
+
+**2 minutes before a meeting starts**, Holmes:
+1. Fires a system notification
+2. Shows a "MEETING STARTING SOON" confirmation card
+3. Pre-warms the Zoom app (if applicable)
+4. Lets you click **Join Now** to deep-link directly into the call
+
+Meeting links are detected from the event's URL field, Notes, and Location — supporting Zoom, Google Meet, Microsoft Teams, and Webex.
+
+**To sync Google Calendar with Apple Calendar:**
+System Settings → Internet Accounts → Google → enable Calendars
+
+---
+
+## Hotkeys
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl + Space` | Open command bar |
+| `Option + Space` | Toggle main panel |
+| `Cmd + \` | Toggle side icon |
+
+---
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `/run` | Execute an autonomous task |
+| `/ask` | Ask a free-form question about what's on screen |
+| `/plan` | Break a goal into steps |
+| `/watch` | Monitor screen continuously for changes |
+| `/done` | Mark a task complete |
+
+---
+
+## Architecture
+
+```
+Holmes
+├── Core/
+│   ├── HolmesAgent.swift        — orchestrator: screen → context → suggestions
+│   ├── ScreenEngine.swift       — ScreenCaptureKit screenshot loop
+│   ├── OCREngine.swift          — Apple Vision framework text recognition
+│   ├── ContextEngine.swift      — heuristic + LLM context detection
+│   ├── LocalModelEngine.swift   — Ollama HTTP client (llama3.2:3b)
+│   ├── CalendarEngine.swift     — EventKit calendar monitor
+│   ├── MeetingJoinEngine.swift  — meeting auto-join + notifications
+│   ├── BrowserBridge.swift      — localhost socket server for browser ext
+│   ├── ActionExecutor.swift     — Accessibility API app control
+│   └── CommandBus.swift         — command routing between views
+├── Views/
+│   ├── MainPanel/               — context card, suggestions, activity log, meetings
+│   ├── SearchBar/               — command input bar
+│   ├── Confirmation/            — action approval overlay
+│   ├── SideIcon/                — floating sidebar icon
+│   └── Onboarding/              — first-run setup flow
+└── holmes-extension/            — Chrome/Arc Gmail extension
+```
+
+---
+
+## Privacy
+
+- All processing is local — screen captures, OCR, and LLM inference never leave your machine
+- Ollama runs entirely offline
+- Calendar data is read-only and never stored or transmitted
+- No analytics, no telemetry

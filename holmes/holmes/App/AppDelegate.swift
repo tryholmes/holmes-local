@@ -59,6 +59,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func startHolmesAgent() {
+        Task { @MainActor in
+            await HolmesAgent.shared.start()
+        }
+    }
+
     private func setupHotkeys() {
         HotkeyManager.shared.onControlSpace = {
             SearchBarWindowController.shared.toggle()
@@ -107,6 +113,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startMainApp() {
         SideIconWindowController.shared.show()
-        // Notch animation removed — the notch is no longer used.
+        startHolmesAgent()
     }
 }

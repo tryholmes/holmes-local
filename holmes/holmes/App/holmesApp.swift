@@ -101,26 +101,37 @@ struct PrivacySettingsView: View {
                 HStack {
                     Image(systemName: PermissionManager.checkScreenRecordingPermission() ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundColor(PermissionManager.checkScreenRecordingPermission() ? .green : .red)
-                    
+
                     Button("Open Settings") {
                         PermissionManager.openScreenRecordingSettings()
                     }
                 }
             }
-            
+
             LabeledContent("Accessibility") {
                 HStack {
                     Image(systemName: PermissionManager.checkAccessibilityPermission() ? "checkmark.circle.fill" : "xmark.circle.fill")
                         .foregroundColor(PermissionManager.checkAccessibilityPermission() ? .green : .red)
-                    
+
                     Button("Open Settings") {
                         PermissionManager.openAccessibilitySettings()
                     }
                 }
             }
-            
+
+            LabeledContent("Calendar") {
+                HStack {
+                    Image(systemName: PermissionManager.checkCalendarPermission() ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundColor(PermissionManager.checkCalendarPermission() ? .green : .orange)
+
+                    Button("Open Settings") {
+                        PermissionManager.openCalendarSettings()
+                    }
+                }
+            }
+
             Divider()
-            
+
             Text("Holmes processes all data locally on your device. No data is sent to external servers.")
                 .font(.caption)
                 .foregroundColor(.secondary)

@@ -40,6 +40,8 @@
     <string>Holmes requires accessibility access to interact with applications on your behalf.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>Holmes uses automation to execute tasks across multiple applications.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>Holmes reads your calendar to detect upcoming meetings and auto-join video calls 2 minutes before they start.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Holmes uses the microphone for voice input when you activate listening mode.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

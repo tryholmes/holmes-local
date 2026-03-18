@@ -51,6 +51,18 @@
 		AA000001000000000000044 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000044 /* LoginView.swift */; };
 		AA000001000000000000045 /* LoginWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000045 /* LoginWindow.swift */; };
 		AA000001000000000000046 /* NoirCharacterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000046 /* NoirCharacterView.swift */; };
+		AA000001000000000000050 /* ScreenEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000050 /* ScreenEngine.swift */; };
+		AA000001000000000000051 /* OCREngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000051 /* OCREngine.swift */; };
+		AA000001000000000000052 /* ContextEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000052 /* ContextEngine.swift */; };
+		AA000001000000000000053 /* LocalModelEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000053 /* LocalModelEngine.swift */; };
+		AA000001000000000000054 /* HolmesAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000054 /* HolmesAgent.swift */; };
+		AA000001000000000000055 /* CommandBus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000055 /* CommandBus.swift */; };
+		AA000001000000000000059 /* BrowserBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000059 /* BrowserBridge.swift */; };
+		AA000001000000000000056 /* ActionExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000056 /* ActionExecutor.swift */; };
+		AA000001000000000000060 /* CalendarEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000060 /* CalendarEngine.swift */; };
+		AA000001000000000000061 /* MeetingJoinEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000061 /* MeetingJoinEngine.swift */; };
+		AA000001000000000000057 /* ConfirmationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000057 /* ConfirmationView.swift */; };
+		AA000001000000000000058 /* ConfirmationWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000058 /* ConfirmationWindowController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -98,6 +110,18 @@
 		AA000002000000000000043 /* ClerkAuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClerkAuthManager.swift; sourceTree = "<group>"; };
 		AA000002000000000000044 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 		AA000002000000000000045 /* LoginWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginWindow.swift; sourceTree = "<group>"; };
+		AA000002000000000000050 /* ScreenEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenEngine.swift; sourceTree = "<group>"; };
+		AA000002000000000000051 /* OCREngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCREngine.swift; sourceTree = "<group>"; };
+		AA000002000000000000052 /* ContextEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextEngine.swift; sourceTree = "<group>"; };
+		AA000002000000000000053 /* LocalModelEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelEngine.swift; sourceTree = "<group>"; };
+		AA000002000000000000054 /* HolmesAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolmesAgent.swift; sourceTree = "<group>"; };
+		AA000002000000000000055 /* CommandBus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBus.swift; sourceTree = "<group>"; };
+		AA000002000000000000059 /* BrowserBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserBridge.swift; sourceTree = "<group>"; };
+		AA000002000000000000056 /* ActionExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionExecutor.swift; sourceTree = "<group>"; };
+		AA000002000000000000060 /* CalendarEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarEngine.swift; sourceTree = "<group>"; };
+		AA000002000000000000061 /* MeetingJoinEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingJoinEngine.swift; sourceTree = "<group>"; };
+		AA000002000000000000057 /* ConfirmationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmationView.swift; sourceTree = "<group>"; };
+		AA000002000000000000058 /* ConfirmationWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmationWindowController.swift; sourceTree = "<group>"; };
 		AA000002000000000000046 /* NoirCharacterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoirCharacterView.swift; sourceTree = "<group>"; };
 		AA000003000000000000000 /* holmes.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = holmes.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -185,8 +209,18 @@
 				AA000005000000000000012 /* MainPanel */,
 				AA000005000000000000013 /* NotchAnimation */,
 				AA000005000000000000014 /* Login */,
+				AA000005000000000000020 /* Confirmation */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		AA000005000000000000020 /* Confirmation */ = {
+			isa = PBXGroup;
+			children = (
+				AA000002000000000000057 /* ConfirmationView.swift */,
+				AA000002000000000000058 /* ConfirmationWindowController.swift */,
+			);
+			path = Confirmation;
 			sourceTree = "<group>";
 		};
 		AA000005000000000000007 /* Core */ = {
@@ -197,6 +231,16 @@
 				AA000002000000000000041 /* ClerkConfig.swift */,
 				AA000002000000000000042 /* KeychainManager.swift */,
 				AA000002000000000000043 /* ClerkAuthManager.swift */,
+				AA000002000000000000050 /* ScreenEngine.swift */,
+				AA000002000000000000051 /* OCREngine.swift */,
+				AA000002000000000000052 /* ContextEngine.swift */,
+				AA000002000000000000053 /* LocalModelEngine.swift */,
+				AA000002000000000000054 /* HolmesAgent.swift */,
+				AA000002000000000000055 /* CommandBus.swift */,
+				AA000002000000000000059 /* BrowserBridge.swift */,
+				AA000002000000000000056 /* ActionExecutor.swift */,
+				AA000002000000000000060 /* CalendarEngine.swift */,
+				AA000002000000000000061 /* MeetingJoinEngine.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -395,6 +439,18 @@
 				AA000001000000000000044 /* LoginView.swift in Sources */,
 				AA000001000000000000045 /* LoginWindow.swift in Sources */,
 				AA000001000000000000046 /* NoirCharacterView.swift in Sources */,
+				AA000001000000000000050 /* ScreenEngine.swift in Sources */,
+				AA000001000000000000051 /* OCREngine.swift in Sources */,
+				AA000001000000000000052 /* ContextEngine.swift in Sources */,
+				AA000001000000000000053 /* LocalModelEngine.swift in Sources */,
+				AA000001000000000000054 /* HolmesAgent.swift in Sources */,
+				AA000001000000000000055 /* CommandBus.swift in Sources */,
+				AA000001000000000000059 /* BrowserBridge.swift in Sources */,
+				AA000001000000000000056 /* ActionExecutor.swift in Sources */,
+				AA000001000000000000057 /* ConfirmationView.swift in Sources */,
+				AA000001000000000000058 /* ConfirmationWindowController.swift in Sources */,
+				AA000001000000000000060 /* CalendarEngine.swift in Sources */,
+				AA000001000000000000061 /* MeetingJoinEngine.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

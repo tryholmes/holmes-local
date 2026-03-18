@@ -3,6 +3,7 @@ import AppKit
 import AVFoundation
 import CoreGraphics
 import ScreenCaptureKit
+import EventKit
 
 struct PermissionManager {
     static func checkAccessibilityPermission() -> Bool {
@@ -51,6 +52,17 @@ struct PermissionManager {
         }
     }
     
+    static func checkCalendarPermission() -> Bool {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        return status == .authorized || status == .fullAccess
+    }
+
+    static func openCalendarSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     static var allRequiredPermissionsGranted: Bool {
         checkAccessibilityPermission() && checkScreenRecordingPermission()
     }
