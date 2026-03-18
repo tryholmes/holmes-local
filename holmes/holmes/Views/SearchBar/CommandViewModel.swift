@@ -166,6 +166,9 @@ final class CommandViewModel {
         }
 
         if !LocalModelEngine.shared.isAvailable {
+            await LocalModelEngine.shared.probe()
+        }
+        if !LocalModelEngine.shared.isAvailable {
             appendLog("Ollama not running. Start it with: ollama serve", kind: .error)
             state = .error
             return

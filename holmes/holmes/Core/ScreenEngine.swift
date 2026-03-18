@@ -99,7 +99,18 @@ final class ScreenEngine {
     // MARK: - AX text extraction
 
     private func extractTextViaAccessibility() -> String {
-        guard let app = NSWorkspace.shared.frontmostApplication else { return "" }
+        // When Holmes panel is frontmost, read from the last known real app instead
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let frontName = frontmost?.localizedName?.lowercased() ?? ""
+        let app: NSRunningApplication?
+        if frontName.contains("holmes") || frontName.isEmpty {
+            app = NSWorkspace.shared.runningApplications.first {
+                $0.localizedName == lastKnownApp && !($0.localizedName?.lowercased().contains("holmes") ?? false)
+            }
+        } else {
+            app = frontmost
+        }
+        guard let app else { return "" }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
 
         var windowsRef: CFTypeRef?
