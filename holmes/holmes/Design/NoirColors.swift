@@ -26,40 +26,68 @@ extension Color {
     }
 }
 
-// Palette: warm yellow-white professional tone, anchored by deep teal from the character's jacket
+// Apple Glass palette — pure white accents, black CTAs
 struct NoirColors {
-    // Primary palette
-    static let parchment    = Color(hex: "#F7F2E3")  // warm yellow-white — primary background
-    static let warmCream    = Color(hex: "#EDE4C8")  // deeper warm tone for sub-surfaces
-    static let warmWhite    = Color(hex: "#FDFBF5")  // near-white surface for cards
-    static let deepTeal     = Color(hex: "#2D4D5E")  // detective jacket — primary accent
-    static let midTeal      = Color(hex: "#4A7080")  // medium teal for secondary elements
-    static let warmBrown    = Color(hex: "#8B5E3C")  // houndstooth cape
-    static let tanBrown     = Color(hex: "#C4956B")  // houndstooth highlight
-    static let charcoalDark = Color(hex: "#1C1A17")  // warm near-black for text/borders
-    static let goldAccent   = Color(hex: "#B8881C")  // warm amber — active highlight
+    // Glass surface layers (layered over NSVisualEffectView blur)
+    static let glassSurface    = Color.white.opacity(0.08)
+    static let glassElevated   = Color.white.opacity(0.13)
+    static let glassChrome     = Color.white.opacity(0.05)
+    static let glassInput      = Color.white.opacity(0.07)
 
-    // Accessible explicit text/icon colors (all pass WCAG AA on parchment/warmWhite)
-    static let textPrimary   = Color(hex: "#1C1A17")  // 14.8:1 — headings, primary content
-    static let textSecondary = Color(hex: "#3D5E6E")  // 6.1:1  — secondary labels, subtitles
-    static let textTertiary  = Color(hex: "#4A6A7A")  // 5.5:1  — tertiary labels, timestamps
-    static let textPlaceholder = Color(hex: "#6B8A9A") // 3.8:1 — placeholders (large text ok)
-    static let iconPrimary   = Color(hex: "#2D4D5E")  // 7.2:1  — primary icons (= deepTeal)
-    static let iconSecondary = Color(hex: "#4D7D8D")  // 4.8:1  — secondary icons
-    static let borderSubtle  = Color(hex: "#C8C0A8")  // visible but unobtrusive border
+    // Borders
+    static let glassBorder     = Color.white.opacity(0.18)
+    static let glassDivider    = Color.white.opacity(0.10)
+    static let glassStroke     = Color.white.opacity(0.25)
+    static let glassInner      = Color.white.opacity(0.06)
 
-    // Semantic aliases (keep old names so existing references compile)
-    static let shadowBlack  = charcoalDark
-    static let skyBlue      = parchment
-    static let lightBlue    = warmCream
-    static let midBlue      = midTeal
-    static let charcoalGray = deepTeal
-    static let smokeGray    = midTeal
-    static let fogGray      = textTertiary
-    static let creamWhite   = warmWhite
-    static let paperWhite   = warmWhite
-    static let orangeAccent = goldAccent
-    static let glassWhite   = warmWhite.opacity(0.18)
-    static let glassStroke  = borderSubtle
-    static let glassShadow  = charcoalDark.opacity(0.12)
+    // Text
+    static let textPrimary     = Color.white.opacity(0.92)
+    static let textSecondary   = Color.white.opacity(0.60)
+    static let textTertiary    = Color.white.opacity(0.38)
+    static let textPlaceholder = Color.white.opacity(0.25)
+
+    // Icons
+    static let iconPrimary     = Color.white.opacity(0.88)
+    static let iconSecondary   = Color.white.opacity(0.45)
+
+    // Accent — pure white (replaces amber)
+    static let accent          = Color.white.opacity(0.90)
+    static let accentDim       = Color.white.opacity(0.10)
+
+    // CTA — bold black button with white label
+    static let ctaBackground   = Color(hex: "0E0E0E")
+    static let ctaForeground   = Color.white
+
+    // Semantic
+    static let success         = Color(hex: "4CD97A")
+    static let error           = Color(hex: "FF5E5E")
+    static let calendarBlue    = Color(hex: "5EB5FF")
+
+    // Shadows
+    static let glassShadow     = Color.black.opacity(0.28)
+    static let panelShadow     = Color.black.opacity(0.42)
+
+    // Legacy aliases — all map to new glass tokens
+    static let goldAccent      = accent
+    static let accentBlack     = ctaBackground
+    static let parchment       = glassSurface
+    static let warmCream       = glassElevated
+    static let warmWhite       = glassSurface
+    static let deepTeal        = accent
+    static let midTeal         = textSecondary
+    static let warmBrown       = accent
+    static let tanBrown        = accent
+    static let charcoalDark    = textPrimary
+    static let orangeAccent    = accent
+    static let skyBlue         = Color.black.opacity(0.55)
+    static let lightBlue       = glassSurface
+    static let midBlue         = textSecondary
+    static let charcoalGray    = glassSurface
+    static let smokeGray       = textTertiary
+    static let fogGray         = textTertiary
+    static let creamWhite      = textPrimary
+    static let paperWhite      = textPrimary
+    static let shadowBlack     = Color.black.opacity(0.35)
+    static let glassWhite      = glassSurface
+    static let borderSubtle    = glassBorder
 }

@@ -9,7 +9,9 @@ struct LoginView: View {
 
     var body: some View {
         ZStack {
-            NoirColors.skyBlue.ignoresSafeArea()
+            // Apple glass full-window background
+            VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+                .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 Spacer()
@@ -19,12 +21,12 @@ struct LoginView: View {
 
                     Text("HOLMES")
                         .font(.system(size: 36, weight: .bold, design: .monospaced))
-                        .foregroundStyle(NoirColors.charcoalDark)
+                        .foregroundStyle(NoirColors.textPrimary)
                         .tracking(5)
 
                     Text("Zero Prompt AI for macOS")
                         .font(NoirFonts.caption())
-                        .foregroundStyle(NoirColors.deepTeal)
+                        .foregroundStyle(NoirColors.goldAccent)
                 }
 
                 Spacer()
@@ -35,9 +37,9 @@ struct LoginView: View {
                         modeTab("Sign In", target: .signIn)
                         modeTab("Create Account", target: .signUp)
                     }
-                    .background(NoirColors.midBlue.opacity(0.35))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .pixelBevel(cornerRadius: 6)
+                    .background(NoirColors.glassChrome)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .glassBorder(cornerRadius: 8)
 
                     NoirFormField("Email", text: $email)
                     NoirFormField("Password", text: $password, isSecure: true)
@@ -57,12 +59,11 @@ struct LoginView: View {
                     } label: {
                         Text(mode == .signIn ? "Sign In" : "Create Account")
                             .font(NoirFonts.button())
-                            .foregroundStyle(NoirColors.creamWhite)
+                            .foregroundStyle(Color.black.opacity(0.75))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 13)
-                            .background(NoirColors.deepTeal)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .pixelBevel(cornerRadius: 6)
+                            .background(NoirColors.goldAccent)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                     .buttonStyle(.plain)
 
@@ -77,16 +78,16 @@ struct LoginView: View {
                         HStack(spacing: 8) {
                             Text("G")
                                 .font(.system(size: 14, weight: .bold, design: .monospaced))
-                                .foregroundStyle(NoirColors.orangeAccent)
+                                .foregroundStyle(NoirColors.goldAccent)
                             Text("Continue with Google")
                                 .font(NoirFonts.button())
-                                .foregroundStyle(NoirColors.charcoalDark)
+                                .foregroundStyle(NoirColors.textPrimary)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 13)
-                        .background(NoirColors.creamWhite)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .pixelBevel(cornerRadius: 6)
+                        .background(NoirColors.glassElevated)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .glassBorder(cornerRadius: 8)
                     }
                     .buttonStyle(.plain)
                 }
@@ -103,17 +104,17 @@ struct LoginView: View {
         Button { withAnimation { mode = target } } label: {
             Text(title)
                 .font(NoirFonts.button())
-                .foregroundStyle(mode == target ? NoirColors.creamWhite : NoirColors.textPrimary)
+                .foregroundStyle(mode == target ? Color.black.opacity(0.75) : NoirColors.textSecondary)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 9)
                 .background(
                     Group {
                         if mode == target {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(NoirColors.deepTeal)
+                            RoundedRectangle(cornerRadius: 7)
+                                .fill(NoirColors.goldAccent)
                         } else {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(NoirColors.warmCream)
+                            RoundedRectangle(cornerRadius: 7)
+                                .fill(Color.clear)
                         }
                     }
                 )

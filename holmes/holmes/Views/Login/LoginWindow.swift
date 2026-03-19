@@ -56,7 +56,8 @@ class LoginWindowController: NSObject {
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
         w.isMovableByWindowBackground = true
-        w.backgroundColor = NSColor(NoirColors.charcoalGray)
+        w.isOpaque = false
+        w.backgroundColor = .clear
         w.contentView = NSHostingView(rootView: LoginView())
         self.window = w
     }

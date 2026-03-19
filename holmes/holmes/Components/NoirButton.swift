@@ -36,11 +36,11 @@ struct NoirButton: View {
             .padding(.vertical, 10)
             .background(backgroundColor)
             .foregroundColor(foregroundColor)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .pixelBevel(raised: !isPressed, cornerRadius: 6)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .glassBorder(cornerRadius: 8)
             .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(NoirColors.goldAccent, lineWidth: 2)
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(NoirColors.goldAccent, lineWidth: 1.5)
                     .opacity(isFocused ? 1 : 0)
             )
             .scaleEffect(isPressed ? 0.97 : 1.0)
@@ -57,17 +57,17 @@ struct NoirButton: View {
 
     private var backgroundColor: Color {
         switch style {
-        case .primary:   return NoirColors.deepTeal
-        case .secondary: return NoirColors.creamWhite
+        case .primary:   return NoirColors.ctaBackground
+        case .secondary: return NoirColors.glassElevated
         case .ghost:     return Color.clear
         }
     }
 
     private var foregroundColor: Color {
         switch style {
-        case .primary:   return NoirColors.creamWhite
-        case .secondary: return NoirColors.deepTeal
-        case .ghost:     return NoirColors.charcoalDark
+        case .primary:   return NoirColors.ctaForeground
+        case .secondary: return NoirColors.textPrimary
+        case .ghost:     return NoirColors.textPrimary
         }
     }
 }
@@ -79,12 +79,12 @@ struct NoirIconButton: View {
     var body: some View {
         Button(action: { action() }) {
             Image(systemName: icon)
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
-                .foregroundColor(NoirColors.deepTeal)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(NoirColors.goldAccent)
                 .frame(width: 30, height: 30)
-                .background(NoirColors.warmWhite)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .pixelBevel(cornerRadius: 6)
+                .background(NoirColors.glassSurface)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .glassBorder(cornerRadius: 7)
         }
         .buttonStyle(.plain)
     }

@@ -6,7 +6,7 @@ struct OnboardingFlow: View {
     
     var body: some View {
         ZStack {
-            NoirColors.skyBlue
+            VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
                 .ignoresSafeArea()
             
             VStack(spacing: 0) {

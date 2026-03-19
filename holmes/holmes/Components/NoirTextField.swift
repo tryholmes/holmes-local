@@ -5,13 +5,13 @@ struct NoirTextField: View {
     let placeholder: String
     let fontSize: CGFloat
     @FocusState private var isFocused: Bool
-    
+
     init(_ placeholder: String, text: Binding<String>, fontSize: CGFloat = 48) {
         self.placeholder = placeholder
         self._text = text
         self.fontSize = fontSize
     }
-    
+
     var body: some View {
         ZStack {
             if text.isEmpty {
@@ -22,7 +22,7 @@ struct NoirTextField: View {
 
             TextField("", text: $text)
                 .font(.system(size: fontSize, weight: .bold, design: .monospaced))
-                .foregroundColor(NoirColors.charcoalDark)
+                .foregroundColor(NoirColors.textPrimary)
                 .textFieldStyle(.plain)
                 .multilineTextAlignment(.center)
                 .focused($isFocused)
@@ -54,14 +54,14 @@ struct NoirFormField: View {
             }
         }
         .font(NoirFonts.body())
-        .foregroundStyle(NoirColors.charcoalDark)
+        .foregroundStyle(NoirColors.textPrimary)
         .textFieldStyle(.plain)
         .focused($isFocused)
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
-        .background(isFocused ? NoirColors.lightBlue.opacity(0.4) : NoirColors.creamWhite)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .pixelBevel(raised: false, cornerRadius: 6)
+        .background(isFocused ? NoirColors.glassElevated : NoirColors.glassInput)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .glassBorder(cornerRadius: 8)
         .animation(.easeInOut(duration: 0.12), value: isFocused)
     }
 }
@@ -69,38 +69,38 @@ struct NoirFormField: View {
 struct NoirSearchField: View {
     @Binding var text: String
     let placeholder: String
-    
+
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(NoirColors.iconSecondary)
 
             TextField(placeholder, text: $text)
                 .font(NoirFonts.body())
-                .foregroundColor(NoirColors.charcoalDark)
+                .foregroundColor(NoirColors.textPrimary)
                 .textFieldStyle(.plain)
 
             if !text.isEmpty {
                 Button(action: { text = "" }) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundColor(NoirColors.deepTeal)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(NoirColors.iconSecondary)
                 }
                 .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .background(NoirColors.creamWhite)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .pixelBevel(raised: false, cornerRadius: 6)
+        .background(NoirColors.glassInput)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .glassBorder(cornerRadius: 8)
     }
 }
 
 #Preview {
     ZStack {
-        NoirColors.skyBlue.ignoresSafeArea()
+        Color.black.opacity(0.55).ignoresSafeArea()
         VStack(spacing: 24) {
             NoirTextField("Holmes", text: .constant(""))
             NoirSearchField(text: .constant(""), placeholder: "Search...")

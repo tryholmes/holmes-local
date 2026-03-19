@@ -7,7 +7,8 @@ struct BarAppearTransition: ViewModifier {
     func body(content: Content) -> some View {
         content
             .opacity(isVisible ? 1.0 : 0.0)
-            .animation(.easeOut(duration: 0.2), value: isVisible)
+            .scaleEffect(isVisible ? 1.0 : 0.97)
+            .animation(.spring(response: 0.28, dampingFraction: 0.78), value: isVisible)
     }
 }
 
@@ -22,11 +23,12 @@ struct BlinkingCursor: View {
     @State private var visible = true
     var body: some View {
         Rectangle()
-            .fill(Color(hex: "B8881C"))
-            .frame(width: 9, height: 17)
+            .fill(Color.white.opacity(0.75))
+            .frame(width: 2, height: 16)
+            .cornerRadius(1)
             .opacity(visible ? 1 : 0)
             .onAppear {
-                withAnimation(.easeInOut(duration: 0.5).repeatForever()) {
+                withAnimation(.easeInOut(duration: 0.52).repeatForever()) {
                     visible.toggle()
                 }
             }
@@ -38,7 +40,7 @@ struct BlinkingCursor: View {
 private enum BarDimensions {
     static let width: CGFloat        = 860
     static let inputHeight: CGFloat  = 120
-    static let outputHeight: CGFloat = 460  // input + output panel
+    static let outputHeight: CGFloat = 460
 }
 
 // MARK: - SearchBarView (Command Bar)
@@ -49,24 +51,42 @@ struct SearchBarView: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            inputPanel
-            if vm.showOutput {
-                outputPanel
-                    .transition(.asymmetric(
-                        insertion: .push(from: .bottom).combined(with: .opacity),
-                        removal: .push(from: .top).combined(with: .opacity)
-                    ))
+        ZStack {
+            // Apple glass base — blur + tint
+            AppleGlassBackground(cornerRadius: 18)
+
+            VStack(spacing: 0) {
+                inputPanel
+                if vm.showOutput {
+                    outputPanel
+                        .transition(.asymmetric(
+                            insertion: .push(from: .bottom).combined(with: .opacity),
+                            removal:   .push(from: .top).combined(with: .opacity)
+                        ))
+                }
             }
         }
         .frame(width: BarDimensions.width)
-        .background(Color(hex: "111820"))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color(hex: "2A3D4A"), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(NoirColors.glassStroke, lineWidth: 0.75)
         )
-        .shadow(color: .black.opacity(0.45), radius: 20, x: 0, y: 8)
+        .overlay(
+            // Inner shimmer ring
+            RoundedRectangle(cornerRadius: 17.5)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.35), Color.clear, Color.white.opacity(0.08)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.5
+                )
+                .padding(0.5)
+        )
+        .shadow(color: NoirColors.panelShadow, radius: 36, x: 0, y: 12)
+        .shadow(color: Color.black.opacity(0.18), radius: 6, x: 0, y: 2)
         .animation(.spring(response: 0.32, dampingFraction: 0.82), value: vm.showOutput)
         .barAppear(isVisible: isVisible)
         .onAppear { focused = true }
@@ -80,7 +100,6 @@ struct SearchBarView: View {
         }
         .onExitCommand { dismiss() }
         .onAppear {
-            // Small delay so the window is fully visible before auto-executing
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 vm.checkPendingCommand()
             }
@@ -93,55 +112,49 @@ struct SearchBarView: View {
         VStack(spacing: 0) {
             // Top chrome bar
             HStack(spacing: 10) {
-                // Holmes logo + name
                 HStack(spacing: 7) {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(hex: "B8881C"))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(NoirColors.goldAccent)
                     Text("HOLMES")
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(hex: "E8D5A3"))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(NoirColors.textPrimary)
                         .tracking(3)
                 }
 
                 Spacer()
 
-                // Status pill
                 statusPill
-
-                // Quick action icons
                 chromeIcons
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            .background(Color(hex: "0D1318"))
+            .background(NoirColors.glassChrome)
 
-            Divider().background(Color(hex: "1E2D38"))
+            Divider()
+                .background(NoirColors.glassDivider)
 
             // Command input row
             HStack(spacing: 0) {
-                // Prompt symbol
                 Text("❯")
-                    .font(.system(size: 14, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(hex: "B8881C"))
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Color.white.opacity(0.55))
                     .padding(.leading, 16)
                     .padding(.trailing, 10)
 
-                // Active command badge
                 if let cmd = vm.matchedCommand {
                     commandBadge(cmd)
                         .padding(.trailing, 8)
                 }
 
-                // Text input + blinking cursor overlay
                 ZStack(alignment: .leading) {
                     if vm.inputText.isEmpty {
                         HStack(spacing: 0) {
                             BlinkingCursor()
                             Text(placeholderText)
                                 .font(.system(size: 14, weight: .regular, design: .monospaced))
-                                .foregroundColor(Color(hex: "3D5A6A"))
-                                .padding(.leading, 4)
+                                .foregroundColor(NoirColors.textPlaceholder)
+                                .padding(.leading, 6)
                         }
                     }
                     TextField("", text: Binding(
@@ -150,25 +163,23 @@ struct SearchBarView: View {
                     ))
                     .focused($focused)
                     .font(.system(size: 14, weight: .regular, design: .monospaced))
-                    .foregroundColor(Color(hex: "E8D5A3"))
+                    .foregroundColor(NoirColors.textPrimary)
                     .textFieldStyle(.plain)
                     .onSubmit { vm.submit() }
                 }
 
                 Spacer()
 
-                // Return key hint
                 if !vm.inputText.isEmpty {
                     Text("↵")
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(hex: "3D5A6A"))
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(NoirColors.textTertiary)
                         .padding(.trailing, 14)
                 }
             }
             .frame(height: 52)
-            .background(Color(hex: "111820"))
+            .background(Color.clear)
 
-            // Slash command autocomplete
             if !vm.suggestions.isEmpty {
                 commandSuggestions
             }
@@ -180,25 +191,24 @@ struct SearchBarView: View {
 
     private var outputPanel: some View {
         VStack(spacing: 0) {
-            Divider().background(Color(hex: "1E2D38"))
+            Divider().background(NoirColors.glassDivider)
 
-            // Output header
             HStack(spacing: 8) {
                 Circle()
                     .fill(stateColor)
-                    .frame(width: 7, height: 7)
+                    .frame(width: 6, height: 6)
                     .overlay(
                         Circle()
                             .fill(stateColor)
-                            .frame(width: 7, height: 7)
-                            .opacity(vm.state == .running ? 0.4 : 0)
-                            .scaleEffect(vm.state == .running ? 2 : 1)
-                            .animation(.easeOut(duration: 0.8).repeatForever(autoreverses: false), value: vm.state == .running)
+                            .frame(width: 6, height: 6)
+                            .opacity(vm.state == .running ? 0.35 : 0)
+                            .scaleEffect(vm.state == .running ? 2.2 : 1)
+                            .animation(.easeOut(duration: 0.9).repeatForever(autoreverses: false), value: vm.state == .running)
                     )
 
                 Text(outputHeaderText)
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(hex: "5A7A8A"))
+                    .foregroundColor(NoirColors.textTertiary)
                     .tracking(2)
 
                 Spacer()
@@ -206,32 +216,31 @@ struct SearchBarView: View {
                 Button(action: { vm.reset() }) {
                     Text("✕  NEW")
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(hex: "3D5A6A"))
+                        .foregroundColor(NoirColors.textTertiary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(Color(hex: "0D1318"))
-                        .clipShape(RoundedRectangle(cornerRadius: 4))
+                        .background(NoirColors.glassChrome)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .glassBorder(cornerRadius: 5, lineWidth: 0.6)
                 }
                 .buttonStyle(.plain)
-                .onHover { h in }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
-            .background(Color(hex: "0D1318"))
+            .background(NoirColors.glassChrome)
 
-            // Log lines
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(vm.log) { line in
                             HStack(alignment: .top, spacing: 8) {
                                 Text(line.prefix)
-                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
                                     .foregroundColor(line.color)
                                     .frame(width: 14, alignment: .center)
                                 Text(line.text)
                                     .font(.system(size: 12, weight: .regular, design: .monospaced))
-                                    .foregroundColor(Color(hex: "BDD0D8"))
+                                    .foregroundColor(NoirColors.textSecondary)
                                     .lineSpacing(2)
                                 Spacer()
                             }
@@ -242,7 +251,7 @@ struct SearchBarView: View {
                         if vm.state == .running {
                             HStack(spacing: 6) {
                                 BlinkingCursor()
-                                    .frame(width: 6, height: 12)
+                                    .frame(width: 2, height: 12)
                             }
                             .padding(.top, 2)
                         }
@@ -259,7 +268,6 @@ struct SearchBarView: View {
             }
         }
         .frame(width: BarDimensions.width, height: BarDimensions.outputHeight - BarDimensions.inputHeight)
-        .background(Color(hex: "0A0F14"))
     }
 
     // MARK: Command badge
@@ -271,42 +279,45 @@ struct SearchBarView: View {
             Text(cmd.trigger)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
         }
-        .foregroundColor(Color(hex: "111820"))
+        .foregroundColor(Color.white.opacity(0.90))
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(Color(hex: "B8881C"))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .background(Color(hex: "0E0E0E").opacity(0.80))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .glassBorder(cornerRadius: 5, lineWidth: 0.6)
     }
 
     // MARK: Slash command suggestions
 
     private var commandSuggestions: some View {
         VStack(spacing: 0) {
-            Divider().background(Color(hex: "1E2D38"))
+            Divider().background(NoirColors.glassDivider)
             VStack(spacing: 0) {
                 ForEach(vm.suggestions) { cmd in
                     Button(action: { vm.selectCommand(cmd) }) {
                         HStack(spacing: 12) {
                             Image(systemName: cmd.icon)
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                .foregroundColor(Color(hex: "B8881C"))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(NoirColors.goldAccent)
                                 .frame(width: 16)
                             Text(cmd.trigger)
-                                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                                .foregroundColor(Color(hex: "E8D5A3"))
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .foregroundColor(NoirColors.textPrimary)
                             Text(cmd.description)
                                 .font(.system(size: 11, weight: .regular, design: .monospaced))
-                                .foregroundColor(Color(hex: "5A7A8A"))
+                                .foregroundColor(NoirColors.textTertiary)
                             Spacer()
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 9)
-                        .background(Color(hex: "0D1318"))
+                        .background(Color.white.opacity(0.04))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     if cmd.id != vm.suggestions.last?.id {
-                        Divider().background(Color(hex: "1A2730")).padding(.leading, 44)
+                        Divider()
+                            .background(NoirColors.glassDivider)
+                            .padding(.leading, 44)
                     }
                 }
             }
@@ -318,18 +329,19 @@ struct SearchBarView: View {
     // MARK: Chrome icons
 
     private var chromeIcons: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 5) {
             ForEach([
                 ("clock.arrow.circlepath", "History"),
                 ("gearshape.fill", "Settings")
             ], id: \.0) { icon, tip in
                 Button(action: {}) {
                     Image(systemName: icon)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(Color(hex: "3D5A6A"))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(NoirColors.iconSecondary)
                         .frame(width: 28, height: 26)
-                        .background(Color(hex: "0D1318"))
-                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                        .background(NoirColors.glassChrome)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .glassBorder(cornerRadius: 6, lineWidth: 0.6)
                 }
                 .buttonStyle(.plain)
                 .help(tip)
@@ -344,13 +356,14 @@ struct SearchBarView: View {
             Circle().fill(stateColor).frame(width: 5, height: 5)
             Text(stateLabel)
                 .font(.system(size: 9, weight: .bold, design: .monospaced))
-                .foregroundColor(Color(hex: "5A7A8A"))
+                .foregroundColor(NoirColors.textTertiary)
                 .tracking(1)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(Color(hex: "0D1318"))
+        .background(NoirColors.glassChrome)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+        .glassBorder(cornerRadius: 10, lineWidth: 0.55)
     }
 
     // MARK: Helpers
@@ -371,11 +384,11 @@ struct SearchBarView: View {
 
     private var stateColor: Color {
         switch vm.state {
-        case .idle:    return Color(hex: "3D5A6A")
-        case .typing:  return Color(hex: "B8881C")
-        case .running: return Color(hex: "5DBB7A")
-        case .done:    return Color(hex: "5DBB7A")
-        case .error:   return Color(hex: "E05252")
+        case .idle:    return NoirColors.textTertiary
+        case .typing:  return NoirColors.goldAccent
+        case .running: return NoirColors.success
+        case .done:    return NoirColors.success
+        case .error:   return NoirColors.error
         }
     }
 
@@ -405,12 +418,12 @@ struct TopBarButton: View {
         Button(action: {}) {
             Text(label)
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(isHovered ? NoirColors.deepTeal : NoirColors.creamWhite)
+                .foregroundColor(isHovered ? NoirColors.goldAccent : NoirColors.textPrimary)
                 .padding(.horizontal, 10).padding(.vertical, 7)
                 .frame(minWidth: 44, minHeight: 28)
-                .background(isHovered ? NoirColors.creamWhite : NoirColors.midBlue.opacity(0.6))
+                .background(isHovered ? NoirColors.glassElevated : NoirColors.glassSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .pixelBevel(cornerRadius: 6)
+                .glassBorder(cornerRadius: 6)
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
@@ -424,12 +437,12 @@ struct IconButton: View {
     var body: some View {
         Button(action: {}) {
             Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                .foregroundColor(isHovered ? NoirColors.deepTeal : NoirColors.creamWhite)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(isHovered ? NoirColors.goldAccent : NoirColors.textPrimary)
                 .frame(width: 32, height: 30)
-                .background(isHovered ? NoirColors.creamWhite : NoirColors.midBlue.opacity(0.5))
+                .background(isHovered ? NoirColors.glassElevated : NoirColors.glassSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .pixelBevel(cornerRadius: 6)
+                .glassBorder(cornerRadius: 6)
         }
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
@@ -444,12 +457,12 @@ struct ActionButton: View {
     var body: some View {
         Button(action: {}) {
             Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
-                .foregroundColor(isHovered ? NoirColors.creamWhite : NoirColors.iconPrimary)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(isHovered ? NoirColors.textPrimary : NoirColors.iconPrimary)
                 .frame(width: 32, height: 30)
-                .background(isHovered ? NoirColors.deepTeal : NoirColors.lightBlue.opacity(0.5))
+                .background(isHovered ? NoirColors.goldAccent : NoirColors.glassSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .pixelBevel(cornerRadius: 6)
+                .glassBorder(cornerRadius: 6)
         }
         .buttonStyle(.plain)
         .frame(minWidth: 44, minHeight: 44)
@@ -460,7 +473,7 @@ struct ActionButton: View {
 
 #Preview {
     ZStack {
-        Color(hex: "0A0F14").ignoresSafeArea()
+        Color.black.opacity(0.55).ignoresSafeArea()
         SearchBarView(isVisible: .constant(true))
     }
     .frame(width: 960, height: 400)

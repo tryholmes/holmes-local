@@ -5,146 +5,249 @@ struct MainPanelView: View {
     @State private var agent = HolmesAgent.shared
     @State private var calendar = CalendarEngine.shared
     @State private var localSuggestions: [ActionSuggestion] = ActionSuggestion.samples
+    @State private var cardsAppeared = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            headerView
+        ZStack {
+            AppleGlassBackground(cornerRadius: 18, material: .sidebar)
 
-            ScrollView {
-                VStack(spacing: 12) {
-                    // Live context from agent, falls back to placeholder
-                    ContextCard(context: agent.currentContext)
+            VStack(spacing: 0) {
+                headerView
 
-                    // DEBUG: show raw OCR word count + context
-                    if !agent.lastOCRText.isEmpty {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("DEBUG — OCR: \(agent.lastOCRText.count) chars")
-                                .font(.system(size: 9, design: .monospaced))
-                                .foregroundColor(.yellow)
-                            Text(String(agent.lastOCRText.prefix(120)).replacingOccurrences(of: "\n", with: " ↩ "))
-                                .font(.system(size: 8, design: .monospaced))
-                                .foregroundColor(.yellow.opacity(0.7))
-                                .lineLimit(3)
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 10) {
+                        ContextCard(context: agent.currentContext)
+                            .cardEntrance(appeared: cardsAppeared, delay: 0.00)
+
+                        // OCR debug
+                        if !agent.lastOCRText.isEmpty {
+                            debugOCRView
+                                .cardEntrance(appeared: cardsAppeared, delay: 0.05)
                         }
-                        .padding(6)
-                        .background(Color.black.opacity(0.4))
-                        .cornerRadius(4)
+
+                        // Status row
+                        statusRow
+                            .cardEntrance(appeared: cardsAppeared, delay: 0.08)
+
+                        // Action suggestions
+                        ActionSuggestions(
+                            suggestions: agent.suggestedActions.isEmpty ? localSuggestions : agent.suggestedActions,
+                            onSelect: { selectSuggestion($0) },
+                            onApproveAll: { approveAllSuggestions(agent.suggestedActions.isEmpty ? localSuggestions : agent.suggestedActions) }
+                        )
+                        .cardEntrance(appeared: cardsAppeared, delay: 0.12)
+
+                        // Meetings
+                        if !calendar.upcomingMeetings.isEmpty {
+                            UpcomingMeetingsCard(meetings: calendar.upcomingMeetings)
+                                .cardEntrance(appeared: cardsAppeared, delay: 0.16)
+                        } else if calendar.isAuthorized {
+                            noMeetingsRow
+                                .cardEntrance(appeared: cardsAppeared, delay: 0.16)
+                        }
+
+                        // Activity log
+                        ActivityLog(activities: agent.recentActivities.isEmpty ? ActivityItem.samples : agent.recentActivities)
+                            .cardEntrance(appeared: cardsAppeared, delay: 0.20)
                     }
-
-                    // Analyzing indicator
-                    if agent.isAnalyzing {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .tint(Color(hex: "B8881C"))
-                            Text("Analyzing screen...")
-                                .font(.system(size: 11, weight: .regular, design: .monospaced))
-                                .foregroundColor(Color(hex: "5A7A8A"))
-                            Spacer()
-                            if let updated = agent.lastUpdated {
-                                Text(updated, style: .relative)
-                                    .font(.system(size: 10, weight: .regular, design: .monospaced))
-                                    .foregroundColor(Color(hex: "3D5A6A"))
-                            }
-                        }
-                        .padding(.horizontal, 4)
-                    } else if let updated = agent.lastUpdated {
-                        HStack {
-                            Text("· via \(agent.modelBackend)")
-                                .font(.system(size: 10, weight: .regular, design: .monospaced))
-                                .foregroundColor(Color(hex: "3D5A6A"))
-                            Spacer()
-                            Text(updated, style: .relative)
-                                .font(.system(size: 10, weight: .regular, design: .monospaced))
-                                .foregroundColor(Color(hex: "3D5A6A"))
-                        }
-                        .padding(.horizontal, 4)
-                    }
-
-                    // Live suggestions from agent, falls back to local state
-                    let displayedSuggestions = agent.suggestedActions.isEmpty ? localSuggestions : agent.suggestedActions
-                    ActionSuggestions(
-                        suggestions: displayedSuggestions,
-                        onSelect: { selectSuggestion($0) },
-                        onApproveAll: { approveAllSuggestions(displayedSuggestions) }
-                    )
-
-                    // Upcoming meetings
-                    if !calendar.upcomingMeetings.isEmpty {
-                        UpcomingMeetingsCard(meetings: calendar.upcomingMeetings)
-                    } else if calendar.isAuthorized {
-                        // Authorized but nothing in next 30 min — show debug scan button
-                        HStack(spacing: 6) {
-                            Image(systemName: "calendar")
-                                .font(.system(size: 10))
-                                .foregroundColor(Color(hex: "3D5A6A"))
-                            Text("No meetings in next 30 min")
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(Color(hex: "3D5A6A"))
-                            Spacer()
-                            Button(action: {
-                                Task { await CalendarEngine.shared.scanUpcomingEvents() }
-                            }) {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(Color(hex: "4A9EDB").opacity(0.6))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 4)
-                    }
-
-                    // Live activity log from agent
-                    let displayedActivities = agent.recentActivities.isEmpty ? ActivityItem.samples : agent.recentActivities
-                    ActivityLog(activities: displayedActivities)
+                    .padding(12)
+                    .padding(.bottom, 4)
                 }
-                .padding(14)
             }
-            .background(Color(hex: "0A0F14"))
         }
         .frame(width: 380, height: 520)
-        .background(Color(hex: "0A0F14"))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: "2A3D4A"), lineWidth: 1))
-        .shadow(color: .black.opacity(0.5), radius: 20, x: 0, y: 8)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(NoirColors.glassStroke, lineWidth: 0.75)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 17.5)
+                .stroke(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.28), Color.clear, Color.white.opacity(0.06)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.5
+                )
+                .padding(0.5)
+        )
+        .shadow(color: NoirColors.panelShadow, radius: 32, x: 0, y: 10)
+        .shadow(color: Color.black.opacity(0.15), radius: 4, x: 0, y: 2)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                withAnimation { cardsAppeared = true }
+            }
+        }
         .onChange(of: isVisible) { _, visible in
-            if visible { agent.clearBadge() }
+            if visible {
+                agent.clearBadge()
+                cardsAppeared = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    withAnimation { cardsAppeared = true }
+                }
+            }
         }
     }
 
+    // MARK: Header
+
     private var headerView: some View {
-        HStack {
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(hex: "B8881C"))
-                Text("HOLMES")
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(hex: "E8D5A3"))
-                    .tracking(3)
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                // Brand
+                HStack(spacing: 8) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.10))
+                            .frame(width: 28, height: 28)
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(Color.white.opacity(0.85))
+                    }
+                    Text("HOLMES")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundColor(NoirColors.textPrimary)
+                        .tracking(3)
+                }
+
+                Spacer()
+
+                // Window controls
+                HStack(spacing: 4) {
+                    WindowButton(icon: "minus", tooltip: "Minimise") { isVisible = false }
+                    WindowButton(icon: "xmark", tooltip: "Close")    { isVisible = false }
+                }
             }
-            Spacer()
-            HStack(spacing: 6) {
-                WindowButton(icon: "minus") { isVisible = false }
-                WindowButton(icon: "xmark") { isVisible = false }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(NoirColors.glassChrome)
+
+            // Gradient divider
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [Color.clear, NoirColors.glassDivider, Color.clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .frame(height: 0.75)
+        }
+    }
+
+    // MARK: Status row
+
+    private var statusRow: some View {
+        Group {
+            if agent.isAnalyzing {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.55)
+                        .tint(Color.white.opacity(0.60))
+                    Text("Analyzing screen...")
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(NoirColors.textTertiary)
+                    Spacer()
+                    if let updated = agent.lastUpdated {
+                        Text(updated, style: .relative)
+                            .font(.system(size: 10, weight: .regular, design: .monospaced))
+                            .foregroundColor(NoirColors.textTertiary)
+                    }
+                }
+                .padding(.horizontal, 4)
+            } else if let updated = agent.lastUpdated {
+                HStack {
+                    Circle()
+                        .fill(NoirColors.success)
+                        .frame(width: 5, height: 5)
+                    Text("via \(agent.modelBackend)")
+                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .foregroundColor(NoirColors.textTertiary)
+                    Spacer()
+                    Text(updated, style: .relative)
+                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .foregroundColor(NoirColors.textTertiary)
+                }
+                .padding(.horizontal, 4)
+            } else {
+                EmptyView()
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
-        .background(Color(hex: "0D1318"))
-        .overlay(Divider().background(Color(hex: "1E2D38")), alignment: .bottom)
     }
-    
+
+    // MARK: Debug OCR
+
+    private var debugOCRView: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("DEBUG — OCR: \(agent.lastOCRText.count) chars")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(Color.white.opacity(0.50))
+            Text(String(agent.lastOCRText.prefix(120)).replacingOccurrences(of: "\n", with: " ↩ "))
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundColor(Color.white.opacity(0.35))
+                .lineLimit(3)
+        }
+        .padding(8)
+        .background(Color.black.opacity(0.25))
+        .cornerRadius(6)
+    }
+
+    // MARK: No meetings row
+
+    private var noMeetingsRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "calendar")
+                .font(.system(size: 10))
+                .foregroundColor(NoirColors.textTertiary)
+            Text("No meetings in next 30 min")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(NoirColors.textTertiary)
+            Spacer()
+            Button(action: { Task { await CalendarEngine.shared.scanUpcomingEvents() } }) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 10))
+                    .foregroundColor(NoirColors.calendarBlue.opacity(0.70))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 4)
+    }
+
+    // MARK: Actions
+
     private func selectSuggestion(_ suggestion: ActionSuggestion) {
-        if let index = localSuggestions.firstIndex(where: { $0.id == suggestion.id }) {
-            localSuggestions[index].isSelected.toggle()
+        if let i = localSuggestions.firstIndex(where: { $0.id == suggestion.id }) {
+            localSuggestions[i].isSelected.toggle()
         }
     }
 
     private func approveAllSuggestions(_ current: [ActionSuggestion]) {
-        for index in localSuggestions.indices {
-            localSuggestions[index].isSelected = true
-        }
+        for i in localSuggestions.indices { localSuggestions[i].isSelected = true }
+    }
+}
+
+// MARK: - Card entrance modifier
+
+struct CardEntranceModifier: ViewModifier {
+    let appeared: Bool
+    let delay: Double
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(appeared ? 1 : 0)
+            .offset(y: appeared ? 0 : 12)
+            .animation(
+                .spring(response: 0.44, dampingFraction: 0.82).delay(delay),
+                value: appeared
+            )
+    }
+}
+
+extension View {
+    func cardEntrance(appeared: Bool, delay: Double) -> some View {
+        modifier(CardEntranceModifier(appeared: appeared, delay: delay))
     }
 }
 
@@ -157,48 +260,49 @@ struct UpcomingMeetingsCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "calendar.badge.clock")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(Color(hex: "4A9EDB"))
+                ZStack {
+                    Circle()
+                        .fill(NoirColors.calendarBlue.opacity(0.12))
+                        .frame(width: 22, height: 22)
+                    Image(systemName: "calendar.badge.clock")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(NoirColors.calendarBlue)
+                }
                 Text("UPCOMING")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(hex: "4A9EDB"))
+                    .foregroundColor(NoirColors.calendarBlue.opacity(0.80))
                     .tracking(2)
                 Spacer()
-                // Debug: force-fire the join alert for the next meeting
-                Button(action: {
-                    Task { await CalendarEngine.shared.debugFireNextMeeting() }
-                }) {
+                Button(action: { Task { await CalendarEngine.shared.debugFireNextMeeting() } }) {
                     Text("TEST")
                         .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(hex: "B8881C"))
+                        .foregroundColor(Color.white.opacity(0.40))
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
-                        .background(Color(hex: "B8881C").opacity(0.1))
+                        .background(Color.white.opacity(0.06))
                         .clipShape(RoundedRectangle(cornerRadius: 3))
                 }
                 .buttonStyle(.plain)
                 .help("Force-trigger the join alert for the next meeting")
 
-                Button(action: {
-                    Task { await CalendarEngine.shared.scanUpcomingEvents() }
-                }) {
+                Button(action: { Task { await CalendarEngine.shared.scanUpcomingEvents() } }) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(Color(hex: "4A9EDB").opacity(0.7))
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(NoirColors.calendarBlue.opacity(0.65))
                 }
                 .buttonStyle(.plain)
                 .help("Re-scan calendar now")
             }
 
-            ForEach(meetings.prefix(3)) { meeting in
-                MeetingRow(meeting: meeting)
-            }
+            ForEach(meetings.prefix(3)) { MeetingRow(meeting: $0) }
         }
         .padding(12)
-        .background(Color(hex: "0D1820"))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color(hex: "4A9EDB").opacity(0.25), lineWidth: 1))
+        .background(NoirColors.glassSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(NoirColors.calendarBlue.opacity(0.22), lineWidth: 0.75)
+        )
     }
 }
 
@@ -209,36 +313,34 @@ struct MeetingRow: View {
         HStack(spacing: 10) {
             Image(systemName: meeting.meetingType?.icon ?? "video")
                 .font(.system(size: 12))
-                .foregroundColor(Color(hex: "4A9EDB"))
+                .foregroundColor(NoirColors.calendarBlue)
                 .frame(width: 20)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(meeting.title)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundColor(Color(hex: "E8D5A3"))
+                    .foregroundColor(NoirColors.textPrimary)
                     .lineLimit(1)
                 Text(meeting.meetingType?.rawValue ?? "Meeting")
-                    .font(.system(size: 10, weight: .regular, design: .monospaced))
-                    .foregroundColor(Color(hex: "5A7A8A"))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(NoirColors.textTertiary)
             }
 
             Spacer()
 
             Text(meeting.timeLabel)
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(meeting.minutesUntil <= 2 ? Color(hex: "E05252") : Color(hex: "B8881C"))
+                .foregroundColor(meeting.minutesUntil <= 2 ? NoirColors.error : NoirColors.textSecondary)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background((meeting.minutesUntil <= 2 ? Color(hex: "E05252") : Color(hex: "B8881C")).opacity(0.1))
+                .background((meeting.minutesUntil <= 2 ? NoirColors.error : Color.white).opacity(0.10))
                 .clipShape(RoundedRectangle(cornerRadius: 4))
 
             if meeting.meetingURL != nil {
-                Button(action: {
-                    MeetingJoinEngine.shared.joinMeeting(meeting)
-                }) {
+                Button(action: { MeetingJoinEngine.shared.joinMeeting(meeting) }) {
                     Image(systemName: "arrow.right.circle.fill")
                         .font(.system(size: 16))
-                        .foregroundColor(Color(hex: "4A9EDB"))
+                        .foregroundColor(NoirColors.calendarBlue)
                 }
                 .buttonStyle(.plain)
             }
@@ -247,30 +349,35 @@ struct MeetingRow: View {
     }
 }
 
+// MARK: - Window Button
+
 struct WindowButton: View {
     let icon: String
+    var tooltip: String = ""
     let action: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundColor(isHovered ? Color(hex: "B8881C") : Color(hex: "3D5A6A"))
-                .frame(width: 28, height: 26)
-                .background(Color(hex: "0A0F14"))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(isHovered ? Color.white.opacity(0.85) : NoirColors.iconSecondary)
+                .frame(width: 26, height: 24)
+                .background(isHovered ? Color.white.opacity(0.10) : Color.clear)
                 .clipShape(RoundedRectangle(cornerRadius: 5))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "1E2D38"), lineWidth: 1))
+                .scaleEffect(isHovered ? 1.08 : 1.0)
+                .animation(.spring(response: 0.22, dampingFraction: 0.65), value: isHovered)
         }
         .buttonStyle(.plain)
-        .frame(minWidth: 36, minHeight: 36)
+        .frame(minWidth: 32, minHeight: 32)
+        .help(tooltip)
         .onHover { h in withAnimation(.easeInOut(duration: 0.1)) { isHovered = h } }
     }
 }
 
 #Preview {
     ZStack {
-        Color(hex: "060A0D").ignoresSafeArea()
+        Color.black.opacity(0.55).ignoresSafeArea()
         MainPanelView(isVisible: .constant(true))
     }
     .frame(width: 500, height: 600)
