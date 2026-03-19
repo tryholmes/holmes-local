@@ -1,4 +1,4 @@
-# Holmes — Zero Prompt AI for macOS
+# Holmes — Your Autonomous Desktop Assistant
 
 Holmes is a local-first AI desktop agent that watches your screen and suggests actions before you ask. No prompts. No cloud. Everything runs on your machine.
 
