@@ -224,7 +224,9 @@ struct MainPanelView: View {
     }
 
     private func approveAllSuggestions(_ current: [ActionSuggestion]) {
-        for i in localSuggestions.indices { localSuggestions[i].isSelected = true }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            for i in localSuggestions.indices { localSuggestions[i].isSelected = true }
+        }
     }
 }
 

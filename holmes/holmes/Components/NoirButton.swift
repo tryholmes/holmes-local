@@ -49,8 +49,8 @@ struct NoirButton: View {
         .focused($isFocused)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { _ in isPressed = true }
-                .onEnded   { _ in isPressed = false }
+                .onChanged { _ in withAnimation(.easeInOut(duration: 0.08)) { isPressed = true } }
+                .onEnded   { _ in withAnimation(.easeInOut(duration: 0.08)) { isPressed = false } }
         )
         .animation(.easeInOut(duration: 0.08), value: isPressed)
     }

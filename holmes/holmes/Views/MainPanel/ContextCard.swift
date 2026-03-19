@@ -3,7 +3,6 @@ import SwiftUI
 struct ContextCard: View {
     let context: DetectedContext
     @State private var appeared = false
-    @State private var shimmerPhase: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -32,7 +31,7 @@ struct ContextCard: View {
                             .fill(NoirColors.success)
                             .frame(width: 5, height: 5)
                             .scaleEffect(appeared ? 1.8 : 1.0)
-                            .opacity(appeared ? 0 : 0.5)
+                            .opacity(appeared ? 0.5 : 0)
                             .animation(.easeOut(duration: 1.2).repeatForever(autoreverses: false), value: appeared)
                     )
             }

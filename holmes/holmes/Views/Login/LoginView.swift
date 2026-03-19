@@ -3,6 +3,7 @@ import SwiftUI
 struct LoginView: View {
     @State private var email = ""
     @State private var password = ""
+    @State private var confirmPassword = ""
     @State private var mode: LoginMode = .signIn
 
     enum LoginMode { case signIn, signUp }
@@ -45,16 +46,20 @@ struct LoginView: View {
                     NoirFormField("Password", text: $password, isSecure: true)
 
                     if mode == .signUp {
-                        NoirFormField("Confirm Password", text: .constant(""), isSecure: true)
+                        NoirFormField("Confirm Password", text: $confirmPassword, isSecure: true)
                             .transition(.move(edge: .top).combined(with: .opacity))
                     }
 
                     Button {
                         Task { @MainActor in
+                            #if DEBUG
                             ClerkAuthManager.shared.acceptWebSession(
                                 token: "dev-bypass-token",
                                 email: email.isEmpty ? "user@holmes.app" : email
                             )
+                            #else
+                            // TODO: Call real auth endpoint
+                            #endif
                         }
                     } label: {
                         Text(mode == .signIn ? "Sign In" : "Create Account")
@@ -69,10 +74,14 @@ struct LoginView: View {
 
                     Button {
                         Task { @MainActor in
+                            #if DEBUG
                             ClerkAuthManager.shared.acceptWebSession(
                                 token: "dev-bypass-google-token",
                                 email: "google-user@holmes.app"
                             )
+                            #else
+                            // TODO: Initiate real Google OAuth flow
+                            #endif
                         }
                     } label: {
                         HStack(spacing: 8) {
