@@ -5,6 +5,8 @@ struct LoginView: View {
     @State private var password = ""
     @State private var confirmPassword = ""
     @State private var mode: LoginMode = .signIn
+    @State private var errorMessage: String? = nil
+    @State private var isLoading = false
 
     enum LoginMode { case signIn, signUp }
 
@@ -52,14 +54,22 @@ struct LoginView: View {
 
                     Button {
                         Task { @MainActor in
-                            #if DEBUG
-                            ClerkAuthManager.shared.acceptWebSession(
-                                token: "dev-bypass-token",
-                                email: email.isEmpty ? "user@holmes.app" : email
-                            )
-                            #else
-                            // TODO: Call real auth endpoint
-                            #endif
+                            errorMessage = nil
+                            isLoading = true
+                            defer { isLoading = false }
+                            do {
+                                if mode == .signIn {
+                                    try await ClerkAuthManager.shared.signIn(email: email, password: password)
+                                } else {
+                                    guard password == confirmPassword else {
+                                        errorMessage = "Passwords do not match."
+                                        return
+                                    }
+                                    try await ClerkAuthManager.shared.signUp(email: email, password: password)
+                                }
+                            } catch {
+                                errorMessage = error.localizedDescription
+                            }
                         }
                     } label: {
                         Text(mode == .signIn ? "Sign In" : "Create Account")
@@ -69,19 +79,27 @@ struct LoginView: View {
                             .padding(.vertical, 13)
                             .background(NoirColors.goldAccent)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay {
+                                if isLoading {
+                                    ProgressView()
+                                        .progressViewStyle(.circular)
+                                        .tint(Color.black.opacity(0.6))
+                                }
+                            }
                     }
                     .buttonStyle(.plain)
+                    .disabled(isLoading)
 
                     Button {
                         Task { @MainActor in
-                            #if DEBUG
-                            ClerkAuthManager.shared.acceptWebSession(
-                                token: "dev-bypass-google-token",
-                                email: "google-user@holmes.app"
-                            )
-                            #else
-                            // TODO: Initiate real Google OAuth flow
-                            #endif
+                            errorMessage = nil
+                            isLoading = true
+                            defer { isLoading = false }
+                            do {
+                                try await ClerkAuthManager.shared.signInWithGoogle()
+                            } catch {
+                                errorMessage = error.localizedDescription
+                            }
                         }
                     } label: {
                         HStack(spacing: 8) {
@@ -99,6 +117,16 @@ struct LoginView: View {
                         .glassBorder(cornerRadius: 8)
                     }
                     .buttonStyle(.plain)
+                    .disabled(isLoading)
+
+                    if let msg = errorMessage {
+                        Text(msg)
+                            .font(NoirFonts.caption())
+                            .foregroundStyle(Color.red.opacity(0.85))
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 4)
+                            .transition(.opacity)
+                    }
                 }
                 .padding(.horizontal, 48)
                 .animation(.easeInOut(duration: 0.2), value: mode)
