@@ -165,6 +165,14 @@ final class CommandViewModel {
             }
         }
 
+        // Agentic action path (Hybrid mode): /run with a configured Claude key runs
+        // the Claude + MCP tool-use loop, which can take real, multi-step actions.
+        // Without a key, fall through to the local Ollama path below.
+        if trigger == "/run", AnthropicConfig.isConfigured {
+            await runAgentic(argument: argument)
+            return
+        }
+
         if !LocalModelEngine.shared.isAvailable {
             await LocalModelEngine.shared.probe()
         }
@@ -233,6 +241,24 @@ final class CommandViewModel {
 
     private func appendLog(_ text: String, kind: LogLine.Kind) {
         log.append(LogLine(text: text, kind: kind))
+    }
+
+    // MARK: - Agentic /run (Claude + MCP tools)
+
+    private func runAgentic(argument: String) async {
+        let goal = argument.isEmpty ? "Help me with what's on my screen right now." : argument
+        let result = await HolmesBrain.shared.run(goal: goal) { [weak self] text in
+            self?.appendLog(text, kind: .info)
+        }
+        switch result {
+        case .notConfigured:
+            appendLog("No Anthropic API key set. Add one to enable agentic actions, or start Ollama for local mode.", kind: .error)
+            state = .error
+        case .text(let final):
+            if log.isEmpty { appendLog(final, kind: .success) }
+            else { appendLog("Done.", kind: .success) }
+            state = .done
+        }
     }
 
     // MARK: - Direct availability reply (no Ollama needed)

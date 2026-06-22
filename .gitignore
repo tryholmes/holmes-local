@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Xcode — per-user state (not source)
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+
+# Build output
+build/
+DerivedData/
+
+# Local secrets / config (never commit)
+.holmes/
+*anthropic_key*

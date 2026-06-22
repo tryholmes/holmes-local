@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "test": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"]
+    },
+
+    "gmail": {
+      "command": "npx",
+      "args": ["-y", "@gongrzhe/server-gmail-autoauth-mcp"]
+    },
+
+    "google": {
+      "command": "uvx",
+      "args": ["workspace-mcp", "--single-user", "--tools", "gmail", "calendar", "drive", "docs"],
+      "env": {
+        "GOOGLE_OAUTH_CLIENT_ID": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "YOUR_CLIENT_SECRET"
+      }
+    },
+
+    "remote_example": {
+      "url": "https://mcp.example.com/mcp",
+      "bearerToken": "YOUR_TOKEN_HERE"
+    }
+  }
+}

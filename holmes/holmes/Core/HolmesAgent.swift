@@ -55,6 +55,10 @@ final class HolmesAgent {
         // Calendar engine — monitors upcoming meetings, fires MeetingJoinEngine
         await CalendarEngine.shared.start()
 
+        // Agentic action brain — connects MCP servers in the background. Only used
+        // when an Anthropic API key is configured (Hybrid mode).
+        HolmesBrain.shared.start()
+
         print("[Holmes] Agent started — backend: \(modelBackend)")
     }
 

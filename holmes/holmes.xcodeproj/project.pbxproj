@@ -63,6 +63,11 @@
 		AA000001000000000000061 /* MeetingJoinEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000061 /* MeetingJoinEngine.swift */; };
 		AA000001000000000000057 /* ConfirmationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000057 /* ConfirmationView.swift */; };
 		AA000001000000000000058 /* ConfirmationWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000058 /* ConfirmationWindowController.swift */; };
+		AA000001000000000000070 /* AnthropicConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000070 /* AnthropicConfig.swift */; };
+		AA000001000000000000071 /* AnthropicClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000071 /* AnthropicClient.swift */; };
+		AA000001000000000000072 /* MCPModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000072 /* MCPModels.swift */; };
+		AA000001000000000000073 /* MCPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000073 /* MCPClient.swift */; };
+		AA000001000000000000074 /* HolmesBrain.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000074 /* HolmesBrain.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -122,6 +127,11 @@
 		AA000002000000000000061 /* MeetingJoinEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingJoinEngine.swift; sourceTree = "<group>"; };
 		AA000002000000000000057 /* ConfirmationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmationView.swift; sourceTree = "<group>"; };
 		AA000002000000000000058 /* ConfirmationWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfirmationWindowController.swift; sourceTree = "<group>"; };
+		AA000002000000000000070 /* AnthropicConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnthropicConfig.swift; sourceTree = "<group>"; };
+		AA000002000000000000071 /* AnthropicClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnthropicClient.swift; sourceTree = "<group>"; };
+		AA000002000000000000072 /* MCPModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPModels.swift; sourceTree = "<group>"; };
+		AA000002000000000000073 /* MCPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPClient.swift; sourceTree = "<group>"; };
+		AA000002000000000000074 /* HolmesBrain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolmesBrain.swift; sourceTree = "<group>"; };
 		AA000002000000000000046 /* NoirCharacterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoirCharacterView.swift; sourceTree = "<group>"; };
 		AA000003000000000000000 /* holmes.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = holmes.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -241,6 +251,11 @@
 				AA000002000000000000056 /* ActionExecutor.swift */,
 				AA000002000000000000060 /* CalendarEngine.swift */,
 				AA000002000000000000061 /* MeetingJoinEngine.swift */,
+				AA000002000000000000070 /* AnthropicConfig.swift */,
+				AA000002000000000000071 /* AnthropicClient.swift */,
+				AA000002000000000000072 /* MCPModels.swift */,
+				AA000002000000000000073 /* MCPClient.swift */,
+				AA000002000000000000074 /* HolmesBrain.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -451,6 +466,11 @@
 				AA000001000000000000058 /* ConfirmationWindowController.swift in Sources */,
 				AA000001000000000000060 /* CalendarEngine.swift in Sources */,
 				AA000001000000000000061 /* MeetingJoinEngine.swift in Sources */,
+				AA000001000000000000070 /* AnthropicConfig.swift in Sources */,
+				AA000001000000000000071 /* AnthropicClient.swift in Sources */,
+				AA000001000000000000072 /* MCPModels.swift in Sources */,
+				AA000001000000000000073 /* MCPClient.swift in Sources */,
+				AA000001000000000000074 /* HolmesBrain.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
