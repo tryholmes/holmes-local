@@ -10,9 +10,12 @@ final class ConfirmationWindowController: NSObject {
         if window == nil { createWindow() }
         guard let window, let screen = NSScreen.main else { return }
 
-        // Bottom-right corner, above dock
-        let w: CGFloat = 360
-        let h: CGFloat = 280
+        // Bottom-right corner, above dock. Draft review cards get a wider, much
+        // taller panel so the editable body (up to 200pt) and the
+        // Copy/Insert/Dismiss row are both fully visible without clipping.
+        let isDraft = ConfirmationBus.shared.pendingDraft != nil
+        let w: CGFloat = isDraft ? 380 : 360
+        let h: CGFloat = isDraft ? 440 : 280
         let margin: CGFloat = 20
         let x = screen.visibleFrame.maxX - w - margin
         let y = screen.visibleFrame.minY + margin

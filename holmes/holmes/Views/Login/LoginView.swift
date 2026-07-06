@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct LoginView: View {
+    var onProceed: () -> Void = {}
     @State private var email = ""
     @State private var password = ""
     @State private var confirmPassword = ""
@@ -53,24 +54,7 @@ struct LoginView: View {
                     }
 
                     Button {
-                        Task { @MainActor in
-                            errorMessage = nil
-                            isLoading = true
-                            defer { isLoading = false }
-                            do {
-                                if mode == .signIn {
-                                    try await ClerkAuthManager.shared.signIn(email: email, password: password)
-                                } else {
-                                    guard password == confirmPassword else {
-                                        errorMessage = "Passwords do not match."
-                                        return
-                                    }
-                                    try await ClerkAuthManager.shared.signUp(email: email, password: password)
-                                }
-                            } catch {
-                                errorMessage = error.localizedDescription
-                            }
-                        }
+                        onProceed()
                     } label: {
                         Text(mode == .signIn ? "Sign In" : "Create Account")
                             .font(NoirFonts.button())
@@ -91,16 +75,7 @@ struct LoginView: View {
                     .disabled(isLoading)
 
                     Button {
-                        Task { @MainActor in
-                            errorMessage = nil
-                            isLoading = true
-                            defer { isLoading = false }
-                            do {
-                                try await ClerkAuthManager.shared.signInWithGoogle()
-                            } catch {
-                                errorMessage = error.localizedDescription
-                            }
-                        }
+                        onProceed()
                     } label: {
                         HStack(spacing: 8) {
                             Text("G")

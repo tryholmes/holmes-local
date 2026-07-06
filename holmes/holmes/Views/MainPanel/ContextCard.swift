@@ -15,7 +15,7 @@ struct ContextCard: View {
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(NoirColors.iconPrimary)
                 }
-                Text("CONTEXT DETECTED")
+                Text(context.appName.isEmpty ? "CONTEXT DETECTED" : context.appName.uppercased())
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textTertiary)
                     .tracking(2)

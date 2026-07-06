@@ -30,21 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func handleAuthAndLaunch() async {
-        let auth = ClerkAuthManager.shared
-
-        // If a session token exists in Keychain, validate it
-        if KeychainManager.load(
-            service: ClerkConfig.keychainService,
-            account: ClerkConfig.sessionTokenAccount
-        ) != nil {
-            let valid = await auth.validateStoredSession()
-            if valid {
-                launchAfterAuth()
-                return
-            }
-        }
-
-        // No valid session — show login
+        // Auth removed — show the sign-in screen; any button just proceeds.
         LoginWindowController.shared.show { [weak self] in
             self?.launchAfterAuth()
         }

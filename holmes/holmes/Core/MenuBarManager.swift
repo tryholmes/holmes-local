@@ -139,7 +139,10 @@ class MenuBarManager: NSObject {
     }
     
     @objc private func openSettings() {
-        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+        // The SwiftUI Settings scene's showSettingsWindow: selector is unreliable
+        // for LSUIElement apps (opens behind everything / no-ops). Use a dedicated
+        // NSWindow controller that activates and fronts deterministically.
+        SettingsWindowController.shared.show()
     }
     
     @objc private func showAbout() {

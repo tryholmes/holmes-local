@@ -26,6 +26,17 @@ final class ScreenEngine {
     private init() {}
 
     func start() async {
+        // Force the Screen Recording prompt if we don't truly have access yet.
+        // A rebuilt Xcode binary often has a STALE grant that returns black frames
+        // instead of prompting — preflight catches that and re-requests.
+        if CGPreflightScreenCaptureAccess() {
+            print("[Holmes] Screen Recording: granted ✓")
+        } else {
+            print("[Holmes] Screen Recording: NOT granted — requesting…")
+            let granted = CGRequestScreenCaptureAccess()
+            print("[Holmes] Screen Recording request returned \(granted) — if false, grant it in System Settings ▸ Privacy & Security ▸ Screen Recording, then fully quit and relaunch Holmes.")
+        }
+
         // Build SCK filter once — never triggers permission dialog again
         await buildSCKCache()
 
@@ -77,7 +88,13 @@ final class ScreenEngine {
                 latestSnapshot = image
                 onNewSnapshot?(image, latestActiveApp, latestActiveWindowTitle)
             } else {
-                print("[Holmes] All capture methods failed")
+                // Capture unavailable (Screen Recording permission usually goes stale
+                // after an Xcode rebuild). NEVER dead-end here — that leaves the panel
+                // frozen on "Analyzing your screen…". Fire with whatever AX gave us, or
+                // a marker so the UI shows a clear "grant permission" message instead.
+                print("[Holmes] Capture failed — Screen Recording permission may be stale; firing fallback so the UI never freezes")
+                latestOCROverride = axText.isEmpty ? "__NO_SCREEN_ACCESS__" : axText
+                onNewSnapshot?(makePlaceholder(), latestActiveApp, latestActiveWindowTitle)
             }
         }
     }
@@ -85,8 +102,14 @@ final class ScreenEngine {
     // MARK: - SCK capture (uses cached filter — no permission re-prompt)
 
     private func captureScreen() async -> CGImage? {
-        guard #available(macOS 13.0, *),
-              let config = cachedConfig else { return nil }
+        guard #available(macOS 13.0, *) else { return nil }
+        // If permission was granted AFTER launch, the cache is still empty — rebuild
+        // it now so capture starts working without needing an app restart.
+        if cachedConfig == nil { await buildSCKCache() }
+        guard let config = cachedConfig else {
+            print("[Holmes] No capture config — Screen Recording permission missing")
+            return nil
+        }
         do {
             // Rebuild filter each capture to exclude Holmes windows — no permission re-prompt,
             // just refreshes window list so OCR only sees the background app.
@@ -98,11 +121,30 @@ final class ScreenEngine {
                 return bid.contains("holmes") || name.contains("holmes")
             }
             let filter = SCContentFilter(display: display, excludingWindows: holmesWindows)
-            return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+            if isLikelyBlank(image) {
+                print("[Holmes] ⚠️ Captured frame is BLANK/black — Screen Recording permission is stale for this build. Re-grant in System Settings ▸ Privacy & Security ▸ Screen Recording, then fully quit and relaunch Holmes.")
+            }
+            return image
         } catch {
             print("[Holmes] SCK capture error: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    /// Cheap all-black check: downscale to 8×8 and look for any non-dark pixel.
+    /// A blank result almost always means the Screen Recording grant is stale.
+    private func isLikelyBlank(_ image: CGImage) -> Bool {
+        let w = 8, h = 8
+        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
+                                  bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let data = ctx.data else { return false }
+        let ptr = data.bindMemory(to: UInt8.self, capacity: w * h * 4)
+        var maxV: UInt8 = 0
+        for i in 0..<(w * h * 4) { maxV = max(maxV, ptr[i]) }
+        return maxV < 12
     }
 
     // MARK: - AX text extraction

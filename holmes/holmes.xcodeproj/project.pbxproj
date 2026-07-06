@@ -68,6 +68,14 @@
 		AA000001000000000000072 /* MCPModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000072 /* MCPModels.swift */; };
 		AA000001000000000000073 /* MCPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000073 /* MCPClient.swift */; };
 		AA000001000000000000074 /* HolmesBrain.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000074 /* HolmesBrain.swift */; };
+		AA000001000000000000075 /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000075 /* MCPServer.swift */; };
+		AA000001000000000000076 /* PlaybookModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000076 /* PlaybookModels.swift */; };
+		AA000001000000000000077 /* PlaybookEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000077 /* PlaybookEngine.swift */; };
+		AA000001000000000000078 /* DefaultPlaybooks.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000078 /* DefaultPlaybooks.swift */; };
+		AA000001000000000000079 /* ScreenGlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000079 /* ScreenGlow.swift */; };
+		AA000001000000000000080 /* TriggerBrain.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000080 /* TriggerBrain.swift */; };
+		AA000001000000000000081 /* Autopilot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000081 /* Autopilot.swift */; };
+		AA000001000000000000082 /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000082 /* SettingsWindow.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -132,6 +140,14 @@
 		AA000002000000000000072 /* MCPModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPModels.swift; sourceTree = "<group>"; };
 		AA000002000000000000073 /* MCPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPClient.swift; sourceTree = "<group>"; };
 		AA000002000000000000074 /* HolmesBrain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolmesBrain.swift; sourceTree = "<group>"; };
+		AA000002000000000000075 /* MCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServer.swift; sourceTree = "<group>"; };
+		AA000002000000000000076 /* PlaybookModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybookModels.swift; sourceTree = "<group>"; };
+		AA000002000000000000077 /* PlaybookEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybookEngine.swift; sourceTree = "<group>"; };
+		AA000002000000000000078 /* DefaultPlaybooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultPlaybooks.swift; sourceTree = "<group>"; };
+		AA000002000000000000079 /* ScreenGlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenGlow.swift; sourceTree = "<group>"; };
+		AA000002000000000000080 /* TriggerBrain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TriggerBrain.swift; sourceTree = "<group>"; };
+		AA000002000000000000081 /* Autopilot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Autopilot.swift; sourceTree = "<group>"; };
+		AA000002000000000000082 /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
 		AA000002000000000000046 /* NoirCharacterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoirCharacterView.swift; sourceTree = "<group>"; };
 		AA000003000000000000000 /* holmes.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = holmes.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -220,8 +236,18 @@
 				AA000005000000000000013 /* NotchAnimation */,
 				AA000005000000000000014 /* Login */,
 				AA000005000000000000020 /* Confirmation */,
+				AA000005000000000000022 /* Glow */,
+				AA000005000000000000023 /* Settings */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		AA000005000000000000022 /* Glow */ = {
+			isa = PBXGroup;
+			children = (
+				AA000002000000000000079 /* ScreenGlow.swift */,
+			);
+			path = Glow;
 			sourceTree = "<group>";
 		};
 		AA000005000000000000020 /* Confirmation */ = {
@@ -231,6 +257,14 @@
 				AA000002000000000000058 /* ConfirmationWindowController.swift */,
 			);
 			path = Confirmation;
+			sourceTree = "<group>";
+		};
+		AA000005000000000000023 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				AA000002000000000000082 /* SettingsWindow.swift */,
+			);
+			path = Settings;
 			sourceTree = "<group>";
 		};
 		AA000005000000000000007 /* Core */ = {
@@ -256,8 +290,22 @@
 				AA000002000000000000072 /* MCPModels.swift */,
 				AA000002000000000000073 /* MCPClient.swift */,
 				AA000002000000000000074 /* HolmesBrain.swift */,
+				AA000002000000000000075 /* MCPServer.swift */,
+				AA000005000000000000021 /* Playbooks */,
 			);
 			path = Core;
+			sourceTree = "<group>";
+		};
+		AA000005000000000000021 /* Playbooks */ = {
+			isa = PBXGroup;
+			children = (
+				AA000002000000000000076 /* PlaybookModels.swift */,
+				AA000002000000000000077 /* PlaybookEngine.swift */,
+				AA000002000000000000078 /* DefaultPlaybooks.swift */,
+				AA000002000000000000080 /* TriggerBrain.swift */,
+				AA000002000000000000081 /* Autopilot.swift */,
+			);
+			path = Playbooks;
 			sourceTree = "<group>";
 		};
 		AA000005000000000000008 /* Resources */ = {
@@ -471,6 +519,14 @@
 				AA000001000000000000072 /* MCPModels.swift in Sources */,
 				AA000001000000000000073 /* MCPClient.swift in Sources */,
 				AA000001000000000000074 /* HolmesBrain.swift in Sources */,
+				AA000001000000000000075 /* MCPServer.swift in Sources */,
+				AA000001000000000000076 /* PlaybookModels.swift in Sources */,
+				AA000001000000000000077 /* PlaybookEngine.swift in Sources */,
+				AA000001000000000000078 /* DefaultPlaybooks.swift in Sources */,
+				AA000001000000000000079 /* ScreenGlow.swift in Sources */,
+				AA000001000000000000080 /* TriggerBrain.swift in Sources */,
+				AA000001000000000000081 /* Autopilot.swift in Sources */,
+				AA000001000000000000082 /* SettingsWindow.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -607,7 +663,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 42NF88Y25Y;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = holmes/Resources/Info.plist;
@@ -636,7 +692,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 42NF88Y25Y;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = holmes/Resources/Info.plist;

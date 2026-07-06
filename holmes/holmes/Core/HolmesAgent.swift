@@ -59,6 +59,21 @@ final class HolmesAgent {
         // when an Anthropic API key is configured (Hybrid mode).
         HolmesBrain.shared.start()
 
+        // Proactive playbooks — draft-only automations evaluated on every context tick.
+        PlaybookEngine.shared.start()
+
+        // Autopilot — time-based scheduler (morning brief, email triage, meeting prep).
+        Autopilot.shared.start()
+
+        // MCP *server* — exposes Holmes's live screen context to other agents
+        // (Claude Desktop, Cursor, voice agents) on http://127.0.0.1:5767/mcp.
+        // OPT-IN (default off): the endpoint has no auth and would relay
+        // TCC-gated screen content to any local process, so it only starts when
+        // the user enabled it in Settings > Privacy.
+        if MCPServer.isEnabledByUser {
+            MCPServer.shared.start()
+        }
+
         print("[Holmes] Agent started — backend: \(modelBackend)")
     }
 
@@ -77,6 +92,7 @@ final class HolmesAgent {
         )
         lastOCRText = ctx.ocrText
         lastSnapshot = snapshot
+        lastBrowserContextAt = Date()
 
         // Immediate context from browser data — 100% accurate
         currentContext = DetectedContext(
@@ -91,6 +107,9 @@ final class HolmesAgent {
         if LocalModelEngine.shared.isAvailable {
             suggestedActions = browserSuggestions(for: ctx)
         }
+
+        // Proactive playbooks — evaluate against the fresh browser context
+        evaluatePlaybooks(snapshot: snapshot)
 
         // Proactive proposal for compose
         if ctx.type == "gmail_compose", !isRunningProposal {
@@ -130,6 +149,9 @@ final class HolmesAgent {
 
     private var isRunningOCR = false
     private var isRunningProposal = false
+    // When the browser extension last delivered context (see processSnapshot's
+    // playbook-evaluation gate).
+    private var lastBrowserContextAt: Date = .distantPast
 
     private func processSnapshot(image: CGImage, appName: String, windowTitle: String) async {
         // Skip Holmes itself — only analyze other apps
@@ -140,6 +162,20 @@ final class HolmesAgent {
 
         isAnalyzing = true
         print("[Holmes] Analyzing — app: \(appName)")
+
+        // Capture failed entirely (Screen Recording permission stale) — show a clear
+        // message instead of freezing on "Analyzing your screen…", and stop early.
+        if ScreenEngine.shared.latestOCROverride == "__NO_SCREEN_ACCESS__" {
+            currentContext = DetectedContext(
+                icon: "eye.slash",
+                description: "Can't see your screen — enable Screen Recording for Holmes in System Settings ▸ Privacy & Security, then quit and reopen Holmes.",
+                appName: appName
+            )
+            lastUpdated = Date()
+            isAnalyzing = false
+            print("[Holmes] No screen access — prompting user to grant Screen Recording")
+            return
+        }
 
         // 1. Use AX text if available, otherwise OCR the captured image
         let rawText: String
@@ -167,6 +203,14 @@ final class HolmesAgent {
         currentContext = heuristicContext
         lastUpdated = Date()
         isAnalyzing = false
+
+        // Always evaluate proactive playbooks against the freshest OCR context.
+        // (The old "browser extension owns evaluation" skip suppressed EVERY auto
+        // playbook on Comet whenever the extension had posted recently — email /
+        // GitHub / Claude auto-actions silently never fired. The debounce now keys
+        // on the stable window title, so two context sources can't break it, and
+        // per-context cooldowns stop any double-draft.)
+        evaluatePlaybooks(snapshot: snapshot)
 
         // 3. LLM enrichment for context + suggestions (non-blocking for proposals)
         if LocalModelEngine.shared.isAvailable {
@@ -200,6 +244,31 @@ final class HolmesAgent {
 
         logActivity(context: currentContext)
         print("[Holmes] Done — \(currentContext.description)")
+    }
+
+    // MARK: - Proactive playbooks
+
+    /// Classifies the snapshot, folds in imminent-meeting entities, and hands the
+    /// resulting PlaybookContext to the PlaybookEngine for evaluation.
+    private func evaluatePlaybooks(snapshot: ContextSnapshot) {
+        let classified = ContextEngine.shared.classify(snapshot: snapshot)
+        var entities = classified.entities
+
+        // Meeting starting within 15 minutes → let the meeting-prep playbook fire.
+        if let meeting = CalendarEngine.shared.upcomingMeetings.first(where: { $0.minutesUntil <= 15 }) {
+            entities["eventTitle"] = meeting.title
+            entities["eventId"] = meeting.id
+        }
+
+        let ctx = PlaybookContext(
+            appName: snapshot.appName,
+            windowTitle: snapshot.windowTitle,
+            contextType: classified.type.rawValue,
+            screenText: snapshot.ocrText,
+            entities: entities
+        )
+        print("[Holmes] Playbook eval — type: \(classified.type.rawValue), app: \(snapshot.appName), entities: [\(entities.keys.sorted().joined(separator: ", "))]")
+        PlaybookEngine.shared.evaluate(ctx)
     }
 
     // MARK: - Proactive action proposals
@@ -237,19 +306,32 @@ final class HolmesAgent {
         let emailCompose = ContextEngine.shared.isEmailComposePublic(text: ocrLower)
         let emailInbox   = ContextEngine.shared.isEmailInboxPublic(text: ocrLower)
 
+        // De-dupe against proactive playbooks: when the corresponding playbook is
+        // enabled AND can actually produce a draft, it owns this surface — skip the
+        // legacy proposal so the user never gets two cards for one email/chat.
+        // With no model backend a playbook would fire and produce nothing, so it
+        // must not suppress the legacy paths (especially the zero-LLM heuristic
+        // availability reply, which works on a completely unconfigured install).
+        let playbookCanRun = AnthropicConfig.isConfigured || LocalModelEngine.shared.isAvailable
+        let emailPlaybookOwns = playbookCanRun && PlaybookEngine.isEnabled("email-reply")
+        let chatPlaybookOwns  = playbookCanRun && PlaybookEngine.isEnabled("chat-reply")
+
         if emailCompose {
+            guard !emailPlaybookOwns else { return }
             if let proposal = await detectEmailDraft(snapshot: snapshot) {
                 lastProposedFingerprint = fingerprint
                 lastProposedTime = Date()
                 ConfirmationBus.shared.propose(proposal)
             }
         } else if emailInbox || snapshot.appName.lowercased().contains("mail") {
+            guard !emailPlaybookOwns else { return }
             if let proposal = await detectEmailReply(snapshot: snapshot) {
                 lastProposedFingerprint = fingerprint
                 lastProposedTime = Date()
                 ConfirmationBus.shared.propose(proposal)
             }
         } else if isIMessage {
+            guard !chatPlaybookOwns else { return }
             // Fast path: heuristic availability reply (no LLM needed)
             if ContextEngine.shared.isAvailabilityQuestionPublic(text: snapshot.ocrText),
                let proposal = heuristicAvailabilityReply(snapshot: snapshot) {
@@ -263,6 +345,7 @@ final class HolmesAgent {
             }
         } else {
             // Discord/Slack
+            guard !chatPlaybookOwns else { return }
             if let proposal = await detectUnreadMessage(snapshot: snapshot) {
                 lastProposedFingerprint = fingerprint
                 lastProposedTime = Date()

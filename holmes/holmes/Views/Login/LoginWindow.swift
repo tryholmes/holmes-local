@@ -29,9 +29,6 @@ class LoginWindowController: NSObject {
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             window.animator().alphaValue = 1
         }
-
-        // Observe auth state changes
-        observeAuthState()
     }
 
     func hide() {
@@ -58,22 +55,10 @@ class LoginWindowController: NSObject {
         w.isMovableByWindowBackground = true
         w.isOpaque = false
         w.backgroundColor = .clear
-        w.contentView = NSHostingView(rootView: LoginView())
+        w.contentView = NSHostingView(rootView: LoginView(onProceed: { [weak self] in
+            self?.hide()
+            self?.onLoginSuccess?()
+        }))
         self.window = w
-    }
-
-    private func observeAuthState() {
-        Task { @MainActor [weak self] in
-            // Continuously check isAuthenticated using @Observable tracking
-            while true {
-                if ClerkAuthManager.shared.isAuthenticated {
-                    self?.hide()
-                    self?.onLoginSuccess?()
-                    return
-                }
-                // Yield to avoid tight loop; @Observable will re-run body on changes
-                try? await Task.sleep(nanoseconds: 200_000_000) // 0.2s check
-            }
-        }
     }
 }

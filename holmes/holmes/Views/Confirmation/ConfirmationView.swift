@@ -52,13 +52,70 @@ final class ConfirmationBus {
     var pendingAction: PendingAction? = nil
     var isShowing: Bool = false
 
+    // Proactive playbook drafts (draft-never-send). A draft never preempts a live
+    // approval card — it queues behind whatever is currently showing.
+    var pendingDraft: ProactiveDraft? = nil
+    @ObservationIgnored private var draftQueue: [ProactiveDraft] = []
+
     // Set while an agent tool call awaits the user's decision (see `decide`).
     @ObservationIgnored private var decisionHandler: ((AgentDecision) -> Void)?
 
     func propose(_ action: PendingAction) {
+        // A live approval outranks a proactive draft — push the draft back in line.
+        if let draft = pendingDraft {
+            draftQueue.insert(draft, at: 0)
+            pendingDraft = nil
+        }
         pendingAction = action
         isShowing = true
         ConfirmationWindowController.shared.show()
+    }
+
+    /// Surfaces a playbook draft for review. Queues if something is already showing.
+    /// De-duped by id: re-proposing the draft that's already on screen just brings
+    /// the window forward, and a draft can sit in the queue at most once — so
+    /// clicking a DraftRow repeatedly can't enqueue ghost copies.
+    func proposeDraft(_ draft: ProactiveDraft) {
+        if pendingDraft?.id == draft.id {
+            ConfirmationWindowController.shared.show()
+            return
+        }
+        draftQueue.removeAll { $0.id == draft.id }
+        guard pendingAction == nil, pendingDraft == nil else {
+            draftQueue.append(draft)
+            return
+        }
+        pendingDraft = draft
+        isShowing = true
+        ConfirmationWindowController.shared.show()
+    }
+
+    /// Writes the review card's live edits back into the pending draft, so a
+    /// preempting approval card (which re-queues the draft) can't discard them.
+    func updatePendingDraftBody(_ body: String) {
+        guard var draft = pendingDraft, draft.body != body else { return }
+        draft.body = body
+        pendingDraft = draft
+    }
+
+    /// Removes a draft from the queue only (leaves a showing card alone). Called
+    /// when PlaybookEngine's 20-draft cap evicts a draft.
+    func removeQueuedDraft(id: UUID) {
+        draftQueue.removeAll { $0.id == id }
+    }
+
+    /// Drops every queued draft and closes a showing draft card. Called by
+    /// PlaybookEngine.clearDrafts() so "Clear all drafts" can't leave ghost cards.
+    /// Leaves approval cards untouched.
+    func clearAllDrafts() {
+        draftQueue.removeAll()
+        if pendingDraft != nil {
+            pendingDraft = nil
+            if pendingAction == nil {
+                isShowing = false
+                ConfirmationWindowController.shared.hide()
+            }
+        }
     }
 
     /// Proposes an action and suspends until the user approves or dismisses it.
@@ -70,14 +127,42 @@ final class ConfirmationBus {
         }
     }
 
-    func dismiss() {
+    /// Closes the showing card. For drafts this only CLOSES the popup by
+    /// default — the draft stays in PlaybookEngine.drafts (and the MainPanel
+    /// Drafts section) for later review, which is that list's whole purpose.
+    /// Pass `removeDraft: true` only where removal is what the user expects:
+    /// the post-action completion (Copy/Insert/Open succeeded).
+    func dismiss(removeDraft: Bool = false) {
         if let handler = decisionHandler {
             decisionHandler = nil
             handler(.dismissed)
         }
+        if let draft = pendingDraft {
+            if removeDraft {
+                let draftId = draft.id
+                Task { @MainActor in PlaybookEngine.shared.dismiss(draftId) }
+            }
+            pendingDraft = nil
+        }
         isShowing = false
         pendingAction = nil
         ConfirmationWindowController.shared.hide()
+        showNextDraftSoon()
+    }
+
+    /// Surfaces the next queued draft once the panel is idle again (after the
+    /// hide animation has had time to finish).
+    private func showNextDraftSoon() {
+        guard !draftQueue.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self,
+                  self.pendingAction == nil, self.pendingDraft == nil,
+                  !self.draftQueue.isEmpty
+            else { return }
+            self.pendingDraft = self.draftQueue.removeFirst()
+            self.isShowing = true
+            ConfirmationWindowController.shared.show()
+        }
     }
 
     func execute() {
@@ -90,6 +175,7 @@ final class ConfirmationBus {
             pendingAction = nil
             ConfirmationWindowController.shared.hide()
             handler(.approved(text: text))
+            showNextDraftSoon()
             return
         }
 
@@ -140,8 +226,15 @@ struct ConfirmationView: View {
     @State private var editedText: String = ""
     @State private var isEditing: Bool = false
 
+    // Draft review card state.
+    @State private var draftBody: String = ""
+    @State private var draftResult: String? = nil
+    @State private var draftIsExecuting: Bool = false
+
     var body: some View {
-        if let action = bus.pendingAction {
+        if let draft = bus.pendingDraft {
+            draftContent(draft: draft)
+        } else if let action = bus.pendingAction {
             content(action: action)
         } else {
             Color.clear.frame(width: 1, height: 1)
@@ -305,6 +398,294 @@ struct ConfirmationView: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+
+    // MARK: - Draft review card (proactive playbooks — draft-never-send)
+
+    @ViewBuilder private func draftContent(draft: ProactiveDraft) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            draftHeader(draft: draft)
+            Divider().background(Color(hex: "1E2D38"))
+            VStack(alignment: .leading, spacing: 12) {
+                draftTitleSection(draft: draft)
+                draftBodySection(draft: draft)
+                draftFooter(draft: draft)
+            }
+            .padding(16)
+        }
+        // Apple-glass backdrop matching the Holmes panel / login windows, instead
+        // of a flat opaque fill.
+        .background(
+            ZStack {
+                VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+                Color(hex: "111820").opacity(0.55)
+            }
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(hex: "B8881C").opacity(0.3), lineWidth: 1))
+        .shadow(color: Color.black.opacity(0.35), radius: 24, x: 0, y: 6)
+        .onAppear { syncDraftState(draft) }
+        .onChange(of: draft.id) { syncDraftState(draft) }
+        // Persist edits into the bus's copy so a preempting approval card
+        // (propose() re-queues pendingDraft) carries them when the draft returns.
+        .onChange(of: draftBody) { bus.updatePendingDraftBody(draftBody) }
+    }
+
+    private func syncDraftState(_ draft: ProactiveDraft) {
+        draftBody = draft.body
+        draftResult = nil
+        draftIsExecuting = false
+    }
+
+    @ViewBuilder private func draftHeader(draft: ProactiveDraft) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundColor(Color(hex: "B8881C"))
+            Text("HOLMES DRAFTED — REVIEW")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(Color(hex: "5A7A8A"))
+                .tracking(2)
+            Spacer()
+            Button(action: { bus.dismiss() }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(Color(hex: "3D5A6A"))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .background(Color(hex: "0D1318").opacity(0.4))
+    }
+
+    @ViewBuilder private func draftTitleSection(draft: ProactiveDraft) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Text(kindLabel(draft.kind))
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .tracking(1)
+                    .foregroundColor(Color(hex: "0A0F14"))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color(hex: "B8881C"))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                Text(draft.title)
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Color(hex: "E8D5A3"))
+                    .lineLimit(1)
+            }
+            Text(draft.contextSummary)
+                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .foregroundColor(Color(hex: "5A7A8A"))
+                .lineLimit(2)
+            // Ground truth about the staged Gmail draft (recipient/subject from
+            // the actual tool call, never model prose) — the user must see where
+            // an unattended draft is addressed before opening Gmail.
+            if let stagedNote = draft.stagedNote {
+                HStack(alignment: .top, spacing: 5) {
+                    Image(systemName: "envelope.badge.person.crop")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(Color(hex: "B8881C"))
+                    Text(stagedNote)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(Color(hex: "E8D5A3"))
+                        .lineLimit(3)
+                }
+                .padding(.top, 2)
+            }
+        }
+    }
+
+    @ViewBuilder private func draftBodySection(draft: ProactiveDraft) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("DRAFT — EDITABLE")
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(Color(hex: "3D5A6A"))
+                .tracking(2)
+
+            // Taller editable body so long drafts are readable without clipping;
+            // TextEditor scrolls internally past the max height, and the draft
+            // window (see ConfirmationWindowController) is sized to keep the
+            // Copy/Insert/Dismiss row visible below it.
+            TextEditor(text: $draftBody)
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .foregroundColor(Color(hex: "BDD0D8"))
+                .scrollContentBackground(.hidden)
+                .background(Color(hex: "0A0F14"))
+                .frame(minHeight: 120, maxHeight: 200)
+                .padding(8)
+                .background(Color(hex: "0A0F14"))
+                .clipShape(RoundedRectangle(cornerRadius: 5))
+                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "B8881C").opacity(0.5), lineWidth: 1))
+        }
+    }
+
+    @ViewBuilder private func draftFooter(draft: ProactiveDraft) -> some View {
+        if let result = draftResult {
+            HStack(spacing: 6) {
+                Image(systemName: result.hasPrefix("✓") ? "checkmark.circle.fill" : "xmark.circle.fill")
+                    .foregroundColor(result.hasPrefix("✓") ? Color(hex: "5DBB7A") : Color(hex: "E05252"))
+                Text(result)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(result.hasPrefix("✓") ? Color(hex: "5DBB7A") : Color(hex: "E05252"))
+            }
+        } else if draftIsExecuting {
+            HStack(spacing: 8) {
+                ProgressView().scaleEffect(0.6).tint(Color(hex: "B8881C"))
+                Text("Staging...")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(Color(hex: "5A7A8A"))
+            }
+        } else {
+            HStack(spacing: 8) {
+                draftPrimaryControl(draft: draft)
+                draftSecondaryCopyButton(draft: draft)
+                Button(action: { bus.dismiss() }) {
+                    Text("Dismiss")
+                        .font(.system(size: 13, weight: .regular, design: .monospaced))
+                        .foregroundColor(Color(hex: "5A7A8A"))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(Color(hex: "0D1318"))
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: "1E2D38"), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder private func draftPrimaryControl(draft: ProactiveDraft) -> some View {
+        switch draft.target {
+        case .typeIntoApp(let appName):
+            draftPrimaryButton(title: "Insert", icon: "text.insert") {
+                insertDraft(draft, appName: appName)
+            }
+        case .remoteDraft(let urlString):
+            if let urlString, let url = URL(string: urlString) {
+                draftPrimaryButton(title: "Open Draft", icon: "arrow.up.forward.app") {
+                    NSWorkspace.shared.open(url)
+                    finishDraft(draft, result: "✓ Opened draft")
+                }
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(Color(hex: "5DBB7A"))
+                    Text("Saved in Gmail Drafts")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(hex: "5DBB7A"))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+            }
+        case .clipboard:
+            draftPrimaryButton(title: "Copy", icon: "doc.on.doc") {
+                copyDraftBody()
+                finishDraft(draft, result: "✓ Copied to clipboard")
+            }
+        }
+    }
+
+    /// Secondary Copy — always offered unless the primary action is already Copy.
+    @ViewBuilder private func draftSecondaryCopyButton(draft: ProactiveDraft) -> some View {
+        switch draft.target {
+        case .clipboard:
+            EmptyView()
+        default:
+            Button(action: {
+                copyDraftBody()
+                finishDraft(draft, result: "✓ Copied to clipboard")
+            }) {
+                Text("Copy")
+                    .font(.system(size: 13, weight: .regular, design: .monospaced))
+                    .foregroundColor(Color(hex: "5A7A8A"))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color(hex: "0D1318"))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: "1E2D38"), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder private func draftPrimaryButton(title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .bold))
+                Text(title)
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+            }
+            .foregroundColor(Color(hex: "0A0F14"))
+            .padding(.horizontal, 18)
+            .padding(.vertical, 10)
+            .background(Color(hex: "5DBB7A"))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Draft actions
+
+    /// Stages the EDITED draft body into the target app at the current cursor —
+    /// no select-all (a draft can be inserted long after its context, and Cmd+A
+    /// could wipe whatever now has focus, e.g. a document in the same browser).
+    /// Never presses Send/Return.
+    private func insertDraft(_ draft: ProactiveDraft, appName: String) {
+        draftIsExecuting = true
+        let text = draftBody
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = ActionExecutor.shared.stageTextInApp(appName, text: text)
+            DispatchQueue.main.async {
+                // The card may have moved on (dismissed, next draft shown) while
+                // staging ran — never write result state onto a different card.
+                guard bus.pendingDraft?.id == draft.id else { return }
+                draftIsExecuting = false
+                if ok {
+                    finishDraft(draft, result: "✓ Staged in \(appName) — you press Send")
+                } else {
+                    draftResult = "Failed to insert into \(appName)"
+                }
+            }
+        }
+    }
+
+    private func copyDraftBody() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(draftBody, forType: .string)
+    }
+
+    /// Shows a brief result line, then closes the card. The draft was acted on
+    /// (copied/inserted/opened), so this is the one path that also removes it
+    /// from PlaybookEngine's list — a plain X/Dismiss keeps it for later.
+    private func finishDraft(_ draft: ProactiveDraft, result: String) {
+        draftResult = result
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
+            // Only auto-dismiss if this draft is still the one on screen.
+            if bus.pendingDraft?.id == draft.id { bus.dismiss(removeDraft: true) }
+        }
+    }
+
+    private func kindLabel(_ kind: DraftKind) -> String {
+        switch kind {
+        case .emailReply:       return "EMAIL REPLY"
+        case .promptSuggestion: return "PROMPT"
+        case .repoBrief:        return "REPO BRIEF"
+        case .linkedInPost:     return "LINKEDIN POST"
+        case .meetingPrep:      return "MEETING PREP"
+        case .chatReply:        return "CHAT REPLY"
+        case .aiAnswer:         return "AI ANSWER"
+        case .briefing:         return "YOUR DAY"
+        case .triage:           return "INBOX TRIAGE"
+        case .followUp:         return "FOLLOW-UPS"
+        case .prRadar:          return "PR RADAR"
+        case .scheduleAlert:    return "SCHEDULE ALERT"
+        case .wrapup:           return "DAY WRAP-UP"
         }
     }
 }

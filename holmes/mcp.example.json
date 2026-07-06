@@ -22,6 +22,11 @@
     "remote_example": {
       "url": "https://mcp.example.com/mcp",
       "bearerToken": "YOUR_TOKEN_HERE"
+    },
+
+    "composio": {
+      "url": "https://backend.composio.dev/v3/mcp/YOUR_SERVER_ID?user_id=YOUR_USER_ID",
+      "headers": { "x-api-key": "YOUR_COMPOSIO_API_KEY" }
     }
   }
 }

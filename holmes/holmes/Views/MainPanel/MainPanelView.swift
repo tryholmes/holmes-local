@@ -4,7 +4,7 @@ struct MainPanelView: View {
     @Binding var isVisible: Bool
     @State private var agent = HolmesAgent.shared
     @State private var calendar = CalendarEngine.shared
-    @State private var localSuggestions: [ActionSuggestion] = ActionSuggestion.samples
+    @State private var playbooks = PlaybookEngine.shared
     @State private var cardsAppeared = false
 
     var body: some View {
@@ -29,13 +29,11 @@ struct MainPanelView: View {
                         statusRow
                             .cardEntrance(appeared: cardsAppeared, delay: 0.08)
 
-                        // Action suggestions
-                        ActionSuggestions(
-                            suggestions: agent.suggestedActions.isEmpty ? localSuggestions : agent.suggestedActions,
-                            onSelect: { selectSuggestion($0) },
-                            onApproveAll: { approveAllSuggestions(agent.suggestedActions.isEmpty ? localSuggestions : agent.suggestedActions) }
-                        )
-                        .cardEntrance(appeared: cardsAppeared, delay: 0.12)
+                        // Proactive drafts (playbooks — draft-never-send)
+                        if !playbooks.drafts.isEmpty {
+                            DraftsCard(drafts: playbooks.drafts)
+                                .cardEntrance(appeared: cardsAppeared, delay: 0.14)
+                        }
 
                         // Meetings
                         if !calendar.upcomingMeetings.isEmpty {
@@ -215,19 +213,6 @@ struct MainPanelView: View {
         .padding(.horizontal, 4)
     }
 
-    // MARK: Actions
-
-    private func selectSuggestion(_ suggestion: ActionSuggestion) {
-        if let i = localSuggestions.firstIndex(where: { $0.id == suggestion.id }) {
-            localSuggestions[i].isSelected.toggle()
-        }
-    }
-
-    private func approveAllSuggestions(_ current: [ActionSuggestion]) {
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-            for i in localSuggestions.indices { localSuggestions[i].isSelected = true }
-        }
-    }
 }
 
 // MARK: - Card entrance modifier
@@ -348,6 +333,106 @@ struct MeetingRow: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Drafts Card (proactive playbooks)
+
+struct DraftsCard: View {
+    let drafts: [ProactiveDraft]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                ZStack {
+                    Circle()
+                        .fill(Color.white.opacity(0.10))
+                        .frame(width: 22, height: 22)
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(NoirColors.textPrimary)
+                }
+                Text("DRAFTS")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(NoirColors.textSecondary)
+                    .tracking(2)
+                Spacer()
+                Button(action: { PlaybookEngine.shared.clearDrafts() }) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(NoirColors.iconSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear all drafts")
+            }
+
+            ForEach(drafts.prefix(4)) { DraftRow(draft: $0) }
+        }
+        .padding(12)
+        .background(NoirColors.glassSurface)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(NoirColors.glassStroke.opacity(0.6), lineWidth: 0.75)
+        )
+    }
+}
+
+struct DraftRow: View {
+    let draft: ProactiveDraft
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: { ConfirmationBus.shared.proposeDraft(draft) }) {
+            HStack(spacing: 10) {
+                Image(systemName: kindIcon(draft.kind))
+                    .font(.system(size: 12))
+                    .foregroundColor(NoirColors.textSecondary)
+                    .frame(width: 20)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(draft.title)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(NoirColors.textPrimary)
+                        .lineLimit(1)
+                    Text(draft.contextSummary)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(NoirColors.textTertiary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Text(draft.createdAt, style: .relative)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(NoirColors.textTertiary)
+            }
+            .padding(.vertical, 4)
+            .padding(.horizontal, 4)
+            .background(isHovered ? Color.white.opacity(0.06) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .help("Review this draft")
+        .onHover { isHovered = $0 }
+    }
+
+    private func kindIcon(_ kind: DraftKind) -> String {
+        switch kind {
+        case .emailReply:       return "envelope.badge"
+        case .promptSuggestion: return "wand.and.stars"
+        case .repoBrief:        return "arrow.triangle.branch"
+        case .linkedInPost:     return "text.badge.checkmark"
+        case .meetingPrep:      return "calendar.badge.clock"
+        case .chatReply:        return "bubble.left.and.bubble.right"
+        case .aiAnswer:         return "magnifyingglass.circle"
+        case .briefing:         return "sunrise"
+        case .triage:           return "tray.full"
+        case .followUp:         return "arrow.uturn.left.circle"
+        case .prRadar:          return "dot.radiowaves.left.and.right"
+        case .scheduleAlert:    return "exclamationmark.shield"
+        case .wrapup:           return "moon.stars"
+        }
     }
 }
 

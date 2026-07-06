@@ -52,7 +52,13 @@ final class OCREngine {
 
             let handler = VNImageRequestHandler(cgImage: image, options: [:])
             DispatchQueue.global(qos: .userInitiated).async {
-                try? handler.perform([request])
+                do {
+                    try handler.perform([request])
+                } catch {
+                    // If perform() throws, the completion handler never fires — resume
+                    // here so the awaiting analysis pipeline can never hang forever.
+                    continuation.resume(returning: OCRResult(fullText: "", lines: [], confidence: 0))
+                }
             }
         }
     }

@@ -40,7 +40,7 @@ final class ContextEngine {
         let text = snapshot.ocrText
 
         let description = inferDescription(app: app, title: title, text: text, meetings: meetings)
-        let icon = iconForScreen(app: app, text: text)
+        let icon = iconForScreen(app: app, text: text, title: title)
 
         return DetectedContext(icon: icon, description: description, appName: app)
     }
@@ -102,9 +102,13 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
 
     func parseLLMResponse(_ raw: String) -> LLMContextResponse? {
         var json = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Strip markdown code fences if model wraps response
-        if let start = json.range(of: "{"), let end = json.range(of: "}", options: .backwards) {
-            json = String(json[start.lowerBound...end.lowerBound]) + "}"
+        // Strip markdown code fences if model wraps response.
+        // Slice from the first "{" through the last "}" — end.upperBound already
+        // sits just past the closing brace, so nothing extra gets appended.
+        if let start = json.range(of: "{"),
+           let end = json.range(of: "}", options: .backwards),
+           start.lowerBound <= end.lowerBound {
+            json = String(json[start.lowerBound..<end.upperBound])
         }
 
         guard let data = json.data(using: .utf8),
@@ -116,15 +120,288 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
         return LLMContextResponse(summary: summary, actions: actions)
     }
 
+    // MARK: - Context classification (playbooks)
+    // Structured counterpart to inferDescription: same heuristics, but returns a
+    // typed context + canonical entities so callers can build a PlaybookContext.
+    // Canonical entity keys: "sender", "subject", "recipient", "contact",
+    // "promptText", "repoOwner", "repoName", "platform", "eventTitle", "eventId".
+
+    enum ContextType: String {
+        case emailCompose
+        case emailInbox
+        case iMessage
+        case chat
+        case aiPrompting
+        case githubRepo
+        case linkedIn
+        case coding
+        case browsing
+        case unknown
+    }
+
+    struct ClassifiedContext {
+        let type: ContextType
+        let entities: [String: String]
+    }
+
+    /// Classifies a snapshot into a ContextType with canonical entities.
+    /// App/title-based signals (AI chat, LinkedIn, GitHub) run first because
+    /// they are more specific than OCR keyword counting.
+    func classify(snapshot: ContextSnapshot) -> ClassifiedContext {
+        let app = snapshot.appName
+        let title = snapshot.windowTitle
+        let text = snapshot.ocrText
+        let t = text.lowercased()
+        let appL = app.lowercased()
+        let titleL = title.lowercased()
+        let onBrowser = isBrowserApp(appL)
+        var entities: [String: String] = [:]
+
+        // ── AI prompting (Claude / ChatGPT / Gemini) ─────────────────────
+        if let platform = detectAIPlatform(app: app, title: title) {
+            entities["platform"] = platform
+            if let prompt = extractPromptText(from: text) {
+                entities["promptText"] = prompt
+            }
+            return ClassifiedContext(type: .aiPrompting, entities: entities)
+        }
+
+        // ── LinkedIn ─────────────────────────────────────────────────────
+        if appL.contains("linkedin") || titleL.contains("linkedin") {
+            entities["platform"] = "linkedin"
+            return ClassifiedContext(type: .linkedIn, entities: entities)
+        }
+
+        // ── GitHub repo ──────────────────────────────────────────────────
+        //    Detect from ANY of: "github" in the title, a github.com URL in OCR,
+        //    or (on a browser) a cluster of GitHub-only UI words — repo tabs are
+        //    often titled just "owner/repo: description" with no "github" anywhere
+        //    and OCR frequently misses the address bar, so the visible UI is the
+        //    most reliable signal.
+        let githubUIHits = ["pull requests", "pull request", "issues", "commits",
+                            "branches", "fork", "contributors", "releases",
+                            "actions", "insights", "watch", "star"]
+            .filter { t.contains($0) }.count
+        let looksLikeGitHub = titleL.contains("github")
+            || (onBrowser && t.contains("github.com"))
+            || (onBrowser && githubUIHits >= 3)
+        if looksLikeGitHub {
+            // Prefer the "owner/repo" from the tab title; fall back to scanning the
+            // OCR for a repo slug so the brief still has a target.
+            if let repo = extractGitHubRepo(fromTitle: title)
+                ?? extractGitHubRepo(fromTitle: text) {
+                entities["repoOwner"] = repo.owner
+                entities["repoName"] = repo.name
+            }
+            return ClassifiedContext(type: .githubRepo, entities: entities)
+        }
+
+        // ── Email — only on a genuine email surface (an email client, webmail,
+        //    or unambiguous compose UI). This stops terminal/editor text (which
+        //    can share generic words like "sent"/"drafts") from reading as email
+        //    and prevents a bogus "sender" entity being scraped from code output.
+        let emailSurface = isEmailSurface(app: app, title: title, text: text)
+        if isEmailCompose(text: t),
+           emailSurface || t.contains("compose email") || t.contains("new email") {
+            if let to = extractField("to", from: text) ?? extractEmailRecipient(from: text) {
+                entities["recipient"] = to
+            }
+            if let subject = extractField("subject", from: text) {
+                entities["subject"] = subject
+            }
+            return ClassifiedContext(type: .emailCompose, entities: entities)
+        }
+        if emailSurface, isEmailInbox(text: t) {
+            if let sender = extractEmailSender(from: text) {
+                entities["sender"] = sender
+            }
+            if let subject = extractField("subject", from: text) {
+                entities["subject"] = subject
+            }
+            return ClassifiedContext(type: .emailInbox, entities: entities)
+        }
+
+        // ── iMessage ─────────────────────────────────────────────────────
+        if isIMessage(app: app) {
+            let contact = extractIMessageSender(from: text)
+                ?? (title.isEmpty || titleL == "messages" ? nil : title)
+            if let contact { entities["contact"] = contact }
+            return ClassifiedContext(type: .iMessage, entities: entities)
+        }
+
+        // ── Discord / Slack ──────────────────────────────────────────────
+        if isDiscordOrSlack(text: t, app: appL) {
+            entities["platform"] = (appL.contains("discord") || t.contains("discord")) ? "discord" : "slack"
+            if let channel = extractChannelOrDM(from: text) {
+                entities["contact"] = channel
+            }
+            return ClassifiedContext(type: .chat, entities: entities)
+        }
+
+        // ── Coding / browsing / fallback ─────────────────────────────────
+        if appL.contains("xcode") || appL.contains("cursor") ||
+           appL.contains("code") || appL.contains("vscode") {
+            return ClassifiedContext(type: .coding, entities: entities)
+        }
+        if onBrowser {
+            return ClassifiedContext(type: .browsing, entities: entities)
+        }
+        return ClassifiedContext(type: .unknown, entities: entities)
+    }
+
+    // MARK: - AI-prompting / GitHub / LinkedIn detectors
+
+    /// Returns "claude", "chatgpt", or "gemini" when the frontmost app or
+    /// window title indicates an AI chat surface; nil otherwise.
+    func detectAIPlatform(app: String, title: String) -> String? {
+        let combined = app.lowercased() + " " + title.lowercased()
+        if combined.contains("claude") { return "claude" }
+        if combined.contains("chatgpt") || combined.contains("openai") { return "chatgpt" }
+        if combined.contains("gemini") { return "gemini" }
+        return nil
+    }
+
+    private func aiPlatformDisplayName(_ platform: String) -> String {
+        switch platform {
+        case "claude": return "Claude"
+        case "chatgpt": return "ChatGPT"
+        case "gemini": return "Gemini"
+        default: return platform
+        }
+    }
+
+    /// Best-effort extraction of the user's in-progress prompt from an AI chat
+    /// UI. The input box sits at the bottom of the window, so scan trailing OCR
+    /// lines and keep the last contiguous block of substantive text, skipping
+    /// UI chrome the same way the iMessage extractor does.
+    func extractPromptText(from text: String) -> String? {
+        let lines = text.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        let noise = ["send", "stop", "submit", "new chat", "chatgpt", "claude", "gemini",
+                     "regenerate", "copy", "share", "retry", "edit", "model", "upgrade",
+                     "settings", "search", "attach", "voice", "canvas", "tools",
+                     "temporary", "message chatgpt", "message claude", "reply to claude",
+                     "reply to chatgpt", "send a message", "send message", "ask anything",
+                     "ask gemini", "how can i help", "what can i help",
+                     "how can i help you today", "what are you working on", "free plan",
+                     "pro plan", "sonnet", "opus", "haiku", "gpt", "thinking",
+                     "deep research", "projects", "skip to content", "connect apps",
+                     "use tools", "add content", "claude can make mistakes",
+                     "chatgpt can make mistakes", "double-check responses",
+                     // Holmes UI noise — panel text that leaks into OCR
+                     "holmes", "debug", "ocr", "context", "detected", "suggested",
+                     "approve", "dismiss", "customize", "actions", "run", "ask", "plan"]
+
+        // Walk upward from the bottom of the screen; collect the first
+        // contiguous block of non-chrome lines (that's the input area).
+        var collected: [String] = []
+        let trailingChrome = CharacterSet(charactersIn: " .…")
+        for line in lines.reversed() {
+            // Strip trailing spaces/periods/ellipsis so an empty-composer
+            // placeholder rendered as "Reply to Claude…" still matches the
+            // "reply to claude" chrome term and isn't returned as a fake prompt.
+            let l = line.lowercased().trimmingCharacters(in: trailingChrome)
+            // A line is chrome when it EXACTLY equals a noise term (a button /
+            // placeholder label), or when it starts with a MULTI-WORD chrome
+            // phrase ("message chatgpt", "reply to claude", "how can i help").
+            // Single-word terms are only trusted as exact matches — otherwise a
+            // short real prompt like "run my tests" or "edit this draft" would be
+            // dropped just because it starts with "run"/"edit". This is what made
+            // brief in-progress prompts vanish before they could be coached.
+            let isNoise = noise.contains { term in
+                if l == term { return true }
+                return term.contains(" ") && l.hasPrefix(term + " ")
+            }
+                || l.contains("http")
+                || line.count < 4
+            if isNoise {
+                if collected.isEmpty { continue }   // still below the input block
+                break                               // hit chrome above the block
+            }
+            collected.append(line)
+            if collected.count >= 5 { break }
+        }
+        guard !collected.isEmpty else { return nil }
+        let prompt = collected.reversed().joined(separator: " ")
+        // Keep short prompts: an in-progress question like "how to make a car?"
+        // (18 chars) must survive so Prompt Coach can improve it. Only drop
+        // fragments too small to be a real instruction.
+        guard prompt.count >= 8 else { return nil }
+        return String(prompt.prefix(400))
+    }
+
+    /// Parses "owner/repo" from a browser window title following GitHub's title
+    /// convention (e.g. "GitHub - owner/repo: description" or "owner/repo · …").
+    /// Callers gate on a GitHub signal (title or OCR URL) before trusting this.
+    func extractGitHubRepo(fromTitle title: String) -> (owner: String, name: String)? {
+        var t = title
+        // Drop a leading "GitHub - " / "GitHub · " prefix so the anchor lands
+        // on the owner segment.
+        if let prefix = t.range(of: "^\\s*github\\s*[-–—:·]\\s*",
+                                options: [.regularExpression, .caseInsensitive]) {
+            t.removeSubrange(prefix)
+        }
+        let pattern = "^\\s*([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)(?=[\\s:·–—-]|$)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = t as NSString
+        guard let match = regex.firstMatch(in: t, range: NSRange(location: 0, length: ns.length)),
+              match.numberOfRanges >= 3 else { return nil }
+        let owner = ns.substring(with: match.range(at: 1))
+        let name = ns.substring(with: match.range(at: 2))
+        guard !owner.isEmpty, !name.isEmpty else { return nil }
+        return (owner: owner, name: name)
+    }
+
     // MARK: - OCR-first heuristics
 
     private func inferDescription(app: String, title: String, text: String, meetings: [UpcomingMeeting] = []) -> String {
         let t = text.lowercased()
         let appL = app.lowercased()
-        print("[Context] app='\(app)' title='\(title)' emailCompose=\(isEmailCompose(text: t)) emailInbox=\(isEmailInbox(text: t))")
+        let titleL = title.lowercased()
+        let onBrowser = isBrowserApp(appL)
+        let emailSurface = isEmailSurface(app: app, title: title, text: text)
+        print("[Context] app='\(app)' title='\(title)' emailSurface=\(emailSurface) emailCompose=\(isEmailCompose(text: t)) emailInbox=\(isEmailInbox(text: t))")
 
-        // ── Email (Gmail, Outlook web, Apple Mail) ──────────────────────────
-        if isEmailCompose(text: t) {
+        // ── Explicit app/surface signals FIRST ───────────────────────────────
+        //    AI chat / LinkedIn / GitHub are far more specific than the OCR
+        //    keyword guesses below. Checking them first keeps a GitHub repo page
+        //    from being mislabeled "Watching YouTube" (a stray "youtube" in the
+        //    README) and keeps an AI chat from reading as email just because
+        //    "reply to Claude…" appears in the composer.
+
+        // ── AI prompting (Claude / ChatGPT / Gemini) ─────────────────────────
+        if let platform = detectAIPlatform(app: app, title: title) {
+            let name = aiPlatformDisplayName(platform)
+            if let prompt = extractPromptText(from: text) {
+                let short = prompt.count > 60 ? String(prompt.prefix(60)) + "…" : prompt
+                return "Prompting \(name) — \"\(short)\""
+            }
+            return "Prompting \(name)"
+        }
+
+        // ── LinkedIn ─────────────────────────────────────────────────────────
+        if appL.contains("linkedin") || titleL.contains("linkedin") {
+            return "Browsing LinkedIn"
+        }
+
+        // ── GitHub (title/URL signal — wins over generic video/keyword guesses)
+        //    Only a "github" window title or, in a browser, a github.com URL
+        //    counts; bare "commit"/"pull request" no longer trigger this (they
+        //    appear in editors too). If github.com shows up without a repo-shaped
+        //    title (e.g. a link on another page), fall through rather than lie.
+        if titleL.contains("github") || (onBrowser && t.contains("github.com")) {
+            if let repo = extractGitHubRepo(fromTitle: title) {
+                return "Working on GitHub — \(repo.owner)/\(repo.name)"
+            }
+            if titleL.contains("github") { return "Working on GitHub" }
+        }
+
+        // ── Email — only on a genuine email surface (Gmail, Outlook web, Apple
+        //    Mail, …). Gating on the surface stops terminal/editor text from
+        //    reading as "Composing/Reading email".
+        if emailSurface, isEmailCompose(text: t) {
             let to = extractField("to", from: text) ?? extractEmailRecipient(from: text)
             let subject = extractField("subject", from: text)
             if let to, let subject {
@@ -137,7 +414,7 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
             return "Composing a new email"
         }
 
-        if isEmailInbox(text: t) {
+        if emailSurface, isEmailInbox(text: t) {
             if let sender = extractEmailSender(from: text) {
                 return "Reading email from \(sender) in \(webServiceName(t) ?? app)"
             }
@@ -182,15 +459,13 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
             return sub != nil ? "Browsing Reddit — \(sub!)" : "Browsing Reddit"
         }
 
-        // ── YouTube ──────────────────────────────────────────────────────────
-        if t.contains("youtube") || t.contains("youtu.be") {
+        // ── YouTube (require a real YouTube URL or title, not a bare keyword) ─
+        //    "youtube" alone appears in README links, comments, and article text;
+        //    demand youtube.com / youtu.be / a "youtube" title so a GitHub or
+        //    docs page can't be mislabeled "Watching YouTube".
+        if titleL.contains("youtube") || t.contains("youtube.com") || t.contains("youtu.be") {
             let vidTitle = extractYouTubeTitle(from: text)
             return vidTitle != nil ? "Watching YouTube: \(vidTitle!)" : "Watching YouTube"
-        }
-
-        // ── GitHub ───────────────────────────────────────────────────────────
-        if t.contains("github.com") || t.contains("pull request") || t.contains("commit") {
-            return "Working on GitHub"
         }
 
         // ── Google Docs / Sheets / Slides ────────────────────────────────────
@@ -231,11 +506,7 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
         }
 
         // ── Any browser with a meaningful title ──────────────────────────────
-        let isBrowser = appL.contains("safari") || appL.contains("chrome") ||
-                        appL.contains("firefox") || appL.contains("arc") ||
-                        appL.contains("comet") || appL.contains("opera") ||
-                        appL.contains("brave") || appL.contains("edge")
-        if isBrowser && !title.isEmpty && title.lowercased() != appL {
+        if onBrowser && !title.isEmpty && titleL != appL {
             return "Browsing: \(title)"
         }
 
@@ -265,8 +536,47 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
     }
 
     private func isEmailInbox(text: String) -> Bool {
-        let signals = ["inbox", "sent", "drafts", "starred", "unread", "gmail", "outlook", "promotions", "primary", "social"]
-        return signals.filter { text.contains($0) }.count >= 2
+        // Brand/webmail words are strong: one, plus any mailbox-nav word, is an
+        // inbox. Generic nav words ("sent"/"drafts"/"primary") appear in
+        // terminals and editors too, so with NO brand word demand a thicker
+        // cluster before calling it an inbox.
+        let brand = ["gmail", "outlook", "mail.google.com", "proton mail", "protonmail", "yahoo mail"]
+        let nav = ["inbox", "sent", "drafts", "starred", "archive", "snooze",
+                   "promotions", "primary", "spam", "compose", "unread"]
+        let hasBrand = brand.contains { text.contains($0) }
+        let navCount = nav.filter { text.contains($0) }.count
+        if hasBrand && navCount >= 1 { return true }
+        return navCount >= 3
+    }
+
+    /// True when the frontmost app is a web browser (used to gate URL-in-OCR
+    /// signals like github.com so a code editor showing that URL in a comment
+    /// isn't mistaken for the page itself).
+    private func isBrowserApp(_ appL: String) -> Bool {
+        return appL.contains("safari") || appL.contains("chrome") ||
+               appL.contains("firefox") || appL.contains("arc") ||
+               appL.contains("comet") || appL.contains("opera") ||
+               appL.contains("brave") || appL.contains("edge") ||
+               appL.contains("vivaldi") || appL.contains("orion")
+    }
+
+    /// True when the surface is genuinely an email client or webmail. Email
+    /// classification is gated on this so terminal/editor text (which can share
+    /// generic words like "sent"/"drafts") never reads as an email — and no
+    /// "sender" entity is ever scraped from arbitrary code/terminal output.
+    private func isEmailSurface(app: String, title: String, text: String) -> Bool {
+        let a = app.lowercased()
+        let ti = title.lowercased()
+        let tx = text.lowercased()
+        // Native email clients (none of these substrings occur in terminal/editor
+        // app names like Terminal, iTerm, Warp, Ghostty, Xcode, Cursor, Code).
+        let emailApps = ["mail", "outlook", "spark", "airmail", "thunderbird",
+                         "mimestream", "canary", "superhuman", "postbox", "mailmate"]
+        if emailApps.contains(where: { a.contains($0) }) { return true }
+        // Webmail identified by URL/brand in the title or OCR.
+        let webmail = ["mail.google.com", "gmail", "outlook.office", "outlook.live",
+                       "mail.yahoo", "proton.me/mail", "protonmail", "fastmail.com"]
+        return webmail.contains { ti.contains($0) || tx.contains($0) }
     }
 
     private func isDiscordOrSlack(text: String, app: String) -> Bool {
@@ -467,14 +777,27 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
 
     // MARK: - Icon (also OCR-based)
 
-    private func iconForScreen(app: String, text: String) -> String {
+    private func iconForScreen(app: String, text: String, title: String = "") -> String {
         let t = text.lowercased()
         let a = app.lowercased()
-        if isEmailCompose(text: t) || isEmailInbox(text: t) { return "envelope" }
+        let ti = title.lowercased()
+        let onBrowser = isBrowserApp(a)
+        // Same gates as inferDescription so icon and description can't disagree.
+        // Envelope only on a genuine email surface (not bare "reply to"/"sent" in
+        // terminal/editor text); YouTube/GitHub require a real URL or window
+        // title, not a stray keyword in the OCR body — so a GitHub repo page whose
+        // README mentions "youtube" no longer shows the play icon.
+        if isEmailSurface(app: app, title: title, text: text),
+           isEmailCompose(text: t) || isEmailInbox(text: t) { return "envelope" }
         if isIMessage(app: app) { return "message.fill" }
         if isDiscordOrSlack(text: t, app: a) { return "bubble.left.and.bubble.right" }
-        if t.contains("youtube") { return "play.rectangle" }
-        if t.contains("github") { return "chevron.left.forwardslash.chevron.right" }
+        if detectAIPlatform(app: app, title: title) != nil { return "sparkles" }
+        if a.contains("linkedin") || ti.contains("linkedin") { return "person.crop.square" }
+        // YouTube only when the window TITLE says so (real watching puts "- YouTube"
+        // in the title) — never on a stray youtube.com link in another page's body,
+        // so a GitHub repo whose README links a video keeps the code icon.
+        if ti.contains("youtube") { return "play.rectangle" }
+        if ti.contains("github") || (onBrowser && t.contains("github.com")) { return "chevron.left.forwardslash.chevron.right" }
         if t.contains("figma") || a.contains("figma") { return "paintbrush" }
         if t.contains("notion") || a.contains("notion") { return "doc.text" }
         if a.contains("xcode") || a.contains("cursor") || a.contains("code") { return "chevron.left.forwardslash.chevron.right" }

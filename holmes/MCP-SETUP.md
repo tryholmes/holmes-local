@@ -110,6 +110,38 @@ Holmes speaks the Streamable-HTTP transport (handles both JSON and SSE replies) 
 
 ---
 
+---
+
+## 4. Holmes AS an MCP server — let other agents see your screen
+
+Holmes also *exposes* its live context as an MCP server, so **Claude Desktop, Cursor, or a
+voice agent can ask Holmes what's on your screen**. While Holmes is running it serves MCP at:
+
+```
+http://127.0.0.1:5767/mcp
+```
+
+It's bound to **loopback only** (no other machine can reach it) and exposes four read-only tools:
+`get_screen_context`, `get_active_app`, `get_upcoming_meetings`, `get_recent_activity`.
+
+**Point an HTTP-capable MCP client at it** (e.g. Claude Desktop's config):
+```json
+{ "mcpServers": { "holmes": { "url": "http://127.0.0.1:5767/mcp" } } }
+```
+
+**For clients that only launch stdio servers**, bridge with `mcp-remote`:
+```json
+{ "mcpServers": { "holmes": { "command": "npx", "args": ["-y", "mcp-remote", "http://127.0.0.1:5767/mcp"] } } }
+```
+
+Then ask that agent things like *"what am I looking at right now?"* — it calls Holmes's
+`get_screen_context` and answers from your actual screen.
+
+> Privacy: this serves your screen text on a local port with no auth. It's loopback-only, so
+> only apps on this Mac can read it — but be aware any local process can. Quit Holmes to stop it.
+
+---
+
 ## How approval works
 
 - **Read-only tools** (the server marks them with `readOnlyHint`) run automatically.
@@ -126,3 +158,90 @@ Holmes speaks the Streamable-HTTP transport (handles both JSON and SSE replies) 
   use an absolute `command` path in `mcp.json`.
 - First `npx`/`uvx` run downloads the package — Holmes allows up to 120s for the handshake.
 - Auth hangs → you skipped the one-time Terminal `auth` step; do it so the cached token exists.
+
+---
+
+## Composio: one connection, hundreds of actions
+
+[Composio](https://composio.dev) hosts managed MCP servers for 500+ SaaS toolkits — Gmail,
+Google Calendar, GitHub, Discord, LinkedIn, Perplexity and more — with all the OAuth handled
+for you. One entry in `mcp.json` gives Holmes every one of them, and powers Holmes's
+proactive playbooks (see below).
+
+> Heads-up: the old per-app pages at `mcp.composio.dev` now redirect to Composio's toolkit
+> catalog. MCP server creation lives in the **Composio dashboard**.
+
+**a. Create the Composio MCP server**
+
+1. Sign up / log in at [dashboard.composio.dev](https://dashboard.composio.dev).
+2. Create a new **MCP server** (MCP configs are managed under the dashboard's MCP /
+   connect-clients area) and add the toolkits Holmes uses:
+   **Gmail, Google Calendar, GitHub, Discord, LinkedIn, Perplexity**.
+   Each toolkit is backed by an auth config — Composio's built-in defaults are fine to start.
+3. **Connect each account (OAuth).** For every toolkit, click *Connect* and finish that
+   provider's consent screen. Composio stores and auto-refreshes the tokens; Holmes never
+   sees your passwords.
+4. Copy your server's **Streamable-HTTP URL**. It is per-user:
+   `https://backend.composio.dev/v3/mcp/<SERVER_ID>?user_id=<USER_ID>`
+   You'll also need your Composio **API key** (dashboard → API keys); Composio expects it as
+   an `x-api-key` header (required by default for new organizations).
+
+**b. Tell Holmes about it** — `~/.holmes/mcp.json`, same remote-server format as section 3:
+
+```json
+{
+  "mcpServers": {
+    "composio": {
+      "url": "https://backend.composio.dev/v3/mcp/YOUR_SERVER_ID?user_id=YOUR_USER_ID",
+      "headers": { "x-api-key": "YOUR_COMPOSIO_API_KEY" }
+    }
+  }
+}
+```
+
+Name the entry exactly `composio` — Holmes namespaces tools by server name
+(`composio__GMAIL_FETCH_EMAILS`, `composio__GITHUB_…`), and the playbooks look for that
+prefix. If your endpoint expects `Authorization: Bearer …` instead, use `"bearerToken"`;
+arbitrary `"headers"` work too.
+
+**c. Restart Holmes and verify.** On launch the log prints `[MCP] composio: N tools`, and
+the status label shows **`Claude · MCP: N tools`**. Try:
+`/run list my 5 most recent emails`.
+
+**Alternative — Rube (one URL, zero dashboard):** Composio's consumer endpoint
+`https://rube.app/mcp` puts all 500+ apps behind a single Streamable-HTTP URL with
+browser-OAuth on first use. Holmes doesn't drive interactive OAuth itself, so bridge it —
+authenticate once in Terminal so the token is cached, then point Holmes at the bridge:
+
+```bash
+npx -y mcp-remote https://rube.app/mcp   # complete the browser sign-in, then Ctrl+C
+```
+
+```json
+{ "mcpServers": { "composio": { "command": "npx", "args": ["-y", "mcp-remote", "https://rube.app/mcp"] } } }
+```
+
+### What Holmes does with it automatically
+
+Once `composio` is connected, Holmes's proactive playbooks light up. Each one watches your
+screen, does its research through Composio's read-only tools, and leaves a **draft** for you
+to review — the screen edge glows while it thinks and dings when a draft is ready:
+
+| Playbook | Trigger | What you get |
+|---|---|---|
+| **Email reply** | You're reading an email | A reply drafted **straight into your Gmail Drafts** — open, edit, send it yourself |
+| **Prompt coach** | You're writing a prompt to ChatGPT/Claude/Gemini | A sharpened rewrite of your prompt |
+| **GitHub brief** | You're looking at a repo or PR | A briefing: recent commits, open issues, activity |
+| **Meeting prep** | A calendar meeting is coming up | Prep notes on the attendees and agenda |
+| **LinkedIn post** | You're composing on LinkedIn | A polished post draft |
+| **Chat reply** | A Discord / iMessage conversation is on screen | A suggested reply, staged into the input field |
+| **AI research** | You're digging into a question | An answer cross-checked via other AIs (Perplexity search) |
+
+**Proactive mode is draft-only — guaranteed.** In playbook runs, send/delete/post/update
+tools are **filtered out at the code level** before the model ever sees them: only read
+tools and explicit draft-creation tools (e.g. `GMAIL_CREATE_EMAIL_DRAFT`) are offered.
+Holmes *cannot* send an email, post, or delete anything proactively — **sending always
+requires you.** (Your own `/run` commands keep the normal approval-card flow from
+"How approval works" above.)
+
+Each playbook can be toggled individually in Holmes's settings.

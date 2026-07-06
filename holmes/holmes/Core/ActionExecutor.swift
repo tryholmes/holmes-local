@@ -150,8 +150,37 @@ end tell
         return runAppleScript(simpleScript)
     }
 
+    /// Stages text into the target app at the CURRENT cursor position — activate
+    /// + paste only, never Cmd+A. Used by the draft review card's Insert, which
+    /// can run long after the draft's original context: a select-all there could
+    /// replace unrelated content wholesale (e.g. a Google Doc focused in the same
+    /// browser that once showed Gmail). Never presses Send/Return.
+    func stageTextInApp(_ appName: String, text: String) -> Bool {
+        let lower = appName.lowercased()
+
+        if lower.contains("messages") {
+            guard let app = runningApp(named: appName) ?? runningApp(named: "Messages") else {
+                return typeViaKeyboard(text: text)
+            }
+            return pasteIntoMessagesApp(app, message: text, replaceExisting: false)
+        }
+
+        let safe = text.replacingOccurrences(of: "\\", with: "\\\\")
+                       .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+set the clipboard to "\(safe)"
+tell application "\(appName)" to activate
+delay 0.5
+tell application "System Events"
+    keystroke "v" using command down
+end tell
+"""
+        return runAppleScript(script)
+    }
+
     /// AX-based paste for Messages.app — no Automation permission needed.
-    private func pasteIntoMessagesApp(_ app: NSRunningApplication, message: String) -> Bool {
+    /// `replaceExisting: false` skips the Cmd+A so the paste lands at the cursor.
+    private func pasteIntoMessagesApp(_ app: NSRunningApplication, message: String, replaceExisting: Bool = true) -> Bool {
         // 1. Set clipboard
         let pasteboard = NSPasteboard.general
         let prev = pasteboard.string(forType: .string)
@@ -180,7 +209,9 @@ end tell
             u?.post(tap: .cghidEventTap)
             Thread.sleep(forTimeInterval: 0.04)
         }
-        post(0x00, flags: .maskCommand)  // Cmd+A (select all in input)
+        if replaceExisting {
+            post(0x00, flags: .maskCommand)  // Cmd+A (select all in input)
+        }
         post(0x09, flags: .maskCommand)  // Cmd+V (paste)
 
         // 5. Restore clipboard after a delay
