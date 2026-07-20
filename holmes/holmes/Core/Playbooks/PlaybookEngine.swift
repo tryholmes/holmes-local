@@ -29,9 +29,16 @@ final class PlaybookEngine {
     @ObservationIgnored private var started = false
     // "playbookId|contextKey" -> last successful fire
     @ObservationIgnored private var cooldowns: [String: Date] = [:]
-    // playbookId -> key seen on the previous evaluate() (debounce);
-    // rebuilt fresh every pass so no stale keys survive unvisited playbooks
-    @ObservationIgnored private var lastSeenKeys: [String: String] = [:]
+    // playbookId -> the screen (app|window) it last matched, with when that
+    // screen was first and most recently seen. Debounce is TIME-based: a fire
+    // needs the same screen re-observed ≥minDwellSeconds after first sighting,
+    // so two captures landing milliseconds apart (the 3s timer racing the
+    // app-switch capture) can't collapse the dwell requirement and fire on a
+    // screen the user merely passed through. Entries for playbooks unmatched
+    // on a tick survive briefly (staleSeenTTL) so an interleaved tick from the
+    // OTHER context source (browser bridge vs OCR — different presence keys
+    // for one physical screen) can't wipe the debounce state every 3s.
+    @ObservationIgnored private var lastSeenKeys: [String: (key: String, firstSeen: Date, lastSeen: Date)] = [:]
     // playbookId -> last fire ATTEMPT — a key-independent re-fire floor, so noisy
     // extraction minting fresh keys for one screen can't spam fires, and a failed
     // run (no backend, API error) can't hot-loop on every 3s tick
@@ -45,9 +52,20 @@ final class PlaybookEngine {
     @ObservationIgnored private var lastSuccessfulFire: [String: (at: Date, windowTitle: String, fromTrigger: Bool)] = [:]
     // one authorization request per session (idempotent system-side anyway)
     @ObservationIgnored private var notificationPermissionRequested = false
+    // Fast debounce-confirm: when a playbook that COULD fire matches a screen
+    // for the first time, the dwell debounce would otherwise wait for the next
+    // 3s tick — request one early capture so actionable screens fire in ~1.1s.
+    // Single-flight AND rate-limited, so screens with churning window titles
+    // can't sustain a capture/OCR loop.
+    @ObservationIgnored private var confirmCapturePending = false
+    @ObservationIgnored private var lastConfirmCaptureAt: Date = .distantPast
 
     private let maxDrafts = 20
     private static let minRefireInterval: Double = 60
+    /// Minimum dwell on one screen before an auto playbook may fire.
+    private static let minDwellSeconds: Double = 1.0
+    /// How long an unmatched debounce entry survives interleaved ticks.
+    private static let staleSeenTTL: Double = 10
 
     // Kinds whose goal prompts can legitimately return "NOTHING_TO_REPORT" when
     // there is nothing to act on: the scheduled watchers whose goals END with
@@ -81,10 +99,9 @@ final class PlaybookEngine {
         pruneCooldownsIfNeeded()
 
         // Every auto playbook is visited on every pass (no early returns): a
-        // debounced or cooling-down playbook must not starve the ones after it,
-        // and the debounce map is rebuilt fresh so unmatched playbooks reset.
+        // debounced or cooling-down playbook must not starve the ones after it.
         let previousKeys = lastSeenKeys
-        var currentKeys: [String: String] = [:]
+        var currentKeys: [String: (key: String, firstSeen: Date, lastSeen: Date)] = [:]
         var winner: (playbook: Playbook, key: String, cooldownKey: String)? = nil
 
         // Debounce on a STABLE "which screen am I dwelling on" signal (app + window
@@ -92,24 +109,31 @@ final class PlaybookEngine {
         // an email sender/subject read via OCR, or an in-progress prompt the user
         // is actively typing — so it changes almost every 3s tick and the old
         // "same key twice" rule never passed (email-reply / prompt-coach never
-        // fired). The window is stable while you sit on it, so this fires ~one tick
-        // after you land on an actionable screen, using the freshest match key.
+        // fired). The window is stable while you sit on it, so this fires once
+        // you've dwelled ≥minDwellSeconds, using the freshest match key.
         let presenceKey = ctx.appName + "|" + ctx.windowTitle
+        let now = Date()
+        var sawFirstSighting = false
+        var matchedThisTick = false
 
         for playbook in DefaultPlaybooks.all where playbook.autoTriggers && Self.isEnabled(playbook.id) {
             guard let key = playbook.matches(ctx) else { continue }
-            currentKeys[playbook.id] = presenceKey
+            matchedThisTick = true
+            let firstSeen = previousKeys[playbook.id]?.key == presenceKey
+                ? previousKeys[playbook.id]!.firstSeen : now
+            currentKeys[playbook.id] = (presenceKey, firstSeen, now)
 
             // One fire per tick — but keep recording keys for the rest.
             guard winner == nil else { continue }
 
-            // Debounce: require the same SCREEN on two consecutive evaluations
-            // (you're dwelling on it, not just passing through).
-            guard previousKeys[playbook.id] == presenceKey else { continue }
+            // The brakes come BEFORE the debounce, so a playbook that cannot
+            // fire anyway (floor/cooldown/drift) never requests a confirm
+            // capture — otherwise a screen on cooldown sustains a pointless
+            // capture/OCR loop for the whole cooldown window.
 
             // Key-independent floor: one fire attempt per playbook per interval.
             if let attempt = lastFireAttempt[playbook.id],
-               Date().timeIntervalSince(attempt) < Self.minRefireInterval {
+               now.timeIntervalSince(attempt) < Self.minRefireInterval {
                 continue
             }
 
@@ -118,7 +142,7 @@ final class PlaybookEngine {
             // failure doesn't block the context for the whole window.)
             let cooldownKey = playbook.id + "|" + key
             if let lastFired = cooldowns[cooldownKey],
-               Date().timeIntervalSince(lastFired) < playbook.cooldownSeconds {
+               now.timeIntervalSince(lastFired) < playbook.cooldownSeconds {
                 continue
             }
 
@@ -133,15 +157,46 @@ final class PlaybookEngine {
                 continue
             }
 
+            // Debounce: the same SCREEN re-observed after a real dwell. Time-
+            // based, not tick-based: the app-switch capture and the 3s timer can
+            // land near-simultaneously, and two sightings 50ms apart must not
+            // count as "dwelling".
+            guard previousKeys[playbook.id]?.key == presenceKey,
+                  now.timeIntervalSince(firstSeen) >= Self.minDwellSeconds else {
+                sawFirstSighting = true
+                continue
+            }
+
             winner = (playbook, key, cooldownKey)
         }
 
+        // Retain recently-seen entries for playbooks this tick didn't match:
+        // the browser bridge and the OCR path describe the same physical screen
+        // with different presence keys, and an interleaved tick from one source
+        // must not reset the other's dwell clock.
+        for (id, entry) in previousKeys
+        where currentKeys[id] == nil && now.timeIntervalSince(entry.lastSeen) < Self.staleSeenTTL {
+            currentKeys[id] = entry
+        }
         lastSeenKeys = currentKeys
 
         if let winner {
             print("[Holmes] Playbook '\(winner.playbook.id)' triggered — key: \(winner.key.prefix(60))")
             fire(winner.playbook, ctx: ctx, cooldownKeys: [winner.cooldownKey])
-        } else if currentKeys.isEmpty {
+        } else if sawFirstSighting, !confirmCapturePending,
+                  now.timeIntervalSince(lastConfirmCaptureAt) > Self.staleSeenTTL {
+            // A fireable playbook matched this screen but hasn't dwelled long
+            // enough — pull the confirming sighting forward instead of waiting
+            // a full tick, so actions land ~1.1s after you reach an actionable
+            // screen. Rate-limited: churning window titles can't loop this.
+            confirmCapturePending = true
+            lastConfirmCaptureAt = now
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_100_000_000)
+                confirmCapturePending = false
+                ScreenEngine.shared.captureNow()
+            }
+        } else if !matchedThisTick {
             // No heuristic matcher recognized this tick at all — let the local
             // model look for opportunities the extractors missed. TriggerBrain
             // rate-limits itself and fires back through fireFromTrigger, which
@@ -362,6 +417,11 @@ final class PlaybookEngine {
                 }
                 lastSuccessfulFire[playbook.id] = (at: Date(), windowTitle: ctx.windowTitle, fromTrigger: fromTrigger)
                 print("[Holmes] Playbook '\(playbook.id)' — nothing to report, staying quiet")
+                Task {
+                    await MemoryStore.shared.record(
+                        kind: "playbook", app: ctx.appName, windowTitle: ctx.windowTitle,
+                        summary: "\(playbook.id) ran — nothing to report")
+                }
                 ScreenGlowController.shared.set(state: .off)
                 onCompletion?(true)
                 return
@@ -418,6 +478,15 @@ final class PlaybookEngine {
                     ConfirmationBus.shared.removeQueuedDraft(id: evicted.id)
                 }
                 drafts = Array(drafts.prefix(maxDrafts))
+            }
+
+            // Memory: every prepared draft is a durable, recallable fact.
+            Task {
+                await MemoryStore.shared.record(
+                    kind: "draft", app: ctx.appName, windowTitle: ctx.windowTitle,
+                    activity: playbook.kind.rawValue,
+                    summary: draft.title,
+                    detail: String(body.prefix(600)) + (stagedNote.map { "\n\($0)" } ?? ""))
             }
 
             ConfirmationBus.shared.proposeDraft(draft)

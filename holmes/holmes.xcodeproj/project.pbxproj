@@ -68,6 +68,7 @@
 		AA000001000000000000072 /* MCPModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000072 /* MCPModels.swift */; };
 		AA000001000000000000073 /* MCPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000073 /* MCPClient.swift */; };
 		AA000001000000000000074 /* HolmesBrain.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000074 /* HolmesBrain.swift */; };
+		AA000001000000000000090 /* MemoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000090 /* MemoryStore.swift */; };
 		AA000001000000000000075 /* MCPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000075 /* MCPServer.swift */; };
 		AA000001000000000000076 /* PlaybookModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000076 /* PlaybookModels.swift */; };
 		AA000001000000000000077 /* PlaybookEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000077 /* PlaybookEngine.swift */; };
@@ -140,6 +141,7 @@
 		AA000002000000000000072 /* MCPModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPModels.swift; sourceTree = "<group>"; };
 		AA000002000000000000073 /* MCPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPClient.swift; sourceTree = "<group>"; };
 		AA000002000000000000074 /* HolmesBrain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolmesBrain.swift; sourceTree = "<group>"; };
+		AA000002000000000000090 /* MemoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryStore.swift; sourceTree = "<group>"; };
 		AA000002000000000000075 /* MCPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServer.swift; sourceTree = "<group>"; };
 		AA000002000000000000076 /* PlaybookModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybookModels.swift; sourceTree = "<group>"; };
 		AA000002000000000000077 /* PlaybookEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybookEngine.swift; sourceTree = "<group>"; };
@@ -290,6 +292,7 @@
 				AA000002000000000000072 /* MCPModels.swift */,
 				AA000002000000000000073 /* MCPClient.swift */,
 				AA000002000000000000074 /* HolmesBrain.swift */,
+				AA000002000000000000090 /* MemoryStore.swift */,
 				AA000002000000000000075 /* MCPServer.swift */,
 				AA000005000000000000021 /* Playbooks */,
 			);
@@ -519,6 +522,7 @@
 				AA000001000000000000072 /* MCPModels.swift in Sources */,
 				AA000001000000000000073 /* MCPClient.swift in Sources */,
 				AA000001000000000000074 /* HolmesBrain.swift in Sources */,
+				AA000001000000000000090 /* MemoryStore.swift in Sources */,
 				AA000001000000000000075 /* MCPServer.swift in Sources */,
 				AA000001000000000000076 /* PlaybookModels.swift in Sources */,
 				AA000001000000000000077 /* PlaybookEngine.swift in Sources */,

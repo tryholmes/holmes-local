@@ -25,7 +25,7 @@ struct ActivityLog: View {
                                 .foregroundColor(NoirColors.iconSecondary)
                         }
                         Text("RECENT ACTIVITY")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .font(.system(size: 9, weight: .bold, design: .default))
                             .foregroundColor(NoirColors.textTertiary)
                             .tracking(2)
                     }
@@ -34,7 +34,7 @@ struct ActivityLog: View {
                     // Item count
                     if !isExpanded {
                         Text("\(activities.count)")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .font(.system(size: 9, weight: .bold, design: .default))
                             .foregroundColor(NoirColors.textTertiary)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
@@ -119,12 +119,12 @@ struct ActivityRow: View {
                     .fill(activity.statusColor.opacity(0.15))
                     .frame(width: 20, height: 20)
                 Text(activity.statusPrefix)
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .font(.system(size: 10, weight: .bold, design: .default))
                     .foregroundColor(activity.statusColor)
             }
 
             Text(activity.description)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .font(.system(size: 12, weight: .regular, design: .default))
                 .foregroundColor(isHovered ? NoirColors.textPrimary : NoirColors.textSecondary)
                 .lineLimit(1)
                 .animation(.easeInOut(duration: 0.12), value: isHovered)
@@ -132,7 +132,7 @@ struct ActivityRow: View {
             Spacer()
 
             Text(activity.timeAgo)
-                .font(.system(size: 10, weight: .regular, design: .monospaced))
+                .font(.system(size: 10, weight: .regular, design: .default))
                 .foregroundColor(NoirColors.textTertiary)
         }
         .padding(.horizontal, 14)
