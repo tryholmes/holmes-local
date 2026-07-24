@@ -241,7 +241,19 @@ function ensureHeartbeatAlarm() {
     // Defensive: if the "alarms" permission is absent, chrome.alarms is undefined.
     // The setInterval supplement still runs, so an alive worker keeps beating.
     if (!chrome.alarms) return;
-    chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: HEARTBEAT_ALARM_MINUTES });
+    // Create only if it doesn't already exist. ensureHeartbeatLoop() runs on EVERY
+    // worker wake — and while the user is browsing the worker wakes constantly (each
+    // relayed post, each tab event). Calling create() every time would reset the
+    // alarm's schedule on each wake, so the 30s countdown would restart over and over
+    // and the beat that actually matters — the first one AFTER the user leaves the
+    // browser and the wakes stop — could be pushed out. Registering it once keeps a
+    // steady, un-resettable cadence.
+    chrome.alarms.get(HEARTBEAT_ALARM, (existing) => {
+      void chrome.runtime.lastError;
+      if (!existing) {
+        chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: HEARTBEAT_ALARM_MINUTES });
+      }
+    });
   } catch (e) { /* alarms unavailable — supplement covers the alive worker */ }
 }
 

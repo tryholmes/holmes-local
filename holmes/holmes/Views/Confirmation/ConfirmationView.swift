@@ -180,7 +180,16 @@ final class ConfirmationBus {
     /// Proposes an action and suspends until the user approves or dismisses it.
     /// Used by the agentic loop to gate side-effecting tool calls.
     func decide(_ action: PendingAction) async -> AgentDecision {
-        await withCheckedContinuation { cont in
+        // If a decision is already pending (two confirmations overlapped — e.g. a
+        // calendar task raising a card while another autonomous step is still
+        // awaiting one), resolve the OLD handler as .dismissed FIRST. Otherwise the
+        // earlier continuation is orphaned and its await never resumes — the run
+        // that was waiting on it hangs forever and looks like "approve failed".
+        if let stale = decisionHandler {
+            decisionHandler = nil
+            stale(.dismissed)
+        }
+        return await withCheckedContinuation { cont in
             decisionHandler = { cont.resume(returning: $0) }
             propose(action)
         }

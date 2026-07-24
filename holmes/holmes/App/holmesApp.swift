@@ -710,7 +710,7 @@ struct PrivacySettingsView: View {
 
     /// Exercises each Clicky layer in isolation and returns a one-line verdict.
     ///   1. draws the pointer ring at screen center (no permission needed),
-    ///   2. speaks "Clicky is working" via the real TTS path (no permission needed),
+    ///   2. speaks "Holmes is working" via the real TTS path (no permission needed),
     ///   3. posts one harmless keystroke (a brief Shift hold — types nothing)
     ///      through ComputerUseEngine so the master switch + Accessibility +
     ///      CGEvent posting are all genuinely exercised.
@@ -761,7 +761,13 @@ struct PrivacySettingsView: View {
     private var bridgeStatus: String {
         if bridge.lastError != nil { return "Not listening" }
         if bridge.isPairing { return "Pairing — waiting for the extension" }
-        return bridge.isExtensionConnected ? "Extension connected" : "Waiting for the extension"
+        if bridge.isExtensionConnected { return "Extension connected" }
+        // Not connected: name WHICH failure it is, so the short line is actionable
+        // instead of an ambiguous "Waiting…". A token being rejected outranks
+        // "never paired", because a mismatch is the case the user most needs to act on.
+        if bridge.unauthorizedRequests > 0 { return "Token mismatch — re-pair the extension" }
+        if bridge.pairedToken == nil { return "Not paired" }
+        return "Paired — waiting for the browser"
     }
 
     /// Says exactly which of the four shapes is happening: the port never opened,
@@ -781,7 +787,14 @@ struct PrivacySettingsView: View {
             let paired = bridge.pairedToken == nil ? "" : " Paired with the extension's own token."
             return "Listening on 127.0.0.1:\(BrowserBridge.port), loopback only.\(paired)"
         }
-        return "Listening on 127.0.0.1:\(BrowserBridge.port), loopback only. Load the Holmes extension in your browser, then click Pair browser extension to authorize it once."
+        // Listening, nothing rejected, but no traffic. Distinguish "never paired" from
+        // "paired, extension just isn't posting right now" — different fixes: the first
+        // needs a pairing, the second needs the browser open (or is simply the worker
+        // between beats, which now clears itself within ~90s).
+        if bridge.pairedToken != nil {
+            return "Listening on 127.0.0.1:\(BrowserBridge.port), loopback only. Paired with the extension, but nothing has posted lately — open your browser (with the Holmes extension loaded) and this reconnects on the next beat. If it never does, the extension may have minted a new token; click Re-pair browser extension."
+        }
+        return "Listening on 127.0.0.1:\(BrowserBridge.port), loopback only. No extension is paired yet. Load the Holmes extension in your browser, then click Pair browser extension to authorize it once."
     }
 }
 

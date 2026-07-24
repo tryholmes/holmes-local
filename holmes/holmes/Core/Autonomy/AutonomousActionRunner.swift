@@ -182,6 +182,7 @@ final class AutonomousActionRunner {
         }
 
         var executedCount = 0
+        var failedStepCount = 0   // steps that failed even after a retry — skipped, not fatal
         undoActionsForLastRun = []
 
         for segment in Self.segmentize(plan.steps) {
@@ -222,14 +223,24 @@ final class AutonomousActionRunner {
                     }
                     result = await BackendRouter.run(step, composioApps: composioApps, userConfirmed: true)
                 }
-                await logExecutedStep(step, playbookId: playbookId, level: level, via: "router",
-                                      ok: result.ok, confirmed: confirmed, note: result.ok ? nil : result.text)
-                guard result.ok else {
-                    await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
-                                    succeeded: false, note: "step failed: \(shorten(result.text, max: 120))",
-                                    notifyBody: "“\(shorten(step.summary, max: 60))” failed — \(shorten(result.text, max: 80))")
-                    return
+                // One flaky step must not kill the whole task. A transient miss (a
+                // slow UI, a stale coordinate, a control not yet on screen) usually
+                // clears on a second try — so retry ONCE, and if it still fails, log
+                // it and move on to the next step rather than aborting the run. The
+                // end-of-run summary reports how many steps were skipped.
+                if !result.ok {
+                    let retry = await BackendRouter.run(step, composioApps: composioApps, userConfirmed: confirmed)
+                    if retry.ok {
+                        result = retry
+                    } else {
+                        failedStepCount += 1
+                        await logExecutedStep(step, playbookId: playbookId, level: level, via: "router",
+                                              ok: false, confirmed: confirmed, note: retry.text)
+                        continue
+                    }
                 }
+                await logExecutedStep(step, playbookId: playbookId, level: level, via: "router",
+                                      ok: true, confirmed: confirmed, note: nil)
                 statusLine = shorten(result.text, max: 100)
                 collectUndo(for: step, routerUndo: result.undo)
                 executedCount += 1
@@ -275,9 +286,10 @@ final class AutonomousActionRunner {
         }
 
         let undoHint = undoActionsForLastRun.isEmpty ? "" : " Undo is available in the Holmes panel."
+        let skipHint = failedStepCount == 0 ? "" : " \(failedStepCount) step\(failedStepCount == 1 ? "" : "s") skipped."
         await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
-                        succeeded: true, note: "done",
-                        notifyBody: "\(executedCount) of \(plan.steps.count) steps completed.\(undoHint)")
+                        succeeded: true, note: failedStepCount == 0 ? "done" : "done (\(failedStepCount) skipped)",
+                        notifyBody: "\(executedCount) of \(plan.steps.count) steps completed.\(skipHint)\(undoHint)")
     }
 
     // MARK: - Undo

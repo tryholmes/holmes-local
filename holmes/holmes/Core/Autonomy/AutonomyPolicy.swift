@@ -203,7 +203,25 @@ final class AutonomyPolicy {
         "reply-and-stage", "accept-calendar-invite", "organize-messy-folder",
         // Save-file prompt is a TEACH scenario (it only points at Save, never
         // clicks) but is kept at confirm to underline that saving is irreversible.
-        "save-file-prompt"
+        "save-file-prompt",
+
+        // ── Autonomous task library — sensitive/irreversible ACTIONS (confirm) ──
+        // Files/Finder: move, rename, trash, or restructure the user's files.
+        "installer-cleanup", "dedupe-files", "archive-old-files", "batch-rename-pattern",
+        "sort-folder-by-kind", "consolidate-duplicate-folders", "project-folder-from-files",
+        "group-photos-by-date", "screenshots-pileup", "downloads-move-finished",
+        "trash-old-downloads", "archive-old-screenshots", "clean-partial-downloads",
+        "clean-duplicate-downloads", "sort-folder-by-date",
+        // Email/Calendar: unsubscribe, forward/send, decline, delete, OOO, bulk archive.
+        "unsubscribe-bulk-mail", "follow-up-chase-stage", "decline-overlapping-invite",
+        "forward-with-note", "draft-meeting-decline", "set-ooo-reply",
+        "clear-promotions-pileup", "delete-spam-email",
+        // Web: type credentials/PII into forms, apply codes at checkout.
+        "web-form-refill", "web-login-autofill", "web-shipping-address", "web-coupon-apply",
+        // Dev: a drafted commit message the user pastes themselves.
+        "commit-message-draft",
+        // Messaging: the one path that actually presses Send.
+        "message-reply-send"
     ]
 
     /// Read/prep playbooks: everything they produce stays on-device (briefs,
@@ -221,7 +239,38 @@ final class AutonomyPolicy {
         "spreadsheet-insight", "shortcut-suggestion",
         // Reversible ACTION scenarios: dismissing a consent banner and joining a
         // meeting the user is about to enter are both undoable, so auto is safe.
-        "cookie-banner-dismiss", "meeting-join"
+        "cookie-banner-dismiss", "meeting-join",
+
+        // ── Autonomous task library — TEACH (explain/draw only) + reversible ACT ──
+        // Files/Finder: reversible extract/eject, plus point-only TEACH helpers.
+        "unzip-archives", "eject-dmg", "flag-large-file", "low-disk-cleanup",
+        "safe-eject-reminder",
+        // Email/Calendar: read-only briefs/triage, reversible star/label/snooze/mute,
+        // personal-only calendar holds, and point-only double-booking TEACH.
+        "inbox-triage-sweep", "star-important-email", "label-email", "snooze-email",
+        "meeting-one-pager", "double-booking-flag", "add-calendar-event-from-email",
+        "remind-before-call", "extract-action-items", "summarize-email-thread",
+        "mute-email-thread", "block-focus-time",
+        // Web: reversible one-click tidying, read-only research/summaries/reading.
+        "web-cookie-consent", "web-stale-tab-cleanup", "web-article-to-notes",
+        "web-smart-bookmark", "web-price-check", "web-add-to-cart", "web-compare-products",
+        "web-research-question", "web-read-aloud", "web-translate-page", "web-download-sort",
+        "web-reopen-tab", "web-mute-autoplay", "web-gdpr-minimal", "web-thread-summary",
+        // Dev: TEACH explainers (draw + speak, never mutate) + clipboard-only commit note.
+        "stack-trace-explain", "merge-conflict-resolve", "pr-files-changed-brief",
+        "terminal-fail-explain", "failing-test-explain", "lint-error-point",
+        "todo-fixme-surface", "dependency-error-explain", "ci-failure-explain",
+        "unhandled-exception-point", "menu-shortcut-suggest", "regex-explain",
+        "off-by-one-point", "api-error-explain", "gitignore-suggest",
+        "dockerfile-issue-explain", "missing-import-point", "permission-denied-explain",
+        "unfamiliar-repo-brief",
+        // Messaging/Docs/Media: clipboard/stage-only drafts, reversible edits, TEACH,
+        // and reversible media/volume nudges. None press Send/publish on their own.
+        "doc-outline", "doc-format-fix", "chart-suggest", "formula-help", "tweet-draft",
+        "call-notes", "pause-music-on-call", "lower-volume-on-call", "linkedin-message-reply",
+        "youtube-summary", "extract-steps", "chat-to-tasks", "thank-you-note",
+        "slack-mentions-summary", "review-reply", "doc-proofread-fix",
+        "linkedin-work-post", "music-resume-on-call-end"
     ]
 
     /// The level a playbook lands at when the user turns it ON without picking
