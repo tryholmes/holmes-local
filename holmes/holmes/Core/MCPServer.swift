@@ -61,7 +61,7 @@ final class MCPServer {
              "annotations": ["readOnlyHint": true, "title": name]]
         }
         return [
-            tool("get_screen_context", "What the user is currently looking at: active app, window title, a one-line summary, and visible on-screen text."),
+            tool("get_screen_context", "What the user is currently looking at: active app, window title, a one-line summary, and visible on-screen text. Check visibleTextConfidence before quoting visibleText — \"inferred\" means it is OCR of pixels and may be garbled, so never assert names, numbers or code from it."),
             tool("get_active_app", "The name and window title of the app the user is currently focused on."),
             tool("get_upcoming_meetings", "The user's meetings in the next 30 minutes, with join links and times."),
             tool("get_recent_activity", "A short log of what Holmes has recently observed the user doing.")
@@ -371,6 +371,11 @@ final class HolmesLiveContextProvider: HolmesContextProviding {
                 "windowTitle": ScreenEngine.shared.latestActiveWindowTitle,
                 "summary": agent.currentContext.description,
                 "visibleText": String(agent.lastOCRText.prefix(3000)),
+                // The tier ships WITH the text: `summary` hedges when Holmes is
+                // down to OCR, but a remote agent reading `visibleText` next to it
+                // has no way to tell garbled pixels from a literal DOM read unless
+                // we say so. "inferred" means: do not quote this.
+                "visibleTextConfidence": agent.lastTextConfidence.rawValue,
                 "isAnalyzing": agent.isAnalyzing,
                 "updatedAt": Self.iso(agent.lastUpdated)
             ]

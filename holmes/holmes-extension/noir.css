@@ -1,0 +1,319 @@
+/* Holmes — shared Noir design system for the popup + options page.
+ *
+ * These tokens are lifted verbatim from the Mac app's NoirColors.swift so the
+ * extension surfaces read as the same product: white opacities layered over a
+ * dark translucent base (the app layers the same white opacities over an
+ * NSVisualEffectView blur — here we fake the blur with a dark gradient base).
+ * memoryAmber (#E0A33C) is the app's file-local "caution" step used on the
+ * ExtensionStatusRow; success/error/blue come straight from NoirColors. */
+
+:root {
+  /* Glass surface layers (NoirColors.glass*) */
+  --glass-surface:  rgba(255, 255, 255, 0.08);
+  --glass-elevated: rgba(255, 255, 255, 0.13);
+  --glass-chrome:   rgba(255, 255, 255, 0.05);
+  --glass-input:    rgba(255, 255, 255, 0.07);
+
+  /* Borders */
+  --glass-border:  rgba(255, 255, 255, 0.18);
+  --glass-divider: rgba(255, 255, 255, 0.10);
+  --glass-stroke:  rgba(255, 255, 255, 0.25);
+  --glass-inner:   rgba(255, 255, 255, 0.06);
+
+  /* Text */
+  --text-primary:     rgba(255, 255, 255, 0.92);
+  --text-secondary:   rgba(255, 255, 255, 0.60);
+  --text-tertiary:    rgba(255, 255, 255, 0.38);
+  --text-placeholder: rgba(255, 255, 255, 0.25);
+
+  /* Icons */
+  --icon-primary:   rgba(255, 255, 255, 0.88);
+  --icon-secondary: rgba(255, 255, 255, 0.45);
+
+  /* Accent — pure white */
+  --accent:     rgba(255, 255, 255, 0.90);
+  --accent-dim: rgba(255, 255, 255, 0.10);
+
+  /* CTA — near-black key with white label (NoirColors.ctaBackground #0E0E0E) */
+  --cta-bg: #0E0E0E;
+  --cta-fg: #ffffff;
+
+  /* Semantic */
+  --success: #4CD97A;   /* NoirColors.success */
+  --error:   #FF5E5E;   /* NoirColors.error   */
+  --blue:    #5EB5FF;   /* NoirColors.calendarBlue */
+  --amber:   #E0A33C;   /* memoryAmber (app file-local caution step) */
+
+  --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Monaco, "Cascadia Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  font-family: var(--sans);
+  color: var(--text-primary);
+  /* Dark translucent glass base — a top radial highlight over a vertical fade,
+     the closest CSS can get to the app's hudWindow material. */
+  background:
+    radial-gradient(130% 90% at 50% -20%, rgba(255, 255, 255, 0.06), transparent 55%),
+    linear-gradient(180deg, #15151a 0%, #0b0b0e 100%);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── Brand header ─────────────────────────────────────────────── */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brand .mark {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(255, 255, 255, 0.10);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+}
+.brand .wordmark {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--text-primary);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: var(--glass-chrome);
+  border-bottom: 0.75px solid var(--glass-divider);
+}
+
+/* ── Section label — monospaced small-caps, wide tracking ──────── */
+.label {
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+.label.accent { color: rgba(255, 255, 255, 0.55); }
+
+/* ── Card — glass surface, top-edge highlight, hairline stroke ─── */
+.card {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 46%),
+    var(--glass-surface);
+  border: 0.75px solid var(--glass-stroke);
+  border-radius: 12px;
+  padding: 12px;
+  /* the requested soft inner highlight on the TOP edge of every card */
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08),
+              0 1px 2px rgba(0, 0, 0, 0.28);
+}
+.card + .card { margin-top: 10px; }
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 9px;
+}
+.card-head .badge {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--icon-secondary);
+  font-size: 11px;
+}
+
+/* ── Status dot ───────────────────────────────────────────────── */
+.dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--text-tertiary);
+}
+.dot.green { background: var(--success); box-shadow: 0 0 7px rgba(76, 217, 122, 0.65); }
+.dot.amber { background: var(--amber);   box-shadow: 0 0 7px rgba(224, 163, 60, 0.55); }
+.dot.red   { background: var(--error);   box-shadow: 0 0 7px rgba(255, 94, 94, 0.55); }
+
+/* ── Text helpers ─────────────────────────────────────────────── */
+.t-primary   { color: var(--text-primary); }
+.t-secondary { color: var(--text-secondary); }
+.t-tertiary  { color: var(--text-tertiary); }
+.mono { font-family: var(--mono); }
+.headline {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* Key/value rows inside a card */
+.kv {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 0;
+  border-top: 0.75px solid var(--glass-divider);
+}
+.kv:first-of-type { border-top: none; }
+.kv .k {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  flex: 0 0 62px;
+}
+.kv .v {
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-word;
+  flex: 1;
+}
+.kv .v.strong { color: var(--text-primary); font-weight: 500; }
+
+/* ── Buttons ──────────────────────────────────────────────────── */
+.btn {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: var(--cta-fg);
+  background: var(--cta-bg);
+  border: 0.75px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+.btn:hover { border-color: rgba(255, 255, 255, 0.32); background: #161616; }
+.btn:active { transform: scale(0.98); }
+.btn.ghost {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
+  border-color: var(--glass-border);
+  box-shadow: none;
+}
+.btn.ghost:hover { background: rgba(255, 255, 255, 0.10); color: var(--text-primary); }
+.btn:disabled { opacity: 0.45; cursor: default; transform: none; }
+
+/* ── Toggle switch ────────────────────────────────────────────── */
+.switch {
+  position: relative;
+  width: 38px; height: 22px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.10);
+  border: 0.75px solid var(--glass-border);
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+.switch .knob {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  transition: transform 0.16s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.switch.on { background: rgba(224, 163, 60, 0.55); border-color: rgba(224, 163, 60, 0.7); }
+.switch.on .knob { transform: translateX(16px); }
+
+/* ── Inputs ───────────────────────────────────────────────────── */
+.field {
+  width: 100%;
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--glass-input);
+  border: 0.75px solid var(--glass-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  outline: none;
+}
+.field::placeholder { color: var(--text-placeholder); }
+.field:focus { border-color: var(--glass-stroke); background: rgba(255, 255, 255, 0.09); }
+
+.mono-value {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(0, 0, 0, 0.30);
+  border: 0.75px solid var(--glass-divider);
+  border-radius: 7px;
+  padding: 8px 10px;
+  word-break: break-all;
+  user-select: all;
+}
+
+/* ── Chips (exclusion list) ───────────────────────────────────── */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.06);
+  border: 0.75px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 4px 6px 4px 10px;
+}
+.chip button {
+  border: none;
+  background: rgba(255, 255, 255, 0.10);
+  color: var(--text-secondary);
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  display: grid; place-items: center;
+}
+.chip button:hover { background: var(--error); color: #fff; }
+
+.divider {
+  height: 0.75px;
+  background: var(--glass-divider);
+  margin: 10px 0;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.4px;
+  color: var(--text-placeholder);
+  border-top: 0.75px solid var(--glass-divider);
+}
+
+.hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+.hint b { color: var(--text-secondary); font-weight: 600; }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.grow { flex: 1; min-width: 0; }
+.stack { display: flex; flex-direction: column; }

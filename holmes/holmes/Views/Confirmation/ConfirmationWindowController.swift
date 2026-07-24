@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class ConfirmationWindowController: NSObject {
     static let shared = ConfirmationWindowController()
     private var window: NSWindow?
@@ -13,9 +14,13 @@ final class ConfirmationWindowController: NSObject {
         // Bottom-right corner, above dock. Draft review cards get a wider, much
         // taller panel so the editable body (up to 200pt) and the
         // Copy/Insert/Dismiss row are both fully visible without clipping.
+        // The auto-drafted reply card is taller again: it carries the quoted
+        // message and the GROUNDED IN strip on top of the editable body, and
+        // the receipts are the point — they must not be the thing that clips.
+        let isReply = ConfirmationBus.shared.isShowingReply
         let isDraft = ConfirmationBus.shared.pendingDraft != nil
-        let w: CGFloat = isDraft ? 380 : 360
-        let h: CGFloat = isDraft ? 440 : 280
+        let w: CGFloat = (isReply || isDraft) ? 380 : 360
+        let h: CGFloat = isReply ? 520 : (isDraft ? 440 : 280)
         let margin: CGFloat = 20
         let x = screen.visibleFrame.maxX - w - margin
         let y = screen.visibleFrame.minY + margin

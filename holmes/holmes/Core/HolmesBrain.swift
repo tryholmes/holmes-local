@@ -8,8 +8,10 @@ import AppKit
 // Side-effecting tool calls are gated through the existing ConfirmationBus approval
 // card, so nothing runs without the user's OK. Read-only tools run automatically.
 //
-// This is the Hybrid model in action: Ollama still drives fast on-device context,
-// but real multi-step actions run through Claude here.
+// There is exactly one model in Holmes: Claude (claude-opus-4-8) through
+// AnthropicClient. Perception is model-free — LiveContext's headline is computed
+// deterministically from structured data — so everything the model does here is
+// action, not description.
 
 @MainActor
 final class HolmesBrain {
@@ -26,14 +28,16 @@ final class HolmesBrain {
         }
     }
 
-    /// Folds Claude + MCP status into the backend label shown in the Main Panel,
-    /// e.g. "Ollama (localhost) + Claude · MCP: 12 tools".
+    /// Folds Claude + MCP status into the model label shown in the Main Panel,
+    /// e.g. "Claude (claude-opus-4-8) · MCP: 12 tools". There is no local
+    /// backend to report — without an API key Holmes says so plainly rather than
+    /// implying a degraded model is standing in.
     func updateBackendLabel() {
-        let local = LocalModelEngine.shared.backendLabel
-        let claude = AnthropicConfig.isConfigured ? " + Claude" : ""
         let toolCount = MCPClient.shared.tools.count
         let mcp = toolCount == 0 ? "" : " · MCP: \(toolCount) tools"
-        HolmesAgent.shared.modelBackend = "\(local)\(claude)\(mcp)"
+        HolmesAgent.shared.modelBackend = AnthropicConfig.isConfigured
+            ? "Claude (\(AnthropicConfig.model))\(mcp)"
+            : "No API key — add one in Settings to enable Claude"
     }
 
     // MARK: - Run a goal
@@ -45,10 +49,30 @@ final class HolmesBrain {
 
     /// Runs `goal` to completion through the Claude + tools loop.
     /// - log: receives each turn's assistant text for live display.
-    func run(goal: String, log: @escaping @MainActor (String) -> Void) async -> RunResult {
+    /// - narrateAloud: when true (and the "Clicky narrates actions" pref is on),
+    ///   speaks a brief opening ("On it.") and the closing result, so a
+    ///   user-initiated agent run announces itself and reports back. Callers that
+    ///   do their own narration pass false: ClickyController (its own "On it."/
+    ///   "All done." bookends) and AutonomousActionRunner (per-step narration).
+    func run(goal: String,
+             narrateAloud: Bool = true,
+             log: @escaping @MainActor (String) -> Void) async -> RunResult {
         guard AnthropicConfig.isConfigured else { return .notConfigured }
 
+        let narrates = narrateAloud && ClickyController.shared.narrateActionsEnabled
+        if narrates {
+            // Fire-and-forget so speaking never delays the run; it plays while the
+            // agent gets to work and is superseded cleanly by the closing line.
+            Task { @MainActor in await SpeechSynthesizer.shared.speak("On it.") }
+        }
+
         await MCPClient.shared.startAll() // no-op if already started
+        // Pin this run's screenshot resolution BEFORE building `builtinTools` so
+        // the native `computer` tool declaration (display_*_px) equals the pixel
+        // dims every screenshot in the run is resized to. Reset the computer
+        // engine's kill flag + stale capture for a fresh session.
+        WindowCapture.resolveForCurrentRun()
+        ComputerUseEngine.shared.beginRun()
         let tools = builtinTools + MCPClient.shared.anthropicTools()
         let system = await buildSystemPrompt()
 
@@ -57,6 +81,12 @@ final class HolmesBrain {
                 system: system,
                 userText: goal,
                 tools: tools,
+                // A real multi-step computer session needs headroom beyond the
+                // default cap; 40 also self-terminates a wandering loop.
+                maxIterations: 40,
+                // Opt into the native computer tool. Harmless for non-computer
+                // runs — the tool just goes unused.
+                betaHeaders: ["computer-use-2025-11-24"],
                 runTool: { [weak self] name, input in
                     guard let self else { return AnthropicClient.ToolResult("internal error", isError: true) }
                     return await self.runTool(name: name, input: input)
@@ -75,6 +105,11 @@ final class HolmesBrain {
                 await MemoryStore.shared.record(
                     kind: "action", app: ScreenEngine.shared.latestActiveApp,
                     summary: "Ran: \(goalNote)", detail: resultNote)
+            }
+            if narrates {
+                // Speak the closing result (a short summary, not the whole log).
+                let spoken = String(text.prefix(220))
+                Task { @MainActor in await SpeechSynthesizer.shared.speak(spoken) }
             }
             return .text(text)
         } catch let AnthropicClient.AgentError.refused(msg) {
@@ -112,7 +147,10 @@ final class HolmesBrain {
     /// reaching — MCP, so there is no ConfirmationBus involvement here at all.
     /// Returns the outcome (draft text + write facts), or nil on failure. Does not
     /// touch the user-initiated run(goal:).
-    func runPlaybook(goal: String, systemHint: String, composioApps: [String], allowDraftWrite: Bool = false) async -> PlaybookOutcome? {
+    /// - maxToolCalls: hard cap on tool executions for this run (draft-only budget).
+    ///   Fast playbooks (e.g. the GitHub brief) pass a lower number.
+    /// - maxIterations: outer turn cap handed to runAgent; nil keeps the default.
+    func runPlaybook(goal: String, systemHint: String, composioApps: [String], allowDraftWrite: Bool = false, maxToolCalls: Int = 6, maxIterations: Int? = nil) async -> PlaybookOutcome? {
         guard AnthropicConfig.isConfigured else { return nil }
 
         await MCPClient.shared.startAll() // no-op if already started
@@ -203,10 +241,10 @@ final class HolmesBrain {
                 + "then execute ONLY read-only tool slugs via COMPOSIO_MULTI_EXECUTE_TOOL."
         }
 
-        // Cap playbook work at 6 tool executions. (AnthropicClient's own
-        // maxIterations still bounds the outer turn loop; this tighter budget is
-        // enforced here because the loop's iteration count isn't parameterizable.)
-        var toolBudget = 6
+        // Cap playbook work at `maxToolCalls` tool executions (default 6; fast
+        // playbooks pass a lower number). The outer turn loop is bounded by the
+        // `maxIterations` handed to runAgent below.
+        var toolBudget = maxToolCalls
 
         // Addresses observed in this run's tool RESULTS. The sanctioned
         // draft-create may only be addressed to these — a recipient the model
@@ -222,6 +260,7 @@ final class HolmesBrain {
                 system: system,
                 userText: goal,
                 tools: tools,
+                maxIterations: maxIterations,
                 runTool: { [weak self] name, input in
                     guard let self else { return AnthropicClient.ToolResult("internal error", isError: true) }
                     // Default deny: only tools we explicitly offered may run.
@@ -308,7 +347,13 @@ final class HolmesBrain {
                     return result
                 }
             )
-            let text = outcome.finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+            // A draft is a DELIVERABLE, so use the FINAL turn's text — not
+            // finalText, which concatenates every between-tool "let me search…"
+            // narration turn. If the loop ended mid-tool, lastTurnText already
+            // falls back to the last turn that produced text.
+            let deliverable = outcome.lastTurnText.isEmpty ? outcome.finalText : outcome.lastTurnText
+            let text = Self.trimLeadingNarration(deliverable)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
             return PlaybookOutcome(
                 text: text,
@@ -321,6 +366,39 @@ final class HolmesBrain {
         }
     }
 
+    /// Even after we pick the final turn's text, the model can still lead the
+    /// deliverable with a line or two of "let me…/now let me confirm…" reasoning
+    /// before the real heading. When such narration precedes a clear deliverable
+    /// heading (a bold "**…BRIEF…**", an "ENGINEERING/PROJECT BRIEF" line, or a
+    /// markdown "#"/"##" heading), start the draft at that heading and drop the
+    /// preamble. Conservative by design — it only trims when the text BEFORE the
+    /// heading actually looks like narration, so a clean draft (or a reply that
+    /// simply has no heading) is left untouched.
+    private static func trimLeadingNarration(_ raw: String) -> String {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return text }
+        let lines = text.components(separatedBy: "\n")
+        let narrationMarkers = [
+            "let me", "let's", "i'll", "i will", "i need to", "i have ", "i now ",
+            "now let me", "first,", "search tool", "tool is blocked", "draft mode",
+            "preview caps", "i can ", "okay,", "alright,", "let me confirm",
+            "let me enumerate"
+        ]
+        for idx in lines.indices where idx > 0 {
+            let l = lines[idx].trimmingCharacters(in: .whitespaces)
+            guard !l.isEmpty else { continue }
+            let u = l.uppercased()
+            let isBoldBriefHeading = l.hasPrefix("**") && u.contains("BRIEF")
+            let isNamedBrief = u.contains("ENGINEERING BRIEF") || u.contains("PROJECT BRIEF")
+            let isAtxHeading = l.hasPrefix("# ") || l.hasPrefix("## ") || l.hasPrefix("### ")
+            guard isBoldBriefHeading || isNamedBrief || isAtxHeading else { continue }
+            let preceding = lines[0..<idx].joined(separator: "\n").lowercased()
+            guard narrationMarkers.contains(where: { preceding.contains($0) }) else { continue }
+            return lines[idx...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return text
+    }
+
     // MARK: - System prompt
 
     /// Screen-context preamble shared by the user-initiated loop and playbook mode.
@@ -330,6 +408,10 @@ final class HolmesBrain {
         let window = ScreenEngine.shared.latestActiveWindowTitle
         let context = agent.currentContext.description
         let ocr = String(agent.lastOCRText.prefix(1500))
+        // The tier travels with the text. "OCR/AX" made garbled pixels look
+        // exactly like a literal DOM read, and Claude quotes what it is given —
+        // names, numbers, code — as fact. Say which one this is, every time.
+        let quality = agent.lastTextConfidence.textReliabilityNote
 
         // The deep context (what EXACTLY the user is working on) and a short
         // memory digest ground every run in the user's actual work, not just
@@ -368,7 +450,7 @@ final class HolmesBrain {
         - Active app: \(app.isEmpty ? "unknown" : app)
         - Window: \(window.isEmpty ? "unknown" : window)
         - Summary: \(context)
-        \(deep.isEmpty ? "" : deep + "\n")- Visible text (OCR/AX, truncated):
+        \(deep.isEmpty ? "" : deep + "\n")- Visible text — \(quality)
         \(ocr.isEmpty ? "(none captured)" : ocr)\(relatedSection)\(memorySection)
         """
     }
@@ -383,6 +465,34 @@ final class HolmesBrain {
         automatically when you call such a tool. If a call returns "User declined", stop and explain.
         - Be concise. When the task is done, give a one-line summary of what you did.
         - Never fabricate results. Only report what tools actually returned.
+
+        Computer control (the `computer` tool):
+        - It gives you pixel-level mouse and keyboard control of the whole Mac: actions are \
+        screenshot, cursor_position, mouse_move, left_click, right_click, middle_click, \
+        double_click, triple_click, left_mouse_down, left_mouse_up, left_click_drag, scroll, \
+        key, hold_key, type, wait, and open_app. Coordinates are in the pixels of the LAST \
+        screenshot you took (top-left origin).
+        - To OPEN or SWITCH TO an app, always use action "open_app" with {"name":"Finder"} (any \
+        app name or bundle identifier works, e.g. "Safari", "Notes", "com.apple.Terminal"). It \
+        launches the app directly through macOS and always works — NEVER open an app by clicking \
+        the Dock or Spotlight; those pixel targets are unreliable.
+        - To hold a modifier during a click, put it in the click's "text" field, e.g. \
+        {"action":"left_click","coordinate":[x,y],"text":"shift"} (also cmd/ctrl/alt, combinable \
+        as "cmd+shift"). `hold_key` holds a key for a duration: {"text":"shift","duration":1.5}. \
+        `left_mouse_down`/`left_mouse_up` are the halves of a manual press-and-hold.
+        - Work in a screenshot → act → screenshot rhythm: take a `screenshot` first, look at the \
+        frame, act on it (click/type/scroll), then take another `screenshot` to confirm the effect \
+        before the next step. Never click a coordinate you have not seen in a recent screenshot \
+        (open_app is the exception — it needs no coordinates, and after it you screenshot to see \
+        the app's window).
+        - Prefer `browser_control` for anything inside a web page — it reads the real DOM and is \
+        safer and more reliable than clicking pixels. Reserve `computer` for NATIVE-app UI that no \
+        other tool can reach.
+        - Reversible actions (move, scroll, a plain click, typing into a field) run immediately. \
+        Genuinely irreversible or outward-facing ones — pressing Return/Enter, ⌘S/⌘W/⌘Q/⌘Delete, or \
+        clicking a Send/Submit/Post/Delete-style control — ask the user once; if that returns \
+        "User declined", stop and explain. If computer control is off, say so and suggest the user \
+        enable it in Settings ▸ Privacy ▸ Computer control.
         """
     }
 
@@ -418,7 +528,37 @@ final class HolmesBrain {
                   description: "Click a button in the frontmost app by its visible label, via Accessibility. Requires user approval.",
                   inputSchema: ["type": "object",
                                 "properties": ["label": ["type": "string", "description": "The button's visible label."]],
-                                "required": ["label"]])
+                                "required": ["label"]]),
+            .init(name: "browser_control",
+                  description: "Drive the user's Comet browser through the paired Holmes extension. It can NAVIGATE to URLs, READ the current text selection, EXTRACT elements by CSS selector, list/open tabs, screenshot the tab, scroll, wait for a selector, and FILL a draft into a text field or composer — but it CANNOT send, submit, post, publish, reply, pay, buy, order, delete, or archive. Those commit controls are physically refused inside the extension (a refused call returns refused:true with a reason), so this is READ-AND-FILL ONLY: use it to read pages and stage drafts; the human performs the send. Side-effecting actions (navigate, click, fill_field, open_tab, scroll_to) require user approval; read-only actions run automatically.",
+                  inputSchema: ["type": "object",
+                                "properties": [
+                                    "action": ["type": "string",
+                                               "enum": ["navigate", "click", "fill_field", "read_selection",
+                                                        "extract", "scroll_to", "open_tab", "list_tabs",
+                                                        "screenshot_tab", "wait_for_selector"],
+                                               "description": "The browser action to perform."],
+                                    "url": ["type": "string", "description": "For navigate/open_tab: the URL to load."],
+                                    "selector": ["type": "string", "description": "CSS selector for click, fill_field, extract, scroll_to, or wait_for_selector."],
+                                    "text": ["type": "string", "description": "For click/fill_field: match the target by its visible text/label/placeholder when no selector is given."],
+                                    "value": ["type": "string", "description": "For fill_field: the draft text to type into the field. A draft only — never a send/submit action."],
+                                    "position": ["type": "string", "description": "For scroll_to: \"top\", \"bottom\", or a pixel offset (as a number)."],
+                                    "timeout_ms": ["type": "integer", "description": "For wait_for_selector: how long to wait, in milliseconds."]
+                                ],
+                                "required": ["action"]]),
+            // Native Anthropic computer tool (pixel-level mouse/keyboard control of
+            // the whole Mac). Built via rawAPIDict because a native server tool has
+            // no input_schema — it is sent verbatim. display_*_px MUST equal the
+            // pixel dims WindowCapture resizes every screenshot to, so we read them
+            // from the same chooser (resolved once per run in run(goal:), which
+            // keeps the tool declaration and the screenshots in lock-step). This
+            // tool is offered ONLY on the user-initiated run(goal:) path — it is an
+            // allowlist miss in playbook (autonomous) mode by construction.
+            .init(name: "computer", description: "", inputSchema: [:],
+                  rawAPIDict: ["type": "computer_20251124",
+                               "name": "computer",
+                               "display_width_px": WindowCapture.declaredWidth,
+                               "display_height_px": WindowCapture.declaredHeight])
         ]
     }
 
@@ -432,6 +572,8 @@ final class HolmesBrain {
         case "send_message":  return await sendMessage(input)
         case "open_url":      return await openURL(input)
         case "click_button":  return await clickButton(input)
+        case "browser_control": return await browserControl(input)
+        case "computer":      return await computerUse(input)
         default:              return await callMCP(name: name, input: input)
         }
     }
@@ -442,10 +584,14 @@ final class HolmesBrain {
         let app = agent.currentContext.appName.isEmpty ? ScreenEngine.shared.latestActiveApp : agent.currentContext.appName
         let window = ScreenEngine.shared.latestActiveWindowTitle
         let text = String(agent.lastOCRText.prefix(3000))
+        // Same rule as the system preamble: the tool result must carry the tier,
+        // or "Read the user's current screen" reads as a promise of literalness
+        // the OCR path cannot keep.
+        let quality = agent.lastTextConfidence.textReliabilityNote
         return AnthropicClient.ToolResult("""
         Active app: \(app)
         Window: \(window)
-        Visible text:
+        Visible text — \(quality)
         \(text.isEmpty ? "(none)" : text)
         """)
     }
@@ -514,6 +660,154 @@ final class HolmesBrain {
         }
         let ok = await offMain { ActionExecutor.shared.clickButton(label: label, in: running) }
         return AnthropicClient.ToolResult(ok ? "Clicked '\(label)'." : "Could not find a button labeled '\(label)'.", isError: !ok)
+    }
+
+    /// The producer half of the browser-automation channel: maps a Claude
+    /// `browser_control` call to the wire shape automation.js executes, gates the
+    /// side-effecting actions through the SAME confirmation card as click_button /
+    /// type_text, enqueues it on BrowserBridge, and returns the extension's
+    /// structured outcome (including any DRAFT-NEVER-SEND refusal) as the result.
+    private func browserControl(_ input: [String: Any]) async -> AnthropicClient.ToolResult {
+        guard let action = (input["action"] as? String)?.trimmingCharacters(in: .whitespaces), !action.isEmpty else {
+            return AnthropicClient.ToolResult("Missing 'action'.", isError: true)
+        }
+        // No paired extension → the command would sit unfetched until it timed
+        // out. Fail fast and clearly instead of making Claude wait on nothing.
+        guard BrowserBridge.shared.isExtensionConnected else {
+            return AnthropicClient.ToolResult(
+                "The Holmes browser extension isn't paired/connected, so the browser can't be driven. Ask the user to open Comet with the Holmes extension running and pair it in Settings ▸ Privacy ▸ Pair browser extension.",
+                isError: true)
+        }
+
+        // snake_case tool action → the camelCase name automation.js dispatches on.
+        let wireAction: [String: String] = [
+            "navigate": "navigate", "click": "click", "fill_field": "fillField",
+            "read_selection": "readSelection", "extract": "extract", "scroll_to": "scrollTo",
+            "open_tab": "openTab", "list_tabs": "listTabs", "screenshot_tab": "screenshotTab",
+            "wait_for_selector": "waitForSelector"
+        ]
+        guard let wire = wireAction[action] else {
+            return AnthropicClient.ToolResult(
+                "Unknown browser action '\(action)'. Valid: \(wireAction.keys.sorted().joined(separator: ", ")).",
+                isError: true)
+        }
+
+        // Map snake_case tool params → automation.js's param keys; drop empties so
+        // a partial call never sends a stray blank field.
+        var params: [String: Any] = [:]
+        if let url = input["url"] as? String, !url.isEmpty { params["url"] = url }
+        if let selector = input["selector"] as? String, !selector.isEmpty { params["selector"] = selector }
+        if let text = input["text"] as? String, !text.isEmpty { params["text"] = text }
+        if let value = input["value"] as? String { params["value"] = value }  // "" is a legal clear
+        if let timeout = input["timeout_ms"] as? Int { params["timeoutMs"] = timeout }
+        if let position = input["position"], !(position is NSNull) { params["position"] = position }
+
+        // Same gate as the other action tools: read-only actions run
+        // automatically (like read_screen); anything that changes what the user
+        // sees or stages needs the confirmation card. (The extension's
+        // draft-never-send guard is a SEPARATE, non-bypassable enforcement — this
+        // approval is on top of it, not instead of it.)
+        let readOnly: Set<String> = ["read_selection", "extract", "list_tabs", "screenshot_tab", "wait_for_selector"]
+        if !readOnly.contains(action) {
+            let preview = browserPreview(action: action, params: params)
+            guard await approve(title: "Browser: \(action.replacingOccurrences(of: "_", with: " "))",
+                                preview: preview, app: "Comet") != nil else {
+                return AnthropicClient.ToolResult("User declined the browser \(action) action.")
+            }
+        }
+
+        var result = await BrowserBridge.shared.enqueueBrowserCommand(wire, params)
+        // A screenshot's base64 data URL is huge and useless as prose — collapse
+        // it so the tool result stays readable; id/at are wire bookkeeping.
+        if let dataUrl = result["dataUrl"] as? String {
+            result["dataUrl"] = "<png data URL, \(dataUrl.count) chars, omitted from result text>"
+        }
+        result.removeValue(forKey: "id")
+        result.removeValue(forKey: "at")
+
+        let refused = (result["refused"] as? Bool) == true
+        let failed = (result["ok"] as? Bool) == false || result["error"] != nil || refused
+        let text: String
+        if JSONSerialization.isValidJSONObject(result),
+           let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]),
+           let json = String(data: data, encoding: .utf8) {
+            text = json
+        } else {
+            text = "\(result)"
+        }
+        let prefix = refused
+            ? "Refused (draft-never-send guard):\n"
+            : (failed ? "Browser action did not succeed:\n" : "")
+        return AnthropicClient.ToolResult(prefix + text, isError: failed)
+    }
+
+    /// A short human description of a side-effecting browser action for the
+    /// approval card.
+    private func browserPreview(action: String, params: [String: Any]) -> String {
+        switch action {
+        case "navigate", "open_tab":
+            return "Open \(params["url"] as? String ?? "(no url)") in Comet"
+        case "fill_field":
+            let target = params["selector"] as? String ?? params["text"] as? String ?? "the focused field"
+            return "Type a draft into \(target):\n\(params["value"] as? String ?? "")"
+        case "click":
+            return "Click \(params["selector"] as? String ?? params["text"] as? String ?? "(no target)") in Comet"
+        case "scroll_to":
+            let where_ = params["position"].map { "\($0)" } ?? (params["selector"] as? String ?? "(target)")
+            return "Scroll to \(where_) in Comet"
+        default:
+            return "\(action) \(prettyArguments(params))"
+        }
+    }
+
+    /// The `computer` tool: pixel-level mouse/keyboard control of the whole Mac,
+    /// wired to ComputerUseEngine. USER-INITIATED ONLY — this method is never
+    /// reached in playbook mode (the `computer` tool is filtered out of the
+    /// playbook allowlist and default-denied at dispatch).
+    ///
+    /// Safety envelope (session approval + irreversible-only re-confirm):
+    ///   • Master switch OFF → refuse with a "turn it on in Settings" message.
+    ///     Refuse-don't-force-enable: this never flips the switch on.
+    ///   • `screenshot` / `cursor_position` → run FREELY (read-only, like
+    ///     read_screen). A screenshot returns its frame as an image tool_result.
+    ///   • Reversible mutations (move, scroll, plain click/type, …) → run FREELY,
+    ///     clicky-style, with no per-action card — the user initiating the run IS
+    ///     the session approval.
+    ///   • Irreversible / outward-facing actions (a commit key chord, or a
+    ///     click/type whose resolved AX target matches the send-verb regex) →
+    ///     re-confirm ONCE through the SAME ConfirmationBus card click_button uses.
+    ///     On decline we return "User declined" so the loop continues gracefully.
+    private func computerUse(_ input: [String: Any]) async -> AnthropicClient.ToolResult {
+        let engine = ComputerUseEngine.shared
+        guard let action = (input["action"] as? String)?.trimmingCharacters(in: .whitespaces), !action.isEmpty else {
+            return AnthropicClient.ToolResult("Missing 'action'.", isError: true)
+        }
+
+        // Master switch. Off by default; refuse (never force-enable).
+        guard engine.isEnabled else {
+            return AnthropicClient.ToolResult(
+                "Computer control is turned off. Ask the user to enable it in Settings ▸ Privacy ▸ Computer control before Holmes can click or type on the Mac. Until then, prefer browser_control for web pages and the other action tools.",
+                isError: true)
+        }
+
+        // Read-only actions run without any card (mirrors read_screen).
+        let readOnly: Set<String> = ["screenshot", "cursor_position"]
+        if !readOnly.contains(action) {
+            // Only genuinely irreversible / outward-facing actions raise a card.
+            if engine.isIrreversible(action: action, input: input) {
+                let preview = engine.describeAction(action: action, input: input)
+                let app = ScreenEngine.shared.latestActiveApp
+                guard await approve(title: "Computer: \(engine.actionTitle(action))",
+                                    preview: preview,
+                                    app: app.isEmpty ? "your Mac" : app) != nil else {
+                    return AnthropicClient.ToolResult("User declined the \(action) action.")
+                }
+            }
+            // Reversible → execute freely (no card), clicky-style.
+        }
+
+        let outcome = await engine.perform(action: action, input: input)
+        return AnthropicClient.ToolResult(outcome.text, isError: outcome.isError, imageBase64: outcome.imageBase64)
     }
 
     private func callMCP(name: String, input: [String: Any]) async -> AnthropicClient.ToolResult {

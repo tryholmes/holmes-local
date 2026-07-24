@@ -5,8 +5,8 @@ import UserNotifications
 // MARK: - PlaybookEngine
 // Evaluates proactive playbooks against the live screen context and produces
 // ProactiveDrafts. Draft-only by construction: generation goes through
-// HolmesBrain.runPlaybook (tool list pre-filtered by ComposioCatalog.isPlaybookSafe)
-// or LocalModelEngine (no tools at all). Nothing here can send, post, or publish —
+// HolmesBrain.runPlaybook (Claude, tool list pre-filtered by
+// ComposioCatalog.isPlaybookSafe). Nothing here can send, post, or publish —
 // approved drafts are staged/copied by the review card, never dispatched.
 //
 // Trigger discipline:
@@ -273,13 +273,13 @@ final class PlaybookEngine {
 
     // MARK: - Trigger-brain fire (debounce-exempt, cooldown-checked, single-flight)
 
-    /// Fire path for TriggerBrain (Ollama opportunity detection). Exempt from the
-    /// two-tick debounce — the model already rate-limits and signature-gates
-    /// itself — but holds every other brake: autoTriggers + enabled checks, the
-    /// key-independent 60s attempt floor, single-flight, and cooldowns. Because
-    /// the enriched context's entities are 3B-model OCR guesses, a matches()-
-    /// derived key is UNSTABLE ("Ada" vs "Ada L." mints fresh keys), so this
-    /// path also always checks/records the model-independent stable key
+    /// Fire path for TriggerBrain (deterministic opportunity detection off
+    /// LiveContext). Exempt from the two-tick debounce — TriggerBrain already
+    /// rate-limits and signature-gates itself — but holds every other brake:
+    /// autoTriggers + enabled checks, the key-independent 60s attempt floor,
+    /// single-flight, and cooldowns. A matches()-derived key can still be
+    /// UNSTABLE when the entities came from a coarse read ("Ada" vs "Ada L."
+    /// mints fresh keys), so this path also always checks/records the stable key
     /// ("trigger|appName|windowTitle") AND refuses to fire when ANY successful
     /// fire of this playbook happened within cooldownSeconds for the same
     /// window title — key drift can no longer re-draft one unchanged screen.
@@ -342,6 +342,62 @@ final class PlaybookEngine {
         Task { @MainActor in
             defer { isExecuting = false }
 
+            // === AUTONOMY ROUTING ===
+            // effectiveLevel applies the global "Autonomous actions" master switch
+            // (default OFF → every playbook clamps to ≤ .draft), so with autonomy
+            // off this seam behaves EXACTLY like the historical draft-only Holmes.
+            // All fire-time brakes (cooldown, debounce, 60s floor, single-flight)
+            // already ran before we got here and are unchanged.
+            let level = AutonomyPolicy.shared.effectiveLevel(for: playbook.id)
+            switch level {
+            case .observe:
+                // Watch only: record what WOULD have run; act on nothing.
+                await MemoryStore.shared.record(
+                    kind: "action", app: ctx.appName, windowTitle: ctx.windowTitle,
+                    activity: "autonomy-observed",
+                    summary: "Observed (not run): \(playbook.name)",
+                    detail: "playbook=\(playbook.id) level=observe context=\(ctx.appName) — \(ctx.windowTitle)")
+                ScreenGlowController.shared.set(state: .off)
+                onCompletion?(false)
+
+            case .draft:
+                await runDraftPath(playbook, ctx: ctx, cooldownKeys: cooldownKeys,
+                                   fromTrigger: fromTrigger, onCompletion: onCompletion)
+
+            case .confirm, .auto:
+                // Autonomy may act. If the gate refuses (rate budget spent, the
+                // playbook's own enable, or a master-switch race), fall back to
+                // the draft path so the playbook still helps rather than going dark.
+                guard AutonomyGate.mayAct(playbookId: playbook.id) else {
+                    await runDraftPath(playbook, ctx: ctx, cooldownKeys: cooldownKeys,
+                                       fromTrigger: fromTrigger, onCompletion: onCompletion)
+                    return
+                }
+                if playbook.isTeachScenario {
+                    await runTeachPath(playbook, ctx: ctx, cooldownKeys: cooldownKeys,
+                                       fromTrigger: fromTrigger, onCompletion: onCompletion)
+                } else {
+                    await runActionPath(playbook, ctx: ctx, level: level, cooldownKeys: cooldownKeys,
+                                        fromTrigger: fromTrigger, onCompletion: onCompletion)
+                }
+            }
+        }
+    }
+
+    // MARK: - Draft path (the historical draft-only pipeline, UNCHANGED)
+
+    /// The draft-only generation path: HolmesBrain.runPlaybook (Claude, tool list
+    /// pre-filtered by ComposioCatalog.isPlaybookSafe) produces a ProactiveDraft
+    /// the user stages/copies via the review card. Nothing here can send. This is
+    /// the code the fire() Task used to run inline — moved verbatim so the .draft
+    /// level, and every level's gate-refused fallback, keeps today's behavior.
+    private func runDraftPath(
+        _ playbook: Playbook,
+        ctx: PlaybookContext,
+        cooldownKeys: [String],
+        fromTrigger: Bool,
+        onCompletion: ((Bool) -> Void)?
+    ) async {
             let goal = playbook.makeGoal(ctx)
             var text: String? = nil
             var gmailDraftsCreated = 0
@@ -355,22 +411,27 @@ final class PlaybookEngine {
                 let allowDraftWrite = playbook.kind == .emailReply
                     || playbook.kind == .triage
                     || playbook.kind == .followUp
+                // The GitHub brief must be FAST: one fetch of repo + open PRs/issues,
+                // then write. Cap its tool budget and outer loop hard so it can't
+                // sprawl into a long agentic session like the general playbooks.
+                let isRepoBrief = playbook.kind == .repoBrief
                 if let outcome = await HolmesBrain.shared.runPlaybook(
                     goal: goal,
                     systemHint: Self.systemHint(for: playbook.kind),
                     composioApps: playbook.composioApps,
-                    allowDraftWrite: allowDraftWrite
+                    allowDraftWrite: allowDraftWrite,
+                    maxToolCalls: isRepoBrief ? 4 : 6,
+                    maxIterations: isRepoBrief ? 6 : nil
                 ) {
                     text = outcome.text
                     gmailDraftsCreated = outcome.gmailDraftsCreated
                     stagedDraftNotes = outcome.stagedDraftNotes
                 }
-            } else if LocalModelEngine.shared.isAvailable {
-                // Local fallback: no tools, plain generation with the same persona.
-                let prompt = Self.systemHint(for: playbook.kind) + "\n\n" + goal
-                text = await LocalModelEngine.shared.generate(prompt: prompt)
             } else {
-                print("[Holmes] Playbook '\(playbook.id)' skipped — no model backend available")
+                // No key, no draft. There is no second-tier model to fall back to,
+                // and a playbook that quietly produced a worse draft would be
+                // indistinguishable from one that worked.
+                print("[Holmes] Playbook '\(playbook.id)' skipped — no Anthropic API key configured")
             }
 
             var body = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -497,7 +558,99 @@ final class PlaybookEngine {
             }
             print("[Holmes] Playbook '\(playbook.id)' drafted — \(draft.title)\(stagedNote.map { " (\($0))" } ?? "")")
             onCompletion?(true)
+    }
+
+    // MARK: - Action path (autonomy: plan → AutonomousActionRunner)
+
+    /// The autonomy ACTION path. ActionPlanner turns the goal + context into a
+    /// concrete plan; AutonomousActionRunner runs it under the level (.confirm =
+    /// whole plan on one card; .auto = free reversible steps, one card per
+    /// gate-flagged step) and OWNS the confirm cards, ⌘⌥Esc kill switch, undo
+    /// affordance, the durable "action" memory trail, the rate-budget consumption
+    /// (AutonomyGate.recordAct), the completion notification, and its own glow.
+    private func runActionPath(
+        _ playbook: Playbook,
+        ctx: PlaybookContext,
+        level: AutonomyLevel,
+        cooldownKeys: [String],
+        fromTrigger: Bool,
+        onCompletion: ((Bool) -> Void)?
+    ) async {
+        guard AnthropicConfig.isConfigured else {
+            print("[Holmes] Playbook '\(playbook.id)' autonomy skipped — no Anthropic API key")
+            ScreenGlowController.shared.set(state: .off)
+            onCompletion?(false)
+            return
         }
+        let goal = playbook.makeGoal(ctx)
+        guard let plan = await ActionPlanner.plan(playbookId: playbook.id, goal: goal, context: ctx) else {
+            print("[Holmes] Playbook '\(playbook.id)' autonomy — no plan produced")
+            ScreenGlowController.shared.set(state: .off)
+            onCompletion?(false)
+            return
+        }
+        // The runner settles the glow / posts the notification / logs memory.
+        await AutonomousActionRunner.shared.run(plan, playbookId: playbook.id, level: level)
+        // Consume the per-context cooldown(s) so the same window doesn't re-fire,
+        // and record the key-independent fire fact for the drift guards — the same
+        // bookkeeping the draft path does on success.
+        for cooldownKey in cooldownKeys { cooldowns[cooldownKey] = Date() }
+        lastSuccessfulFire[playbook.id] = (at: Date(), windowTitle: ctx.windowTitle, fromTrigger: fromTrigger)
+        onCompletion?(true)
+    }
+
+    // MARK: - Teach path (autonomy: explain + draw on screen, no mutation)
+
+    /// The autonomy TEACH path. VisualGuidance answers a question about what's on
+    /// screen; the answer is spoken (SpeechSynthesizer) and drawn on screen
+    /// (VisualGuidanceOverlay). It never mutates anything, so there is no confirm
+    /// card and no undo — but it still consumes the autonomy rate budget and the
+    /// cooldowns so it can't get naggy.
+    private func runTeachPath(
+        _ playbook: Playbook,
+        ctx: PlaybookContext,
+        cooldownKeys: [String],
+        fromTrigger: Bool,
+        onCompletion: ((Bool) -> Void)?
+    ) async {
+        guard AnthropicConfig.isConfigured else {
+            print("[Holmes] Playbook '\(playbook.id)' teach skipped — no Anthropic API key")
+            ScreenGlowController.shared.set(state: .off)
+            onCompletion?(false)
+            return
+        }
+        // Consume the hourly autonomy budget for this fire (mayAct already cleared
+        // it); the action path's budget is consumed inside the runner instead.
+        AutonomyGate.recordAct(playbookId: playbook.id)
+
+        guard let result = await VisualGuidance.answer(question: playbook.makeGoal(ctx)) else {
+            print("[Holmes] Playbook '\(playbook.id)' teach — no guidance produced")
+            ScreenGlowController.shared.set(state: .off)
+            onCompletion?(false)
+            return
+        }
+
+        // Draw the annotations on the display they were produced against
+        // (auto-hides; the next key/click dismisses).
+        if !result.annotations.isEmpty {
+            VisualGuidanceOverlay.shared.show(result.annotations, mappedFrom: result.capture)
+        }
+        // Speak WITHOUT holding the fire lock — fire-and-forget so isExecuting
+        // releases immediately and other playbooks aren't starved by a long TTS.
+        if !result.spokenAnswer.isEmpty {
+            Task { @MainActor in await SpeechSynthesizer.shared.speak(result.spokenAnswer) }
+        }
+
+        await MemoryStore.shared.record(
+            kind: "action", app: ctx.appName, windowTitle: ctx.windowTitle,
+            activity: "autonomy-teach",
+            summary: "Explained: \(playbook.makeTitle(ctx))",
+            detail: "playbook=\(playbook.id)\n\(String(result.spokenAnswer.prefix(600)))")
+
+        for cooldownKey in cooldownKeys { cooldowns[cooldownKey] = Date() }
+        lastSuccessfulFire[playbook.id] = (at: Date(), windowTitle: ctx.windowTitle, fromTrigger: fromTrigger)
+        ScreenGlowController.shared.set(state: .ready)
+        onCompletion?(true)
     }
 
     // MARK: - Notifications ("Holmes prepared something")

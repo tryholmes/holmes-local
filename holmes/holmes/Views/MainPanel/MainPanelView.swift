@@ -18,14 +18,33 @@ struct MainPanelView: View {
 
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 10) {
+                        // ABOVE the context card, deliberately. Someone asked the
+                        // user a question and the answer is already written — that
+                        // outranks "here is what you are looking at", which they
+                        // can see for themselves. Nothing about it sends: the card
+                        // stages text and stops (see ReplyReadyCard).
+                        if let reply = agent.pendingReplyDraft,
+                           let incoming = agent.pendingReplyTo {
+                            ReplyReadyCard(
+                                draft: reply,
+                                incoming: incoming,
+                                onEdit: { agent.notePendingReplyEdit($0) },
+                                // The panel is where the reply LIVES, so dismissing
+                                // here discards it (and closes the floating card),
+                                // unlike the popup's Dismiss which only hides.
+                                onDismiss: { agent.clearPendingReply() })
+                                .cardEntrance(appeared: cardsAppeared, delay: 0.0)
+                        }
+
                         ContextCard(context: agent.currentContext)
                             .cardEntrance(appeared: cardsAppeared, delay: 0.00)
 
-                        // OCR debug
-                        if !agent.lastOCRText.isEmpty {
-                            debugOCRView
-                                .cardEntrance(appeared: cardsAppeared, delay: 0.05)
-                        }
+                        // Where the context came from. Directly under the card it
+                        // describes, because "is Holmes reading the DOM or
+                        // guessing at pixels" is the first question the headline
+                        // above raises.
+                        ExtensionStatusRow()
+                            .cardEntrance(appeared: cardsAppeared, delay: 0.05)
 
                         // Status row
                         statusRow
@@ -36,6 +55,11 @@ struct MainPanelView: View {
                             DraftsCard(drafts: playbooks.drafts)
                                 .cardEntrance(appeared: cardsAppeared, delay: 0.14)
                         }
+
+                        // What Holmes has remembered, and which rows it's using
+                        // for the task in flight.
+                        AgentMemoryCard()
+                            .cardEntrance(appeared: cardsAppeared, delay: 0.18)
 
                         // Meetings
                         if !calendar.upcomingMeetings.isEmpty {
@@ -55,7 +79,7 @@ struct MainPanelView: View {
                 }
             }
         }
-        .frame(width: 380, height: 520)
+        .frame(width: 380, height: 600)
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .overlay(
             RoundedRectangle(cornerRadius: 18)
@@ -158,40 +182,48 @@ struct MainPanelView: View {
                 }
                 .padding(.horizontal, 4)
             } else if let updated = agent.lastUpdated {
-                HStack {
+                HStack(spacing: 6) {
+                    // How good the reading behind the headline is. Green only for
+                    // .exact — the tier Holmes is allowed to state facts from.
                     Circle()
-                        .fill(NoirColors.success)
+                        .fill(confidenceColor)
                         .frame(width: 5, height: 5)
-                    Text("via \(agent.modelBackend)")
+                    Text(agent.live.confidence.label.uppercased())
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundColor(confidenceColor.opacity(0.85))
+                        .tracking(0.8)
+                    Text("· \(agent.live.source.label) · \(agent.modelBackend)")
                         .font(.system(size: 10, weight: .regular, design: .default))
                         .foregroundColor(NoirColors.textTertiary)
-                    Spacer()
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
                     Text(updated, style: .relative)
                         .font(.system(size: 10, weight: .regular, design: .default))
                         .foregroundColor(NoirColors.textTertiary)
+                        .fixedSize()
                 }
                 .padding(.horizontal, 4)
+                .help(confidenceHelp)
             } else {
                 EmptyView()
             }
         }
     }
 
-    // MARK: Debug OCR
-
-    private var debugOCRView: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("DEBUG — OCR: \(agent.lastOCRText.count) chars")
-                .font(.system(size: 9, design: .default))
-                .foregroundColor(Color.white.opacity(0.50))
-            Text(String(agent.lastOCRText.prefix(120)).replacingOccurrences(of: "\n", with: " ↩ "))
-                .font(.system(size: 8, design: .default))
-                .foregroundColor(Color.white.opacity(0.35))
-                .lineLimit(3)
+    /// Exact = read from the DOM or a structured AX field. Structural = read from
+    /// the Accessibility tree (reliable but coarse). Guessing = OCR, which Holmes
+    /// will not quote.
+    private var confidenceColor: Color {
+        switch agent.live.confidence {
+        case .exact:      return NoirColors.success
+        case .structural: return NoirColors.calendarBlue
+        case .inferred:   return NoirColors.textTertiary
         }
-        .padding(8)
-        .background(Color.white.opacity(0.05))
-        .cornerRadius(6)
+    }
+
+    private var confidenceHelp: String {
+        agent.live.provenance
     }
 
     // MARK: No meetings row

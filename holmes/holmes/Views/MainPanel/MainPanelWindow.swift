@@ -42,7 +42,10 @@ class MainPanelWindowController: NSObject, ObservableObject {
     
     private func createWindow() {
         let window = MainPanelPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 520),
+            // Must match MainPanelView's own frame — the hosting view is pinned to
+            // the window's bounds, so a smaller window would clip the panel
+            // (and its ScrollView would scroll content that has nowhere to go).
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 600),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false

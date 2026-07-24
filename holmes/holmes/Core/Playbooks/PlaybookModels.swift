@@ -99,6 +99,12 @@ struct Playbook: Identifiable {
     let makeGoal: (PlaybookContext) -> String    // agent goal prompt
     let makeTitle: (PlaybookContext) -> String
     let makeTarget: (PlaybookContext) -> DraftTarget
+    /// TEACH vs ACT dispatch for the autonomy path. When true (confirm/auto with
+    /// the master switch on), PlaybookEngine.fire routes to the draw-on-screen +
+    /// speak guidance path (VisualGuidance) instead of the AutonomousActionRunner
+    /// — the playbook explains/points rather than mutating anything. Defaults to
+    /// false so every existing playbook keeps its behavior unchanged.
+    var isTeachScenario: Bool = false
 }
 
 // MARK: - ComposioCatalog

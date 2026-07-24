@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Holmes — Settings</title>
+  <link rel="stylesheet" href="noir.css" />
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <div class="shell">
+    <div class="header">
+      <div class="brand">
+        <div class="mark">&#8981;</div>
+        <div class="wordmark">HOLMES</div>
+      </div>
+      <span class="mono t-tertiary" style="font-size:10px; letter-spacing:1px;">EXTENSION SETTINGS</span>
+    </div>
+
+    <main class="body">
+
+      <!-- Pairing / token -->
+      <section class="card">
+        <div class="card-head">
+          <span class="dot amber" id="pairDot"></span>
+          <span class="label accent">PAIRING</span>
+          <span class="grow"></span>
+          <span class="mono status-pill" id="pairPill">checking…</span>
+        </div>
+
+        <div class="hint" id="pairMsg" style="margin-bottom:10px;">
+          Checking the Holmes bridge…
+        </div>
+
+        <div class="label" style="margin-bottom:6px;">EXTENSION TOKEN</div>
+        <div class="row" style="align-items:stretch;">
+          <div class="mono-value grow" id="tokenValue">—</div>
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <button id="revealBtn" class="btn ghost">REVEAL</button>
+          <button id="copyBtn" class="btn ghost">COPY</button>
+          <span class="grow"></span>
+          <button id="repairBtn" class="btn">RE-PAIR</button>
+        </div>
+        <div class="hint" id="repairResult" style="margin-top:8px;" hidden></div>
+
+        <div class="divider"></div>
+        <div class="hint">
+          This token is minted by the extension and stored in <b>chrome.storage.local</b>.
+          To pair: in the Holmes app open <b>Settings &#9656; Privacy &#9656; Pair browser
+          extension</b>, then press <b>Re-pair</b> above within two minutes.
+        </div>
+      </section>
+
+      <!-- Site exclusions -->
+      <section class="card">
+        <div class="card-head">
+          <span class="badge">&#128683;</span>
+          <span class="label">EXCLUDED SITES</span>
+          <span class="grow"></span>
+          <span class="mono t-tertiary" id="excludeCount" style="font-size:9px;">0 sites</span>
+        </div>
+        <div class="hint" style="margin-bottom:10px;">
+          Holmes reads nothing on these hosts — no extraction, no POST. Subdomains are
+          covered too (adding <span class="mono">example.com</span> also excludes
+          <span class="mono">mail.example.com</span>).
+        </div>
+        <div class="row">
+          <input id="excludeInput" class="field grow" type="text"
+                 placeholder="example.com" autocomplete="off" spellcheck="false" />
+          <button id="excludeAdd" class="btn">ADD</button>
+        </div>
+        <div id="excludeList" class="chips" style="margin-top:12px;"></div>
+        <div id="excludeEmpty" class="hint" style="margin-top:12px;">No sites excluded.</div>
+      </section>
+
+      <!-- Heartbeat -->
+      <section class="card">
+        <div class="card-head">
+          <span class="badge">&#9829;</span>
+          <span class="label">HEARTBEAT INTERVAL</span>
+        </div>
+        <div class="hint" style="margin-bottom:10px;">
+          The safety-net re-send cadence. Real updates still post instantly on typing,
+          selection and navigation — this only sets how often Holmes re-syncs an
+          unchanged page. Lower is fresher; higher is quieter.
+        </div>
+        <div class="segmented" id="heartbeatSeg">
+          <button class="seg" data-ms="0">Default (5s)</button>
+          <button class="seg" data-ms="2000">2s</button>
+          <button class="seg" data-ms="5000">5s</button>
+          <button class="seg" data-ms="10000">10s</button>
+          <button class="seg" data-ms="30000">30s</button>
+          <button class="seg" data-ms="60000">60s</button>
+        </div>
+      </section>
+
+    </main>
+
+    <div class="footer">
+      <span>Holmes extension · loopback bridge 127.0.0.1:5766 · draft-never-send</span>
+    </div>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

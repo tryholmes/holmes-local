@@ -280,9 +280,9 @@ final class Autopilot {
         let minuteOfDay = (now.hour ?? 0) * 60 + (now.minute ?? 0)
         guard minuteOfDay >= schedule.startMinute && minuteOfDay < schedule.endMinute else { return }
 
-        // These playbooks need Claude + MCP (Gmail/Calendar/GitHub data); the
-        // local model can't fetch anything, so skip — but keep retrying through
-        // the window in case the key gets configured mid-window.
+        // These playbooks need Claude + MCP (Gmail/Calendar/GitHub data). Without
+        // a key there is nothing to fall back to, so skip — but keep retrying
+        // through the window in case the key gets configured mid-window.
         guard AnthropicConfig.isConfigured else {
             if dailySkipLogDay[schedule.playbookId] != today {
                 dailySkipLogDay[schedule.playbookId] = today

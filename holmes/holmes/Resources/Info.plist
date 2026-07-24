@@ -43,9 +43,9 @@
     <key>NSCalendarsUsageDescription</key>
     <string>Holmes reads your calendar to detect upcoming meetings and auto-join video calls 2 minutes before they start.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Holmes uses the microphone for voice input when you activate listening mode.</string>
+    <string>Holmes listens when you hold the talk hotkey, so you can ask about your screen out loud.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Holmes uses speech recognition to convert your voice commands to text.</string>
+    <string>Holmes transcribes what you say on-device to understand your request.</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

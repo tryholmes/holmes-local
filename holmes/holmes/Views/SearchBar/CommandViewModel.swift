@@ -142,9 +142,19 @@ final class CommandViewModel {
         let ocrText = agent.lastOCRText
         let trigger = command?.trigger ?? "/ask"
 
-        // ── Instant commands: bypass Ollama entirely ──────────────────────────
-        // These work even when Ollama is offline.
+        // ── Instant commands: no model at all ─────────────────────────────────
+        // Pure local logic (calendar + AX reads), so they work with no API key.
         let argL = argument.lowercased()
+
+        // A reply to a real conversation, grounded in the actual thread and in
+        // memory, beats a canned availability line whenever the thread is
+        // readable. This is user-initiated and lands in the approval card —
+        // ReplyComposer has no send path at all, and staging still goes through
+        // ActionExecutor after the user approves.
+        if argL.hasPrefix("reply imessage") || argL.hasPrefix("suggest imessage reply") {
+            if await draftGroundedReply(appName: appName) { return }
+        }
+
         if trigger == "/run" {
             // "reply busy meeting …" or "reply imessage" or "reply free"
             if argL.hasPrefix("reply busy") || argL.hasPrefix("reply imessage") || argL.hasPrefix("reply free") {
@@ -165,20 +175,19 @@ final class CommandViewModel {
             }
         }
 
-        // Agentic action path (Hybrid mode): /run with a configured Claude key runs
-        // the Claude + MCP tool-use loop, which can take real, multi-step actions.
-        // Without a key, fall through to the local Ollama path below.
-        if trigger == "/run", AnthropicConfig.isConfigured {
-            await runAgentic(argument: argument)
+        // Every model path from here needs the API key. There is no local
+        // fallback: a degraded answer the user can't tell apart from a real one
+        // is worse than an honest error, so say exactly what's missing.
+        guard AnthropicConfig.isConfigured else {
+            appendLog("No Anthropic API key set. Add one in Holmes ▸ Settings (or drop it in ~/Library/Application Support/Holmes/anthropic_key) to enable \(trigger).", kind: .error)
+            state = .error
             return
         }
 
-        if !LocalModelEngine.shared.isAvailable {
-            await LocalModelEngine.shared.probe()
-        }
-        if !LocalModelEngine.shared.isAvailable {
-            appendLog("Ollama not running. Start it with: ollama serve", kind: .error)
-            state = .error
+        // Agentic action path: /run runs the Claude + MCP tool-use loop, which can
+        // take real, multi-step actions. Everything else is a single completion.
+        if trigger == "/run" {
+            await runAgentic(argument: argument)
             return
         }
 
@@ -190,21 +199,17 @@ final class CommandViewModel {
             ocrText: ocrText
         )
 
-        // Stream tokens directly into one growing text block — no thinking noise
-        var fullResponse = ""
-        var displayedLines: Set<String> = []
-
-        _ = await LocalModelEngine.shared.generate(prompt: prompt) { [weak self] token in
-            guard let self else { return }
-            fullResponse += token
-
-            // Update the last log line live (streaming feel)
-            let clean = fullResponse.trimmingCharacters(in: .whitespacesAndNewlines)
-            if self.log.isEmpty {
-                self.log.append(LogLine(text: clean, kind: .info))
-            } else {
-                self.log[self.log.count - 1] = LogLine(text: clean, kind: .info)
-            }
+        appendLog("Thinking…", kind: .step)
+        let fullResponse: String
+        do {
+            fullResponse = try await AnthropicClient.shared.complete(
+                system: "You are Holmes, a direct AI assistant running on the user's Mac. Answer exactly what is asked, with no preamble.",
+                user: prompt,
+                maxTokens: 1024)
+        } catch {
+            appendLog("Claude request failed — \(error.localizedDescription)", kind: .error)
+            state = .error
+            return
         }
 
         // Final: split into lines for readability
@@ -216,6 +221,11 @@ final class CommandViewModel {
 
         for line in lines {
             appendLog(line, kind: .info)
+        }
+        if lines.isEmpty {
+            appendLog("Claude returned an empty response.", kind: .error)
+            state = .error
+            return
         }
 
         state = .done
@@ -252,7 +262,7 @@ final class CommandViewModel {
         }
         switch result {
         case .notConfigured:
-            appendLog("No Anthropic API key set. Add one to enable agentic actions, or start Ollama for local mode.", kind: .error)
+            appendLog("No Anthropic API key set. Add one in Holmes ▸ Settings to enable agentic actions.", kind: .error)
             state = .error
         case .text(let final):
             if log.isEmpty { appendLog(final, kind: .success) }
@@ -261,7 +271,56 @@ final class CommandViewModel {
         }
     }
 
-    // MARK: - Direct availability reply (no Ollama needed)
+    // MARK: - Grounded reply (ReplyComposer)
+
+    /// Drafts a reply to the conversation actually on screen. Returns false when
+    /// there is no readable thread — the caller then falls back to the canned
+    /// availability line rather than inventing a recipient.
+    private func draftGroundedReply(appName: String) async -> Bool {
+        guard AnthropicConfig.isConfigured else { return false }
+        guard MessagesReader.shared.isMessagesFrontmost(),
+              let thread = MessagesReader.shared.readFrontmostThread(),
+              let incoming = thread.messages.last(where: { !$0.isFromMe })
+        else { return false }
+
+        appendLog("Reading the conversation with \(thread.contact)…", kind: .step)
+
+        let target = appName.isEmpty ? "Messages" : appName
+        let message = ReplyComposer.IncomingMessage(
+            surface: ReplyComposer.surfaceIMessage,
+            sender: incoming.sender,
+            text: incoming.text,
+            threadID: thread.contact,
+            app: target)
+
+        guard let draft = await ReplyComposer.shared.draftReply(
+            to: message, context: HolmesAgent.shared.live)
+        else {
+            appendLog("Couldn't draft a grounded reply — falling back.", kind: .error)
+            return false
+        }
+
+        appendLog("Drafting: \"\(draft.body)\"", kind: .success)
+        if !draft.groundedIn.isEmpty {
+            appendLog("Grounded in \(draft.groundedIn.count) remembered note\(draft.groundedIn.count == 1 ? "" : "s").", kind: .info)
+        }
+        if draft.confidence != .exact {
+            // The UI must not imply Holmes verified specifics it only inferred.
+            appendLog("Context was \(draft.confidence.label.lowercased()) — check the details before sending.", kind: .info)
+        }
+        state = .done
+
+        let action = PendingAction(
+            title: "Reply to \(incoming.sender)",
+            preview: draft.body,
+            appName: target,
+            actionType: .typeMessage
+        )
+        ConfirmationBus.shared.propose(action)
+        return true
+    }
+
+    // MARK: - Direct availability reply (no model needed)
 
     private func handleDirectAvailabilityReply(isBusy: Bool) {
         let meetings = CalendarEngine.shared.upcomingMeetings
@@ -308,7 +367,13 @@ final class CommandViewModel {
             }
         }
 
-        let screenContext = ocrText.isEmpty ? contextSummary : String(ocrText.prefix(1200))
+        // The tier travels with the text. Pasted raw, garbled OCR is
+        // indistinguishable from a literal DOM read, and the model quotes
+        // whatever it is handed — so the block announces which one it is.
+        let quality = HolmesAgent.shared.lastTextConfidence.textReliabilityNote
+        let screenContext = ocrText.isEmpty
+            ? contextSummary
+            : "(\(quality))\n" + String(ocrText.prefix(1200))
         let taskDesc = userArg.isEmpty ? contextSummary : userArg
 
         switch trigger {

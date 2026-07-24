@@ -24,6 +24,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupHotkeys()
 
         Task { @MainActor in
+            // Clicky loop: wire push-to-talk transcripts into the router and warm
+            // up mic/speech permission once, so the first hold doesn't silently
+            // no-op on a not-yet-determined grant.
+            ClickyController.shared.start()
             await handleAuthAndLaunch()
         }
     }
@@ -65,6 +69,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         HotkeyManager.shared.onCommandBackslash = {
             SideIconWindowController.shared.toggle()
+        }
+
+        // ⌘⌥Esc — emergency stop for a computer-control run. Flips the engine's
+        // session kill flag so the next primitive aborts and the loop winds down.
+        // The Carbon hotkey callback is a nonisolated closure (invoked via
+        // DispatchQueue.main.async in HotkeyManager), so hop onto the MainActor to
+        // reach the @MainActor-isolated engine — the flag flip is trivial and the
+        // next `perform` iteration reads it.
+        HotkeyManager.shared.onCommandOptionEscape = {
+            Task { @MainActor in
+                ComputerUseEngine.shared.cancelRun()
+            }
+        }
+
+        // Hold Fn (globe) — Clicky push-to-talk, true hold-to-talk. HotkeyManager
+        // watches the .function modifier flag via NSEvent monitors: Fn-DOWN begins
+        // listening, Fn-UP ends it and routes the transcript (ask-and-draw, or hand
+        // off to the agent). The monitor callbacks are nonisolated closures (NSEvent
+        // invokes them on the main thread), so hop onto the MainActor to reach the
+        // @MainActor-isolated ClickyController — mirrors the ⌘⌥Esc handler.
+        HotkeyManager.shared.onPushToTalkDown = {
+            Task { @MainActor in
+                ClickyController.shared.beginPushToTalk()
+            }
+        }
+        HotkeyManager.shared.onPushToTalkUp = {
+            Task { @MainActor in
+                ClickyController.shared.endPushToTalk()
+            }
         }
 
         HotkeyManager.shared.registerHotkeys()

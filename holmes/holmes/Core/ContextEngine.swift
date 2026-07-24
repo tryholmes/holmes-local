@@ -72,89 +72,14 @@ final class ContextEngine {
         return "Editing \(where_) in \(app) — “\(short(val, 50))”"
     }
 
-    // MARK: - Build prompt for LLM (calendar-aware)
-    // Callers on @MainActor pass CalendarEngine.shared.upcomingMeetings directly
-    // so ContextEngine never touches @MainActor state itself.
-
-    func buildLLMPrompt(from snapshot: ContextSnapshot, meetings: [UpcomingMeeting] = []) -> String {
-        let truncated = String(snapshot.ocrText.prefix(1500))
-        let calendarContext = buildCalendarContext(meetings: meetings)
-        return """
-You are Holmes, an AI assistant on macOS. Read this screen content and respond with ONLY a JSON object.
-
-App: \(snapshot.appName)
-Window: \(snapshot.windowTitle)
-Screen text (OCR):
-\(truncated)
-\(calendarContext)
-Output ONLY this JSON (no markdown, no explanation):
-{"summary":"<what user is doing, specific, under 15 words>","actions":["<action1>","<action2>","<action3>"]}
-
-Rules for actions — be SPECIFIC to what's on screen:
-- If composing email: suggest filling To/Subject/body, drafting reply
-- If reading email: suggest replying, summarizing, archiving
-- If on iMessage/Discord/Slack: suggest drafting reply to the specific person visible
-- If someone asked about availability: check the calendar context above and suggest a reply
-- If coding: suggest explaining, fixing, or improving the visible code
-- If browsing: suggest summarizing, saving, or acting on the visible content
-Each action must start with /ask, /run, or /plan and be under 8 words.
-"""
-    }
-
-    /// Builds a calendar status string to inject into LLM prompts.
-    /// Takes meetings as a value so this can be called from any actor context.
-    func buildCalendarContext(meetings: [UpcomingMeeting]) -> String {
-        guard !meetings.isEmpty else {
-            return "\nCalendar: Free — no meetings in the next 30 minutes.\n"
-        }
-        let lines = meetings.prefix(3).map { m -> String in
-            let time = Self.timeFormatter.string(from: m.startDate)
-            return "  · \(m.title) at \(time) (\(m.timeLabel))"
-        }.joined(separator: "\n")
-        return "\nCalendar (upcoming meetings):\n\(lines)\n"
-    }
-
-    private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "h:mm a"
-        return f
-    }()
-
-    // MARK: - Parse LLM response
-
-    struct LLMContextResponse {
-        let summary: String
-        let actions: [String]
-    }
-
-    func parseLLMResponse(_ raw: String) -> LLMContextResponse? {
-        var json = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Strip markdown code fences if model wraps response.
-        // Slice from the first "{" through the last "}" — end.upperBound already
-        // sits just past the closing brace, so nothing extra gets appended.
-        if let start = json.range(of: "{"),
-           let end = json.range(of: "}", options: .backwards),
-           start.lowerBound <= end.lowerBound {
-            json = String(json[start.lowerBound..<end.upperBound])
-        }
-
-        guard let data = json.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-
-        let summary = obj["summary"] as? String ?? ""
-        let actions = obj["actions"] as? [String] ?? []
-        return LLMContextResponse(summary: summary, actions: actions)
-    }
-
     // MARK: - Deep context (what EXACTLY is the user working on)
     // The heuristic DetectedContext answers "which surface is this" ("Reading
-    // email", "Working in Xcode"). DeepContext answers the real question: WHICH
-    // email from WHOM asking WHAT, WHICH function with WHICH error, WHICH math
-    // problem. It is extracted by the local model in JSON mode, kept fresh by
-    // HolmesAgent (single-flight, only when the screen actually changed), and
-    // every meaningful change is persisted to MemoryStore so the agent can
-    // recall what the user has been working on.
+    // email", "Working in Xcode"). LiveContext answers the real question —
+    // deterministically, from the DOM or the AX tree — and DeepContext is what
+    // survives of the old model-extracted layer: the enrichment HolmesAgent
+    // builds behind an already-correct headline (activity + goal + entities),
+    // which HolmesBrain uses to ground a run. Nothing here parses model output
+    // any more; HolmesAgent constructs it directly from the LiveContext.
 
     struct DeepContext {
         let activity: String            // coding | math | writing | email | ...
@@ -205,89 +130,6 @@ Each action must start with /ask, /run, or /plan and be under 8 words.
         }
     }
 
-    func buildDeepContextPrompt(from snapshot: ContextSnapshot,
-                                meetings: [UpcomingMeeting] = [],
-                                focused: FocusedContext? = nil,
-                                hasImage: Bool = false) -> String {
-        let truncated = String(snapshot.ocrText.prefix(2200))
-        let calendarContext = buildCalendarContext(meetings: meetings)
-        // The focused control + selection pin the user's exact locus of attention.
-        var focusBlock = ""
-        if let f = focused {
-            let roleName = f.roleDescription.isEmpty ? f.role : f.roleDescription
-            var lines = ["Focused control: \(roleName)\(f.label.isEmpty ? "" : " “\(f.label)”")"]
-            if !f.value.isEmpty { lines.append("  its contents: \"\(String(f.value.prefix(240)))\"") }
-            if !f.selectedText.isEmpty { lines.append("Selected text: \"\(String(f.selectedText.prefix(240)))\"") }
-            focusBlock = "\n" + lines.joined(separator: "\n") + "\n"
-        }
-        // When a screenshot is attached, tell the model to trust its own eyes.
-        let visionBlock = hasImage
-            ? "\nA SCREENSHOT of this exact screen is attached — treat it as the PRIMARY source. Read the layout, the active/highlighted controls, images, charts, and anything the text misses; the OCR text may be partial or garbled.\n"
-            : ""
-        return """
-You are Holmes, an AI assistant on macOS. Identify the user's SPECIFIC TASK right now — not which app they have open. Saying "using \(snapshot.appName)" or "browsing the web" is a FAILURE; name the actual thing they are doing and what they are trying to accomplish.
-
-App: \(snapshot.appName)
-Window: \(snapshot.windowTitle)\(focusBlock)\(visionBlock)Screen text (OCR):
-\(truncated)
-\(calendarContext)
-Respond with ONLY this JSON object:
-{"activity":"<one of: coding, math, writing, email, chat, ai-prompting, reading, research, design, terminal, meeting, video, browsing, other>",
-"summary":"<the specific task, under 15 words — e.g. 'Debugging a nil-unwrap crash in LoginView.swift', not 'Using Xcode'>",
-"details":"<a DETAILED overview of EXACTLY what they are working on and their apparent goal, 2-4 sentences quoting the concrete specifics on screen: the exact math problem, the exact file/function/error in the code, the exact email sender + subject + what it asks, the exact document topic and section, the exact question typed into an AI chat>",
-"entities":{"<key>":"<value>"},
-"actions":["<action1>","<action2>","<action3>"]}
-
-Rules:
-- summary and details must name the concrete task. NEVER answer with the app name alone or generic filler like "working on a project", "viewing a document", or "using \(snapshot.appName)".
-- details must quote real content from the screen text above.
-- entities: include only keys that apply, from: problem, file, function, error, language, sender, subject, recipient, contact, url, topic, repo, goal.
-- If the screen text is genuinely too sparse to tell, use activity "other" and describe what little IS visible — still no bare app name.
-- Each action must start with /ask, /run, or /plan, be under 8 words, and be specific to this task.
-"""
-    }
-
-    /// Parses the JSON-mode reply into a DeepContext. Defensive: the model may
-    /// emit non-string entity values or wrap the object in fences.
-    func parseDeepContext(_ raw: String, snapshot: ContextSnapshot) -> DeepContext? {
-        var json = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let start = json.range(of: "{"),
-           let end = json.range(of: "}", options: .backwards),
-           start.lowerBound <= end.lowerBound {
-            json = String(json[start.lowerBound..<end.upperBound])
-        }
-        guard let data = json.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-
-        let summary = (obj["summary"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !summary.isEmpty else { return nil }
-
-        var entities: [String: String] = [:]
-        if let rawEntities = obj["entities"] as? [String: Any] {
-            for (key, value) in rawEntities {
-                let str = value as? String ?? String(describing: value)
-                if !str.isEmpty { entities[key] = String(str.prefix(200)) }
-            }
-        }
-        // Keep only real Holmes commands — the model sometimes invents slugs
-        // like "/review_code" that no command handler understands.
-        let validPrefixes = ["/ask", "/run", "/plan", "/watch"]
-        let actions = (obj["actions"] as? [String] ?? [])
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { a in validPrefixes.contains { a.lowercased().hasPrefix($0) } }
-
-        return DeepContext(
-            activity: (obj["activity"] as? String ?? "other").lowercased(),
-            summary: summary,
-            details: (obj["details"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
-            entities: entities,
-            actions: actions,
-            app: snapshot.appName,
-            windowTitle: snapshot.windowTitle,
-            timestamp: snapshot.timestamp
-        )
-    }
 
     // MARK: - Context classification (playbooks)
     // Structured counterpart to inferDescription: same heuristics, but returns a

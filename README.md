@@ -8,9 +8,9 @@ You never open a chat box. You just work. When Holmes spots something it can hel
 
 ## The one-paragraph mental model
 
-> **Ollama is the eyes. Claude is the hands. Composio is the reach. You are the send button.**
+> **Structured reads are the eyes. Claude is the hands. Composio is the reach. You are the send button.**
 
-A local model (Ollama) reads your screen every few seconds — free, private, always on — and decides *"is there something actionable here?"* When there is, Claude wakes up, uses your connected tools (Gmail, Calendar, GitHub, Discord, LinkedIn, web search… via Composio MCP) to gather the *real* data, and prepares a deliverable. Everything it prepares is a **draft you review**. The only outbound action Holmes can perform on its own is creating a draft inside *your own* Gmail Drafts folder — and even that is exact-match allow-listed and recipient-grounded so it can never be turned into a send.
+Holmes reads your screen every few seconds from *structured* sources — the browser extension's view of the DOM, or the macOS Accessibility tree — and turns that into one deterministic sentence about what you're doing (`LiveContext`). No model writes that sentence, which is exactly why it is never a confident guess. A deterministic matcher then decides *"is there something actionable here?"* When there is, Claude wakes up, uses your connected tools (Gmail, Calendar, GitHub, Discord, LinkedIn, web search… via Composio MCP) to gather the *real* data, and prepares a deliverable. Everything it prepares is a **draft you review**. The only outbound action Holmes can perform on its own is creating a draft inside *your own* Gmail Drafts folder — and even that is exact-match allow-listed and recipient-grounded so it can never be turned into a send.
 
 ---
 
@@ -19,8 +19,8 @@ A local model (Ollama) reads your screen every few seconds — free, private, al
 Take the email example (every playbook follows the same shape):
 
 1. **You open an email in Gmail.** That's the only thing you do.
-2. **Holmes reads the screen.** Every ~3 seconds it captures your active display via ScreenCaptureKit (falling back to the Accessibility tree for native apps), runs on-device Apple Vision OCR, and hands the text to the local model.
-3. **Ollama classifies the opportunity.** *"This is an email that may need a reply."* Cheap, local, private. If nothing's actionable, nothing happens — Holmes stays silent.
+2. **Holmes reads the screen.** Every ~3 seconds it reads the page through the browser extension (exact DOM values) or the macOS Accessibility tree, falling back to on-device Apple Vision OCR only when neither is available — and when it's down to OCR it *says so* instead of describing what it can't actually read.
+3. **A deterministic matcher classifies the opportunity.** *"This is an email that may need a reply."* Surface + entities → playbook, computed on-device from that structured read. If nothing's actionable, nothing happens — Holmes stays silent.
 4. **The screen glows + your trackpad buzzes.** A rotating "Apple-Intelligence"-style sweep appears around the screen edges the instant an actionable action starts, with a haptic tap so you feel it caught something.
 5. **Claude acts.** It builds a goal from the on-screen context, asks Composio *"what Gmail tools do I have?"*, and pulls the **real thread** (`GMAIL_FETCH_EMAILS`, `GMAIL_FETCH_MESSAGE_BY_THREAD_ID`) — grounding the reply in the actual conversation, not just noisy OCR.
 6. **Claude drafts** a reply in your tone and, if reachable, saves it straight into your **Gmail Drafts folder** (`GMAIL_CREATE_EMAIL_DRAFT` — the single sanctioned write).
@@ -82,30 +82,21 @@ This is the load-bearing guarantee, and it survived multiple rounds of adversari
 
 - **macOS 14 (Sonoma) or later**, Apple Silicon recommended
 - **Xcode 15+**
-- **[Ollama](https://ollama.com)** running locally (free, powers on-device detection and the no-key fallback)
-- **An Anthropic API key** (unlocks Claude + tool use — the autonomous fetching/drafting). Without it, Holmes still detects context and drafts from on-screen text via Ollama.
+- **An Anthropic API key — required.** Claude (`claude-opus-4-8`) is the only model Holmes uses. Without a key Holmes still computes the deterministic `LiveContext` headline from DOM/Accessibility data, but nothing else runs: no drafting, no enrichment, no tool use. It says the key is missing rather than degrading into something that looks like an answer.
 - **A Composio MCP server** (optional but recommended — connects Gmail, Calendar, GitHub, Discord, LinkedIn, web search)
 
 ---
 
 ## Setup
 
-### 1. Ollama (local brain)
-```bash
-brew install ollama
-ollama pull llama3.2:3b
-ollama serve      # keep running; or just open the Ollama app
-```
-Holmes auto-selects the best available model (`llama3.2:3b`, `llama3.2`, `llama3`, `phi3`, `mistral`, …).
-
-### 2. Anthropic key (Claude — the hands)
+### 1. Anthropic key (Claude — the hands)
 Grab a key at [console.anthropic.com](https://console.anthropic.com), then:
 ```bash
 echo "sk-ant-YOUR-KEY" > ~/.holmes/anthropic_key
 ```
 Holmes reads it on launch and migrates it into the macOS Keychain. Model: `claude-opus-4-8`.
 
-### 3. Composio (the tools) — optional
+### 2. Composio (the tools) — optional
 Create an MCP server in the [Composio dashboard](https://app.composio.dev) with the Gmail / Google Calendar / GitHub / Discord / LinkedIn / web-search toolkits, connect each account (OAuth), then drop the server into `~/.holmes/mcp.json`:
 ```json
 {
@@ -119,7 +110,7 @@ Create an MCP server in the [Composio dashboard](https://app.composio.dev) with 
 ```
 Full walkthrough (per-toolkit auth, remote/HTTP servers, the local Holmes MCP server) is in [`holmes/MCP-SETUP.md`](holmes/MCP-SETUP.md). On launch you'll see `[MCP] composio: N tools` in the console and `Claude · MCP: N tools` in the panel.
 
-### 4. Build & sign
+### 3. Build & sign
 ```bash
 git clone https://github.com/tryholmes/holmes.git
 cd holmes/holmes
@@ -127,7 +118,7 @@ open holmes.xcodeproj
 ```
 In Xcode, set your **Development Team** under Signing & Capabilities (the project is preconfigured for stable signing so macOS permissions persist across rebuilds — see "Known gotchas"). Select the `holmes` scheme and press **⌘R**.
 
-### 5. Permissions
+### 4. Permissions
 On first launch, grant:
 
 | Permission | Why |
@@ -138,6 +129,11 @@ On first launch, grant:
 | **Notifications** | to tell you when it's prepared something |
 
 **After granting Screen Recording, fully quit and relaunch once** — macOS only applies that grant on restart.
+
+### 5. Browser extension (exact page context) — recommended
+Load `holmes/holmes-extension/` as an unpacked extension (Chrome/Comet/Brave/Edge → Extensions → Developer mode → *Load unpacked*). It posts the structured contents of the page you're actually looking at to Holmes on `127.0.0.1:5766`, which is the only source Holmes trusts enough to quote.
+
+The extension mints its own secret, so you have to authorize it once: **Holmes ▸ Settings ▸ Privacy ▸ Pair browser extension**. That opens a 2-minute window during which the next extension that posts is adopted and remembered; outside that window an unrecognized token is rejected. Nothing pairs itself silently — a loopback port is reachable by every process on your Mac, including a web page's helper, so first-contact trust is not something Holmes hands out on its own.
 
 ### 6. Sign in
 Auth is currently a simple gate — click **Sign In** (no fields needed) and you're in.
@@ -168,16 +164,19 @@ Everything lives under `holmes/holmes/`. The `Core/` layer is the engine; `Views
 
 ```
 Core/
+  LiveContext         the anti-hallucination core — deterministic headline formatter + validator
+  BrowserBridge       loopback receiver for the extension's exact DOM reads (token-gated)
   ScreenEngine        SCK + Accessibility screen capture (3s loop), blank-frame + permission handling
-  OCREngine           Apple Vision text recognition
-  ContextEngine       heuristic + LLM screen understanding, entity extraction, app/site detection
-  LocalModelEngine    Ollama client (detection + no-key fallback generation)
-  HolmesAgent         orchestrator — wires capture -> context -> playbooks -> UI
+  OCREngine           Apple Vision text recognition (last resort; never quoted)
+  ContextEngine       heuristic screen understanding, entity extraction, app/site detection
+  HolmesAgent         orchestrator — wires capture -> LiveContext -> playbooks -> UI
+  MemoryStore/Feed    SQLite memory of past contexts + the dashboard mirror
+  ReplyComposer       grounded reply drafting from a real thread + memory
   Playbooks/
     PlaybookModels    Playbook/Draft types + ComposioCatalog (the draft-never-send tool policy)
     DefaultPlaybooks  the 13 playbook definitions (matchers, goals, cooldowns)
     PlaybookEngine    evaluate -> debounce -> cooldown -> fire; quiet-when-empty; notifications
-    TriggerBrain      Ollama opportunity classifier (fires playbooks the heuristics miss)
+    TriggerBrain      deterministic opportunity classifier over LiveContext (surface + entities)
     Autopilot         scheduler for the time-based playbooks
   HolmesBrain         the Claude action loop (runPlaybook), guarded Composio meta-execute
   AnthropicClient     Claude Messages API + agentic tool loop
@@ -195,7 +194,7 @@ Views/
   Login/, Onboarding/, SideIcon/
 ```
 
-**Two firing paths converge on cooldown-safe `fire()`:** the heuristic `PlaybookEngine.evaluate()` (matches -> dwell-debounce -> cooldown) and the Ollama `TriggerBrain` for opportunities the heuristics miss. Both are single-flight and share per-context cooldowns so nothing double-drafts.
+**Two firing paths converge on cooldown-safe `fire()`:** the heuristic `PlaybookEngine.evaluate()` (matches -> dwell-debounce -> cooldown) and `TriggerBrain`, which maps the structured `LiveContext` (surface + entities) onto a playbook for opportunities the heuristics miss. Both are single-flight and share per-context cooldowns so nothing double-drafts. TriggerBrain consults Claude for exactly one thing — an ambiguous screen — and even then the model can only choose among four fireable opportunities or answer "none"; it never invents entities and never sees an OCR-only screen.
 
 ---
 
@@ -205,7 +204,7 @@ This release turns Holmes from a promising skeleton into a working autonomous ag
 
 **New capabilities**
 - **Full playbook system** — 13 autonomous playbooks (above), from scratch.
-- **Ollama-driven detection** — the local model actually classifies opportunities (`TriggerBrain`), not just pattern-matching.
+- **Deterministic detection** — `TriggerBrain` classifies opportunities from the structured `LiveContext` (surface + entities), so a terminal transcript can never be mistaken for an email thread.
 - **Composio MCP integration** — one connection wiring Gmail, Calendar, GitHub, Discord, LinkedIn, and web search into the action loop, with a hardened meta-execute guard.
 - **Autopilot scheduler** — time-based playbooks (morning brief, triage, follow-ups, PR radar, schedule guard, evening wrap-up, meeting prep).
 - **Screen glow + trackpad haptics** — Apple-Intelligence-style edge glow with a buzz on detection and a vibrating zoom-in pulse + double-buzz on completion.
@@ -220,7 +219,7 @@ This release turns Holmes from a promising skeleton into a working autonomous ag
 - **Screen Recording permission now persists across rebuilds.** Root cause was ad-hoc code signing (changing signature each build invalidated the macOS grant); the project now signs with a stable development identity.
 - **Context pipeline can never freeze.** A capture failure used to dead-end and hang the panel on "Analyzing your screen…" forever; it now degrades to a clear "grant Screen Recording" message and keeps running.
 - **OCR hang fixed** — a swallowed Vision error could leak a continuation and stall the whole analysis loop.
-- **ContextEngine JSON bug fixed** — a one-character slicing error had silently disabled *all* Ollama context enrichment.
+- **ContextEngine JSON bug fixed** — a one-character slicing error had silently disabled *all* context enrichment.
 - **GitHub detection broadened** — recognizes a repo from on-page UI (Pull requests/Issues/Commits/Fork) even when the tab title lacks "github" and OCR misses the URL.
 - **Prompt Coach fires on short prompts** — the old 40-character minimum meant "how to make a car?" never triggered; now >= 8 chars, with reliable prompt extraction.
 - **Email drafting is screen-grounded** — reads the exact email you're viewing and stays silent (no fabricated draft) when the screen isn't actually an email.
@@ -231,11 +230,14 @@ This release turns Holmes from a promising skeleton into a working autonomous ag
 
 ## Privacy
 
-- Screen capture and OCR run **entirely on your device**.
-- Ollama is fully offline.
+**There is no local model.** Claude (`claude-opus-4-8`) is the only model Holmes uses, and it runs at Anthropic, not on your Mac. Concretely:
+
+- **On-device, always:** screen capture (ScreenCaptureKit), Accessibility reads, Apple Vision OCR, and the deterministic `LiveContext` headline — the sentence on the context card is computed from structured fields on your machine and never leaves it to be written.
+- **Sent to Anthropic's API:** any text you act on. A command you run, a reply Holmes drafts, the goal behind the current screen (enrichment), and the ambiguous-screen check `TriggerBrain` occasionally asks — each of those sends the relevant on-screen context to produce that result, and only then. When the extracted text is OCR, it is handed over labelled as unreliable so Claude is told not to quote it.
+- **Sent to your connected services:** Composio tool calls, when you've configured them.
 - Calendar access is read-only.
-- With a Claude key configured, on-screen context is sent to the Anthropic API *only* when a playbook runs; with Composio, tool calls reach your connected services. The local MCP server is **off by default**.
-- No analytics, no telemetry.
+- The browser bridge is **loopback-only and token-gated**, and pairs only inside a window you open in Settings. The local MCP server is **off by default** — while it's on, any process on this Mac can read your screen context through it.
+- No analytics, no telemetry. Your API key lives in the macOS Keychain; memory lives in a local SQLite file.
 
 ---
 
@@ -244,10 +246,16 @@ This release turns Holmes from a promising skeleton into a working autonomous ag
 - **Xcode rebuilds and Screen Recording:** fixed by stable signing (set your Development Team). If a grant ever goes stale, toggle holmes.app off/on in System Settings → Privacy → Screen Recording and relaunch.
 - **Holmes acts on the focused window** — click into the app you want it to help with (a background Gmail tab won't trigger while a terminal is frontmost).
 - OCR-based understanding is inherently imperfect on dense/novel screens — the design ensures a wrong read produces *no draft* rather than a wrong one, because every action must match the screen.
-- `BrowserBridge` (the Gmail-extension receiver) currently binds all interfaces — see the open issues for the hardening plan.
+- `BrowserBridge` (the extension receiver) binds `127.0.0.1` only and requires a token on every request. Because a loopback port is reachable by every process on your Mac, it never adopts a secret on its own — pair it from Settings ▸ Privacy.
 - No automated test suite yet; CI needs repair. Tracked in issues.
 
 See the repo's **Issues** for the tracked roadmap.
+
+---
+
+## Acknowledgements
+
+Holmes's computer-control layer (`InputController.swift`, `WindowCapture.swift`, `ComputerUseEngine.swift`) is derived from **OpenClicky**'s native computer-use runtime (MIT, © 2025 Jason Kneen), which itself embeds a subset of **[trycua/cua-driver](https://github.com/trycua/cua)** (MIT, © 2025 Cua AI, Inc.) — app/window discovery, ScreenCaptureKit target-window capture, and pid-directed keyboard delivery. Both are MIT-licensed; full license texts are in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ---
 

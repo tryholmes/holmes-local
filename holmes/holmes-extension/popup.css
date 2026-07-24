@@ -1,0 +1,45 @@
+/* Holmes popup — page-specific layout on top of noir.css. */
+
+body {
+  width: 360px;
+  min-height: 200px;
+  overflow-x: hidden;
+}
+
+.body {
+  padding: 12px;
+}
+
+.icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--icon-secondary);
+  font-size: 15px;
+  width: 26px; height: 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: grid; place-items: center;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.icon-btn:hover { background: rgba(255, 255, 255, 0.10); color: var(--text-primary); }
+.icon-btn.small { font-size: 13px; width: 22px; height: 22px; }
+
+.status-pill {
+  font-size: 9px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 0.75px solid var(--glass-divider);
+}
+.status-pill.ok  { color: var(--success); border-color: rgba(76, 217, 122, 0.35); }
+.status-pill.warn { color: var(--amber);  border-color: rgba(224, 163, 60, 0.35); }
+.status-pill.err { color: var(--error);   border-color: rgba(255, 94, 94, 0.35); }
+
+.ctx-rows { margin-top: 6px; }
+
+.headline.muted { color: var(--text-tertiary); font-weight: 400; }
+
+.pair-block .btn { text-align: center; }

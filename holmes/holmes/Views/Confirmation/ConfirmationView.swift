@@ -44,6 +44,7 @@ enum AgentDecision {
 // HolmesAgent posts here when it detects something actionable.
 // ConfirmationWindow observes and shows the overlay.
 
+@MainActor
 @Observable
 final class ConfirmationBus {
     static let shared = ConfirmationBus()
@@ -57,6 +58,15 @@ final class ConfirmationBus {
     var pendingDraft: ProactiveDraft? = nil
     @ObservationIgnored private var draftQueue: [ProactiveDraft] = []
 
+    /// True while the floating card is showing the reply Holmes drafted by
+    /// itself (see HolmesAgent's "Pending reply" section).
+    ///
+    /// A FLAG, not a copy. The draft, the message it answers and the user's
+    /// edits all live on HolmesAgent, which is the only writer — two copies of a
+    /// draft are two things that can disagree about what the user typed, and the
+    /// panel card and this card must always show the same words.
+    var isShowingReply: Bool = false
+
     // Set while an agent tool call awaits the user's decision (see `decide`).
     @ObservationIgnored private var decisionHandler: ((AgentDecision) -> Void)?
 
@@ -66,6 +76,10 @@ final class ConfirmationBus {
             draftQueue.insert(draft, at: 0)
             pendingDraft = nil
         }
+        // …and it outranks the auto-drafted reply, which needs no queue: the
+        // reply itself is untouched on HolmesAgent and still sits at the top of
+        // the MainPanel stack. Only this popup gives way.
+        isShowingReply = false
         pendingAction = action
         isShowing = true
         ConfirmationWindowController.shared.show()
@@ -81,13 +95,58 @@ final class ConfirmationBus {
             return
         }
         draftQueue.removeAll { $0.id == draft.id }
-        guard pendingAction == nil, pendingDraft == nil else {
+        // A speculative playbook draft never displaces an answer to a person who
+        // is actually waiting on the user — it queues behind the reply card too.
+        guard pendingAction == nil, pendingDraft == nil, !isShowingReply else {
             draftQueue.append(draft)
             return
         }
         pendingDraft = draft
         isShowing = true
         ConfirmationWindowController.shared.show()
+    }
+
+    // MARK: - Auto-drafted reply
+
+    /// Surfaces the reply Holmes wrote unprompted, in the same floating card the
+    /// playbook drafts use.
+    ///
+    /// Precedence, and the reasoning for it:
+    ///   • It OUTRANKS a proactive playbook draft — a real person asked the user
+    ///     a real question, so a showing draft is pushed back into its queue
+    ///     (never dropped) and returns afterwards.
+    ///   • It never preempts a live approval card, which is a decision the user
+    ///     is in the middle of making.
+    ///   • It is not queued behind one either. A queue marker here could outlive
+    ///     the draft it refers to (HolmesAgent owns that, and can replace or
+    ///     clear it at any moment), and the MainPanel card is already the
+    ///     always-there surface — so a deferred reply loses nothing but a popup.
+    ///
+    /// - Returns: false when a live approval kept the card off screen.
+    @discardableResult
+    func showReplyCard() -> Bool {
+        guard pendingAction == nil else { return false }
+        if let draft = pendingDraft {
+            draftQueue.insert(draft, at: 0)
+            pendingDraft = nil
+        }
+        isShowingReply = true
+        isShowing = true
+        ConfirmationWindowController.shared.show()
+        return true
+    }
+
+    /// Closes the reply card WITHOUT discarding the reply — it stays on
+    /// HolmesAgent and on the MainPanel card, exactly like a dismissed playbook
+    /// draft stays in PlaybookEngine.drafts. Discarding it outright is
+    /// HolmesAgent.clearPendingReply(), which calls this on its way through.
+    func hideReplyCard() {
+        guard isShowingReply else { return }
+        isShowingReply = false
+        guard pendingAction == nil, pendingDraft == nil else { return }
+        isShowing = false
+        ConfirmationWindowController.shared.hide()
+        showNextDraftSoon()
     }
 
     /// Writes the review card's live edits back into the pending draft, so a
@@ -144,6 +203,9 @@ final class ConfirmationBus {
             }
             pendingDraft = nil
         }
+        // The reply survives its card being closed (see hideReplyCard) — only
+        // the popup state is cleared here.
+        isShowingReply = false
         isShowing = false
         pendingAction = nil
         ConfirmationWindowController.shared.hide()
@@ -157,6 +219,7 @@ final class ConfirmationBus {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self,
                   self.pendingAction == nil, self.pendingDraft == nil,
+                  !self.isShowingReply,
                   !self.draftQueue.isEmpty
             else { return }
             self.pendingDraft = self.draftQueue.removeFirst()
@@ -223,6 +286,9 @@ final class ConfirmationBus {
 
 struct ConfirmationView: View {
     @State private var bus = ConfirmationBus.shared
+    /// The reply card reads its draft straight off the agent — the bus only
+    /// says WHETHER to show it (see ConfirmationBus.isShowingReply).
+    @State private var agent = HolmesAgent.shared
     @State private var editedText: String = ""
     @State private var isEditing: Bool = false
 
@@ -232,13 +298,39 @@ struct ConfirmationView: View {
     @State private var draftIsExecuting: Bool = false
 
     var body: some View {
-        if let draft = bus.pendingDraft {
+        // The auto-drafted reply first: propose() clears the flag, so this can
+        // only win when nothing more urgent is on screen — and when it does win,
+        // an answer to a waiting person outranks a speculative draft.
+        if bus.isShowingReply,
+           let reply = agent.pendingReplyDraft,
+           let incoming = agent.pendingReplyTo {
+            replyContent(draft: reply, incoming: incoming)
+        } else if let draft = bus.pendingDraft {
             draftContent(draft: draft)
         } else if let action = bus.pendingAction {
             content(action: action)
         } else {
             Color.clear.frame(width: 1, height: 1)
         }
+    }
+
+    // MARK: - Auto-drafted reply card
+    //
+    // ReplyReadyCard brings its own glass background, border and shadow, so it
+    // is hosted bare. Its Insert button goes through ActionExecutor.stageTextInApp
+    // — types at the cursor and stops. Nothing here sends.
+
+    @ViewBuilder private func replyContent(draft: ReplyComposer.DraftedReply,
+                                           incoming: ReplyComposer.IncomingMessage) -> some View {
+        ReplyReadyCard(
+            draft: draft,
+            incoming: incoming,
+            // Edits go back to the one owner, so the MainPanel card shows the
+            // user's wording rather than the model's.
+            onEdit: { agent.notePendingReplyEdit($0) },
+            // Closes the popup only — the reply stays in the panel, the same way
+            // a dismissed playbook draft stays in the Drafts list.
+            onDismiss: { bus.hideReplyCard() })
     }
 
     // Decomposed into sub-builders so the SwiftUI type-checker doesn't time out.

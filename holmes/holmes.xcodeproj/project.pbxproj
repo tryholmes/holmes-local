@@ -54,7 +54,6 @@
 		AA000001000000000000050 /* ScreenEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000050 /* ScreenEngine.swift */; };
 		AA000001000000000000051 /* OCREngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000051 /* OCREngine.swift */; };
 		AA000001000000000000052 /* ContextEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000052 /* ContextEngine.swift */; };
-		AA000001000000000000053 /* LocalModelEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000053 /* LocalModelEngine.swift */; };
 		AA000001000000000000054 /* HolmesAgent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000054 /* HolmesAgent.swift */; };
 		AA000001000000000000055 /* CommandBus.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000055 /* CommandBus.swift */; };
 		AA000001000000000000059 /* BrowserBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000059 /* BrowserBridge.swift */; };
@@ -77,6 +76,28 @@
 		AA000001000000000000080 /* TriggerBrain.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000080 /* TriggerBrain.swift */; };
 		AA000001000000000000081 /* Autopilot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000081 /* Autopilot.swift */; };
 		AA000001000000000000082 /* SettingsWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000082 /* SettingsWindow.swift */; };
+		AA000001000000000000091 /* LiveContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000091 /* LiveContext.swift */; };
+		AA000001000000000000092 /* MemoryFeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000092 /* MemoryFeed.swift */; };
+		AA000001000000000000093 /* ReplyComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000093 /* ReplyComposer.swift */; };
+		AA000001000000000000094 /* MessagesReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000094 /* MessagesReader.swift */; };
+		AA000001000000000000095 /* AgentMemoryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000095 /* AgentMemoryCard.swift */; };
+		7A1C0E2B4D6F8A0B1C2D3E01 /* TopicExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A1C0E2B4D6F8A0B1C2D3E02 /* TopicExtractor.swift */; };
+		B7C4A1E20F3D48A9C6510001 /* ReplyReadyCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C4A1E20F3D48A9C6510002 /* ReplyReadyCard.swift */; };
+		B7C4A1E20F3D48A9C6510003 /* RecallSpotlight.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C4A1E20F3D48A9C6510004 /* RecallSpotlight.swift */; };
+		9E4B7D1A3C5F620814A9B001 /* IncomingMessageWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E4B7D1A3C5F620814A9B002 /* IncomingMessageWatcher.swift */; };
+		D1E2F3A4B5C6070819203A01 /* InputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6070819203A02 /* InputController.swift */; };
+		D1E2F3A4B5C6070819203A03 /* WindowCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6070819203A04 /* WindowCapture.swift */; };
+		D1E2F3A4B5C6070819203A05 /* ComputerUseEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F3A4B5C6070819203A06 /* ComputerUseEngine.swift */; };
+		AB70C0DE00000000000AB001 /* AutonomyGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB70C0DE00000000000AB002 /* AutonomyGate.swift */; };
+		F624BB3FBB5DE251837120A6 /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22FC20406E7D961CCC1B74E2 /* VoiceInputController.swift */; };
+		6F81326AD8F268C4DF49B1BC /* SpeechSynthesizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00A38CDE6D9038399F26A34 /* SpeechSynthesizer.swift */; };
+		C02CD9D6E3F027A6503CA53B /* VisualGuidance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02221846BC5318CA4B553864 /* VisualGuidance.swift */; };
+		BA002EEEBDA29969D80E5483 /* ClickyController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03249617EF7CAF916D111C59 /* ClickyController.swift */; };
+		4D553EF1410B6B87E1E2DBA6 /* VisualGuidanceOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 577967ACE2410DAC01F7A75D /* VisualGuidanceOverlay.swift */; };
+		E5B8D3C1A47F92E060314A01 /* ActionPlanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B8D3C1A47F92E060314A02 /* ActionPlanner.swift */; };
+		E5B8D3C1A47F92E060314A06 /* AutonomousActionRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5B8D3C1A47F92E060314A07 /* AutonomousActionRunner.swift */; };
+		C0DE0A0100000000000AC001 /* AutonomyPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE0A0200000000000AC002 /* AutonomyPolicy.swift */; };
+		C4B10A7E5D2F49C3B8E60001 /* BackendRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B10A7E5D2F49C3B8E60002 /* BackendRouter.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -127,7 +148,6 @@
 		AA000002000000000000050 /* ScreenEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenEngine.swift; sourceTree = "<group>"; };
 		AA000002000000000000051 /* OCREngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OCREngine.swift; sourceTree = "<group>"; };
 		AA000002000000000000052 /* ContextEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextEngine.swift; sourceTree = "<group>"; };
-		AA000002000000000000053 /* LocalModelEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModelEngine.swift; sourceTree = "<group>"; };
 		AA000002000000000000054 /* HolmesAgent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolmesAgent.swift; sourceTree = "<group>"; };
 		AA000002000000000000055 /* CommandBus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBus.swift; sourceTree = "<group>"; };
 		AA000002000000000000059 /* BrowserBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserBridge.swift; sourceTree = "<group>"; };
@@ -152,6 +172,28 @@
 		AA000002000000000000082 /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
 		AA000002000000000000046 /* NoirCharacterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoirCharacterView.swift; sourceTree = "<group>"; };
 		AA000003000000000000000 /* holmes.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = holmes.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA000002000000000000091 /* LiveContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveContext.swift; sourceTree = "<group>"; };
+		AA000002000000000000092 /* MemoryFeed.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MemoryFeed.swift; sourceTree = "<group>"; };
+		AA000002000000000000093 /* ReplyComposer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyComposer.swift; sourceTree = "<group>"; };
+		AA000002000000000000094 /* MessagesReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagesReader.swift; sourceTree = "<group>"; };
+		E5B8D3C1A47F92E060314A02 /* ActionPlanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionPlanner.swift; sourceTree = "<group>"; };
+		E5B8D3C1A47F92E060314A07 /* AutonomousActionRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutonomousActionRunner.swift; sourceTree = "<group>"; };
+		C0DE0A0200000000000AC002 /* AutonomyPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutonomyPolicy.swift; sourceTree = "<group>"; };
+		C4B10A7E5D2F49C3B8E60002 /* BackendRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackendRouter.swift; sourceTree = "<group>"; };
+		AA000002000000000000095 /* AgentMemoryCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentMemoryCard.swift; sourceTree = "<group>"; };
+		7A1C0E2B4D6F8A0B1C2D3E02 /* TopicExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopicExtractor.swift; sourceTree = "<group>"; };
+		B7C4A1E20F3D48A9C6510002 /* ReplyReadyCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplyReadyCard.swift; sourceTree = "<group>"; };
+		B7C4A1E20F3D48A9C6510004 /* RecallSpotlight.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecallSpotlight.swift; sourceTree = "<group>"; };
+		9E4B7D1A3C5F620814A9B002 /* IncomingMessageWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IncomingMessageWatcher.swift; sourceTree = "<group>"; };
+		D1E2F3A4B5C6070819203A02 /* InputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputController.swift; sourceTree = "<group>"; };
+		D1E2F3A4B5C6070819203A04 /* WindowCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowCapture.swift; sourceTree = "<group>"; };
+		D1E2F3A4B5C6070819203A06 /* ComputerUseEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerUseEngine.swift; sourceTree = "<group>"; };
+		AB70C0DE00000000000AB002 /* AutonomyGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AutonomyGate.swift; path = Autonomy/AutonomyGate.swift; sourceTree = "<group>"; };
+		22FC20406E7D961CCC1B74E2 /* VoiceInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputController.swift; sourceTree = "<group>"; };
+		F00A38CDE6D9038399F26A34 /* SpeechSynthesizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechSynthesizer.swift; sourceTree = "<group>"; };
+		02221846BC5318CA4B553864 /* VisualGuidance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualGuidance.swift; sourceTree = "<group>"; };
+		03249617EF7CAF916D111C59 /* ClickyController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClickyController.swift; sourceTree = "<group>"; };
+		577967ACE2410DAC01F7A75D /* VisualGuidanceOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualGuidanceOverlay.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -248,6 +290,7 @@
 			isa = PBXGroup;
 			children = (
 				AA000002000000000000079 /* ScreenGlow.swift */,
+				577967ACE2410DAC01F7A75D /* VisualGuidanceOverlay.swift */,
 			);
 			path = Glow;
 			sourceTree = "<group>";
@@ -257,6 +300,7 @@
 			children = (
 				AA000002000000000000057 /* ConfirmationView.swift */,
 				AA000002000000000000058 /* ConfirmationWindowController.swift */,
+				B7C4A1E20F3D48A9C6510002 /* ReplyReadyCard.swift */,
 			);
 			path = Confirmation;
 			sourceTree = "<group>";
@@ -280,7 +324,6 @@
 				AA000002000000000000050 /* ScreenEngine.swift */,
 				AA000002000000000000051 /* OCREngine.swift */,
 				AA000002000000000000052 /* ContextEngine.swift */,
-				AA000002000000000000053 /* LocalModelEngine.swift */,
 				AA000002000000000000054 /* HolmesAgent.swift */,
 				AA000002000000000000055 /* CommandBus.swift */,
 				AA000002000000000000059 /* BrowserBridge.swift */,
@@ -295,6 +338,22 @@
 				AA000002000000000000090 /* MemoryStore.swift */,
 				AA000002000000000000075 /* MCPServer.swift */,
 				AA000005000000000000021 /* Playbooks */,
+				E5B8D3C1A47F92E060314A03 /* Autonomy */,
+				AA000002000000000000091 /* LiveContext.swift */,
+				AA000002000000000000092 /* MemoryFeed.swift */,
+				AA000002000000000000093 /* ReplyComposer.swift */,
+				AA000002000000000000094 /* MessagesReader.swift */,
+				7A1C0E2B4D6F8A0B1C2D3E02 /* TopicExtractor.swift */,
+				B7C4A1E20F3D48A9C6510004 /* RecallSpotlight.swift */,
+				9E4B7D1A3C5F620814A9B002 /* IncomingMessageWatcher.swift */,
+				D1E2F3A4B5C6070819203A02 /* InputController.swift */,
+				D1E2F3A4B5C6070819203A04 /* WindowCapture.swift */,
+				D1E2F3A4B5C6070819203A06 /* ComputerUseEngine.swift */,
+				AB70C0DE00000000000AB002 /* AutonomyGate.swift */,
+				22FC20406E7D961CCC1B74E2 /* VoiceInputController.swift */,
+				F00A38CDE6D9038399F26A34 /* SpeechSynthesizer.swift */,
+				02221846BC5318CA4B553864 /* VisualGuidance.swift */,
+				03249617EF7CAF916D111C59 /* ClickyController.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -309,6 +368,17 @@
 				AA000002000000000000081 /* Autopilot.swift */,
 			);
 			path = Playbooks;
+			sourceTree = "<group>";
+		};
+		E5B8D3C1A47F92E060314A03 /* Autonomy */ = {
+			isa = PBXGroup;
+			children = (
+				C0DE0A0200000000000AC002 /* AutonomyPolicy.swift */,
+				E5B8D3C1A47F92E060314A02 /* ActionPlanner.swift */,
+				C4B10A7E5D2F49C3B8E60002 /* BackendRouter.swift */,
+				E5B8D3C1A47F92E060314A07 /* AutonomousActionRunner.swift */,
+			);
+			path = Autonomy;
 			sourceTree = "<group>";
 		};
 		AA000005000000000000008 /* Resources */ = {
@@ -364,6 +434,7 @@
 				AA000002000000000000025 /* ContextCard.swift */,
 				AA000002000000000000026 /* ActionSuggestions.swift */,
 				AA000002000000000000027 /* ActivityLog.swift */,
+				AA000002000000000000095 /* AgentMemoryCard.swift */,
 			);
 			path = MainPanel;
 			sourceTree = "<group>";
@@ -508,7 +579,6 @@
 				AA000001000000000000050 /* ScreenEngine.swift in Sources */,
 				AA000001000000000000051 /* OCREngine.swift in Sources */,
 				AA000001000000000000052 /* ContextEngine.swift in Sources */,
-				AA000001000000000000053 /* LocalModelEngine.swift in Sources */,
 				AA000001000000000000054 /* HolmesAgent.swift in Sources */,
 				AA000001000000000000055 /* CommandBus.swift in Sources */,
 				AA000001000000000000059 /* BrowserBridge.swift in Sources */,
@@ -531,6 +601,28 @@
 				AA000001000000000000080 /* TriggerBrain.swift in Sources */,
 				AA000001000000000000081 /* Autopilot.swift in Sources */,
 				AA000001000000000000082 /* SettingsWindow.swift in Sources */,
+				AA000001000000000000091 /* LiveContext.swift in Sources */,
+				AA000001000000000000092 /* MemoryFeed.swift in Sources */,
+				AA000001000000000000093 /* ReplyComposer.swift in Sources */,
+				AA000001000000000000094 /* MessagesReader.swift in Sources */,
+				7A1C0E2B4D6F8A0B1C2D3E01 /* TopicExtractor.swift in Sources */,
+				AA000001000000000000095 /* AgentMemoryCard.swift in Sources */,
+				B7C4A1E20F3D48A9C6510001 /* ReplyReadyCard.swift in Sources */,
+				B7C4A1E20F3D48A9C6510003 /* RecallSpotlight.swift in Sources */,
+				9E4B7D1A3C5F620814A9B001 /* IncomingMessageWatcher.swift in Sources */,
+				D1E2F3A4B5C6070819203A01 /* InputController.swift in Sources */,
+				D1E2F3A4B5C6070819203A03 /* WindowCapture.swift in Sources */,
+				D1E2F3A4B5C6070819203A05 /* ComputerUseEngine.swift in Sources */,
+				AB70C0DE00000000000AB001 /* AutonomyGate.swift in Sources */,
+				F624BB3FBB5DE251837120A6 /* VoiceInputController.swift in Sources */,
+				6F81326AD8F268C4DF49B1BC /* SpeechSynthesizer.swift in Sources */,
+				C02CD9D6E3F027A6503CA53B /* VisualGuidance.swift in Sources */,
+				BA002EEEBDA29969D80E5483 /* ClickyController.swift in Sources */,
+				4D553EF1410B6B87E1E2DBA6 /* VisualGuidanceOverlay.swift in Sources */,
+				E5B8D3C1A47F92E060314A01 /* ActionPlanner.swift in Sources */,
+				E5B8D3C1A47F92E060314A06 /* AutonomousActionRunner.swift in Sources */,
+				C0DE0A0100000000000AC001 /* AutonomyPolicy.swift in Sources */,
+				C4B10A7E5D2F49C3B8E60001 /* BackendRouter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

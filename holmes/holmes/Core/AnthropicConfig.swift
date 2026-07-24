@@ -1,10 +1,13 @@
 import Foundation
 
 // MARK: - AnthropicConfig
-// Configuration for the cloud "action brain" (Claude). The Hybrid model:
-//   • Ollama (LocalModelEngine) stays the fast, on-device path for context + heuristics.
-//   • Claude (this) runs the multi-step tool-calling loop that actually takes actions,
-//     because small local models are unreliable at tool use.
+// Configuration for the ONE model Holmes uses: Claude (claude-opus-4-8).
+//   • Perception is model-free — LiveContext computes the headline deterministically
+//     from DOM/Accessibility data, so nothing Holmes claims to see comes from a model.
+//   • Claude runs the multi-step tool-calling loop that takes actions, and enriches
+//     an already-correct context with goal/intent behind the headline.
+// Without a key Holmes degrades honestly (it says the key is missing); there is no
+// local-model fallback.
 //
 // The API key lives in the Keychain (never on disk / never in source). Holmes only
 // reaches the network here when the user explicitly invokes an action that needs it.

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Holmes</title>
+  <link rel="stylesheet" href="noir.css" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <div class="mark">&#8981;</div>
+      <div class="wordmark">HOLMES</div>
+    </div>
+    <button id="openOptions" class="icon-btn" title="Settings">&#9881;</button>
+  </div>
+
+  <main class="body">
+
+    <!-- Connection status -->
+    <section class="card" id="connCard">
+      <div class="card-head">
+        <span class="dot amber" id="connDot"></span>
+        <span class="label accent">CONNECTION</span>
+        <span class="grow"></span>
+        <span class="mono status-pill" id="connPill">checking…</span>
+      </div>
+      <div class="hint" id="connMsg">Checking whether Holmes is listening on 127.0.0.1:5766…</div>
+
+      <!-- Shown only when unpaired -->
+      <div id="pairBlock" class="pair-block" hidden>
+        <div class="divider"></div>
+        <div class="hint">
+          <b>Pair with Holmes</b> to let it read this page. In the Holmes app open
+          <b>Settings &#9656; Privacy &#9656; Pair browser extension</b>, then press the
+          button below within two minutes.
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <button id="pairBtn" class="btn grow">PAIR WITH HOLMES</button>
+        </div>
+        <div class="hint mono" id="pairResult" style="margin-top:8px;" hidden></div>
+      </div>
+    </section>
+
+    <!-- Live context for THIS tab (the trust surface) -->
+    <section class="card" id="ctxCard">
+      <div class="card-head">
+        <span class="badge">&#128065;</span>
+        <span class="label">READING THIS TAB</span>
+        <span class="grow"></span>
+        <button id="recaptureBtn" class="icon-btn small" title="Re-read this tab">&#8635;</button>
+      </div>
+
+      <div id="ctxHeadline" class="headline">Reading the current tab…</div>
+
+      <div id="ctxRows" class="ctx-rows" hidden>
+        <div class="kv"><span class="k">Site</span><span class="v strong" id="ctxSite">—</span></div>
+        <div class="kv"><span class="k">Surface</span><span class="v" id="ctxSurface">—</span></div>
+        <div class="kv"><span class="k">Activity</span><span class="v" id="ctxActivity">—</span></div>
+      </div>
+
+      <div id="ctxNote" class="hint" style="margin-top:8px;" hidden></div>
+    </section>
+
+    <!-- Per-site read toggle -->
+    <section class="card">
+      <div class="row">
+        <div class="stack grow">
+          <div class="label" style="margin-bottom:3px;">PRIVACY</div>
+          <div class="t-secondary" style="font-size:12px;">Don&#8217;t read <b id="toggleHost" class="mono t-primary">this site</b></div>
+          <div class="hint" style="margin-top:2px;">Holmes skips extraction entirely on excluded sites.</div>
+        </div>
+        <div class="switch" id="excludeSwitch" role="switch" aria-checked="false" tabindex="0">
+          <span class="knob"></span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <div class="footer">
+    <span id="footIcon">&#8593;</span>
+    <span id="footText">No POST yet</span>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

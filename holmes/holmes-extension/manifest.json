@@ -1,18 +1,38 @@
 {
   "manifest_version": 3,
   "name": "Holmes",
-  "version": "1.0",
-  "description": "Connects Holmes AI to your browser",
-  "permissions": ["activeTab", "scripting"],
+  "version": "2.1",
+  "description": "Gives Holmes an exact, literal read of the page you are actually looking at.",
+  "permissions": ["tabs", "storage", "scripting", "activeTab", "alarms"],
   "host_permissions": [
-    "https://mail.google.com/*",
-    "http://localhost:5766/*"
+    "<all_urls>",
+    "http://127.0.0.1:5766/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Holmes",
+    "default_icon": {
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "options_page": "options.html",
   "content_scripts": [
     {
-      "matches": ["https://mail.google.com/*"],
+      "matches": ["<all_urls>"],
+      "js": ["history-hook.js"],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "MAIN"
+    },
+    {
+      "matches": ["<all_urls>"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_idle",
+      "all_frames": false
     }
   ],
   "icons": {
