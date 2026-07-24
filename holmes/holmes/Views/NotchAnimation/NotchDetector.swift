@@ -1,66 +1,63 @@
-// Notch geometry adapted from notchify (MIT, © 2026 fr0sty):
-// https://github.com/fr0sty1122/notchify — `NotchMetrics.closedNotchSize(on:)`
-// derives the REAL physical notch bounds from `auxiliaryTopLeftArea` /
-// `auxiliaryTopRightArea` (macOS 12+) instead of a hardcoded width, so the HUD
-// hugs the notch instead of floating in a "weird place." See THIRD_PARTY_NOTICES.md.
+// Ported from boring.notch (GPL-3.0, © TheBoredTeam and contributors):
+// https://github.com/TheBoredTeam/boring.notch — sizing/matters.swift
+// (openNotchSize / windowSize / cornerRadiusInsets constants and the
+// getClosedNotchSize real-notch measurement from auxiliaryTopLeftArea /
+// auxiliaryTopRightArea). Text/content adapted for Holmes; UI geometry kept
+// identical. See THIRD_PARTY_NOTICES.md for license details.
 
 import AppKit
 
-struct NotchDetector {
-    static var hasNotch: Bool {
-        guard let screen = NSScreen.main else { return false }
+/// boring.notch's exact geometry constants.
+enum NotchGeometry {
+    static let shadowPadding: CGFloat = 20
+    static let openSize = CGSize(width: 640, height: 190)
+    static let windowSize = CGSize(width: openSize.width, height: openSize.height + shadowPadding)
+    static let cornerRadiusInsets: (opened: (top: CGFloat, bottom: CGFloat), closed: (top: CGFloat, bottom: CGFloat)) =
+        (opened: (top: 19, bottom: 24), closed: (top: 6, bottom: 14))
 
-        if #available(macOS 12.0, *) {
-            return screen.safeAreaInsets.top > 0
-        }
-
-        return false
-    }
-
-    /// The REAL closed-notch size on `screen`, computed from the areas macOS
-    /// reports on either side of the notch. Falls back to sensible defaults on a
-    /// notchless display (a slim menu-bar-height pill).
+    /// The REAL closed-notch size for `screen` — width measured from the areas
+    /// macOS reports on either side of the physical notch (+4 to close the
+    /// sub-pixel seam), height from the safe-area inset on notch Macs, or the
+    /// menu-bar height on displays without one (drawing a "fake notch" island
+    /// there, exactly like boring.notch does).
+    @MainActor
     static func closedNotchSize(on screen: NSScreen?) -> CGSize {
-        guard let screen else { return CGSize(width: 210, height: 32) }
+        var notchHeight: CGFloat = 32
+        var notchWidth: CGFloat = 185
 
-        var width: CGFloat = 210
-        if #available(macOS 12.0, *),
-           let left = screen.auxiliaryTopLeftArea,
-           let right = screen.auxiliaryTopRightArea {
-            // +4 closes the sub-pixel seam between the notch sides and our fill.
-            let computed = screen.frame.width - left.width - right.width + 4
-            if computed.isFinite, computed > 120 {
-                width = computed
+        if let screen {
+            if let topLeftPadding = screen.auxiliaryTopLeftArea?.width,
+               let topRightPadding = screen.auxiliaryTopRightArea?.width {
+                notchWidth = screen.frame.width - topLeftPadding - topRightPadding + 4
+            }
+
+            if screen.safeAreaInsets.top > 0 {
+                notchHeight = screen.safeAreaInsets.top
+            } else {
+                notchHeight = max(24, screen.frame.maxY - screen.visibleFrame.maxY)
             }
         }
 
-        let safeTop = screen.safeAreaInsets.top
-        let menuHeight = max(0, screen.frame.maxY - screen.visibleFrame.maxY)
-        let rawHeight = safeTop > 0 ? safeTop : max(30, min(menuHeight, 36))
-        // Round to whole pixels so the bar's bottom edge lands exactly on the
-        // notch edge instead of a blurry sub-pixel offset.
-        let height = (max(28, min(rawHeight, 42))).rounded()
-        return CGSize(width: max(170, min(width, 260)).rounded(), height: height)
+        return CGSize(width: notchWidth, height: notchHeight)
+    }
+}
+
+/// Compatibility shim — callers outside the notch module ask only this.
+struct NotchDetector {
+    @MainActor
+    static var hasNotch: Bool {
+        guard let screen = NSScreen.main else { return false }
+        return screen.safeAreaInsets.top > 0
     }
 
-    /// The fixed panel size the HUD window uses. Big enough to hold the widest
-    /// expanded card; the transparent panel stays put while the CONTENT inside it
-    /// grows/shrinks and stays pinned to the top (the notch).
-    static let panelSize = CGSize(width: 640, height: 240)
-
-    static var notchWidth: CGFloat { closedNotchSize(on: NSScreen.main).width }
-
-    static var notchHeight: CGFloat { closedNotchSize(on: NSScreen.main).height }
-
+    @MainActor
     static var notchFrame: NSRect {
-        guard hasNotch, let screen = NSScreen.main else { return .zero }
-        let size = closedNotchSize(on: screen)
+        guard let screen = NSScreen.main else { return .zero }
+        let size = NotchGeometry.closedNotchSize(on: screen)
         return NSRect(
             x: screen.frame.midX - size.width / 2,
             y: screen.frame.maxY - size.height,
             width: size.width,
             height: size.height)
     }
-
-    static var physicalNotchFrame: NSRect { notchFrame }
 }

@@ -14,12 +14,12 @@ Holmes's voice layer and companion loop — `Core/VoiceInputController.swift`
 (push-to-talk on-device dictation), `Core/SpeechSynthesizer.swift` (two-backend
 ElevenLabs/Apple text-to-speech), and `Core/ClickyController.swift` (the
 hotkey → ask-and-point / do-the-task orchestration) — adapt OpenClicky's
-dictation, TTS, and companion-manager approaches. Holmes's notch HUD chrome —
-`Views/NotchAnimation/` (`NotchDetector.swift` real notch geometry, the
-`NotchShape` and top-anchored "grows out of the notch" layout in `NotchView.swift`,
-and the fixed top-flush overlay panel above the menu bar in `NotchWindow.swift`) —
-is adapted from notchify. All are distributed under the MIT License and their
-notices are reproduced in full below.
+dictation, TTS, and companion-manager approaches. Holmes's notch HUD —
+everything under `Views/NotchAnimation/` — is ported from boring.notch, which is
+distributed under the GNU General Public License v3.0; see its section below for
+what was copied and the license terms that apply to it. OpenClicky and
+trycua/cua-driver are distributed under the MIT License; all notices are
+reproduced in full below.
 
 ---
 
@@ -67,39 +67,33 @@ SOFTWARE.
 
 ---
 
-## 2. notchify
+## 2. boring.notch
 
-Holmes's notch HUD chrome (`Views/NotchAnimation/NotchDetector.swift`,
-`NotchView.swift`, `NotchWindow.swift`) adapts notchify: the real closed-notch
-geometry from `auxiliaryTopLeftArea` / `auxiliaryTopRightArea`, the `NotchShape`
-(concave top corners flaring into a flat top edge with convex rounded bottom
-corners), the top-anchored layout that grows the content straight out of the
-physical notch, the fixed top-flush overlay panel positioned above the menu bar,
-its display-change repositioning, and the fluid resize spring feel.
+Holmes's notch HUD (`Views/NotchAnimation/NotchDetector.swift`,
+`NotchViewModel.swift`, `NotchView.swift`, `NotchWindow.swift`) is a direct port
+of boring.notch's notch UI with Holmes content in place of music/battery/shelf:
+the `NotchShape` path (originally from MrKai77/DynamicNotchKit), the sizing
+model (`openNotchSize`/`windowSize`/`cornerRadiusInsets` and the real-notch
+measurement from `auxiliaryTopLeftArea`/`auxiliaryTopRightArea`), the
+`ContentView` layout structure (padding/background/clip/1px seam overlay/shadow,
+open/close/hover springs and delays, closed-state live-activity wings and
+sneak-peek rows), the `BoringHeader` open-state header with its black
+`NotchShape` mask over the physical notch, the `BoringViewModel` open/close
+state machine, and the `BoringNotchWindow` panel configuration and top-center
+positioning.
 
-Source reference: https://github.com/fr0sty1122/notchify
+Source reference: https://github.com/TheBoredTeam/boring.notch
 
-MIT License
+boring.notch is Copyright (c) TheBoredTeam and contributors, and is licensed
+under the GNU General Public License, version 3.0 (GPL-3.0). The full license
+text is available at https://www.gnu.org/licenses/gpl-3.0.txt and in the
+boring.notch repository's LICENSE file.
 
-Copyright (c) 2026 fr0sty
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+NOTE (GPL-3.0 obligations): because this directory ports GPL-3.0-licensed code,
+distributing Holmes binaries that include it triggers GPL-3.0's terms for the
+combined work (source availability under GPL-compatible terms). If Holmes is
+ever distributed under a non-GPL license, this port must first be removed or
+replaced with independently developed code.
 
 ---
 

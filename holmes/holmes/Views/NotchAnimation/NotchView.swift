@@ -1,33 +1,34 @@
-// Notch chrome adapted from notchify (MIT, © 2026 fr0sty):
-// https://github.com/fr0sty1122/notchify — the `NotchShape` (concave top corners
-// flaring into a flat top edge, convex rounded bottom) and the top-anchored
-// "grows out of the physical notch" layout + fluid resize springs. Holmes fills it
-// with its own content (task + live context + progress, and context banners).
-// See THIRD_PARTY_NOTICES.md.
+// Ported from boring.notch (GPL-3.0, © TheBoredTeam and contributors):
+// https://github.com/TheBoredTeam/boring.notch
+//   - components/Notch/NotchShape.swift (itself from MrKai77/DynamicNotchKit):
+//     the exact notch path — concave top corners flaring into the flat top edge,
+//     convex rounded bottom corners.
+//   - ContentView.swift: the layout structure (NotchLayout padding/background/
+//     clipShape/1px top seam overlay/shadow), the open/close springs
+//     (open 0.42/0.8, close 0.45/1.0, interactive hover 0.38/0.8), the hover
+//     open/close handling with its delays, and the closed-state "wings" +
+//     sneak-peek row structure (battery-notification / music-live-activity
+//     patterns).
+//   - components/Notch/BoringHeader.swift: the open-state header (leading area,
+//     black NotchShape mask over the physical notch, trailing capsule buttons).
+// Only the CONTENT is Holmes's (task + step + progress + live context instead of
+// music/battery/shelf). See THIRD_PARTY_NOTICES.md.
 
 import SwiftUI
-import Foundation
 
-// MARK: - Animation curves (notchify baseline)
+// MARK: - NotchShape (exact port)
 
-extension Animation {
-    /// Island opening, closing, and resizing — a fluid, interruptible spring.
-    static let notchResize = Animation.smooth(duration: 0.44, extraBounce: 0.13)
-    /// Swapping the content inside the notch.
-    static let notchContent = Animation.smooth(duration: 0.34, extraBounce: 0.06)
-}
-
-// MARK: - NotchShape (notchify baseline)
-
-/// Concave top corners that flare outward into a flat top edge (like the real
-/// MacBook notch), with convex rounded bottom corners — so an expanded panel
-/// looks like it grew straight out of the notch.
 struct NotchShape: Shape {
-    var topCornerRadius: CGFloat
-    var bottomCornerRadius: CGFloat
+    private var topCornerRadius: CGFloat
+    private var bottomCornerRadius: CGFloat
+
+    init(topCornerRadius: CGFloat? = nil, bottomCornerRadius: CGFloat? = nil) {
+        self.topCornerRadius = topCornerRadius ?? 6
+        self.bottomCornerRadius = bottomCornerRadius ?? 14
+    }
 
     var animatableData: AnimatablePair<CGFloat, CGFloat> {
-        get { AnimatablePair(topCornerRadius, bottomCornerRadius) }
+        get { .init(topCornerRadius, bottomCornerRadius) }
         set {
             topCornerRadius = newValue.first
             bottomCornerRadius = newValue.second
@@ -35,285 +36,405 @@ struct NotchShape: Shape {
     }
 
     func path(in rect: CGRect) -> Path {
-        let topR = min(topCornerRadius, 9, rect.width / 2, rect.height)
-        let bottomR = min(bottomCornerRadius, (rect.width - 2 * topR) / 2, rect.height - topR)
-
         var path = Path()
+
         path.move(to: CGPoint(x: rect.minX, y: rect.minY))
         path.addQuadCurve(
-            to: CGPoint(x: rect.minX + topR, y: rect.minY + topR),
-            control: CGPoint(x: rect.minX + topR, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.minX + topR, y: rect.maxY - bottomR))
+            to: CGPoint(x: rect.minX + topCornerRadius, y: rect.minY + topCornerRadius),
+            control: CGPoint(x: rect.minX + topCornerRadius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + topCornerRadius, y: rect.maxY - bottomCornerRadius))
         path.addQuadCurve(
-            to: CGPoint(x: rect.minX + topR + bottomR, y: rect.maxY),
-            control: CGPoint(x: rect.minX + topR, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.maxX - topR - bottomR, y: rect.maxY))
+            to: CGPoint(x: rect.minX + topCornerRadius + bottomCornerRadius, y: rect.maxY),
+            control: CGPoint(x: rect.minX + topCornerRadius, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - topCornerRadius - bottomCornerRadius, y: rect.maxY))
         path.addQuadCurve(
-            to: CGPoint(x: rect.maxX - topR, y: rect.maxY - bottomR),
-            control: CGPoint(x: rect.maxX - topR, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.maxX - topR, y: rect.minY + topR))
+            to: CGPoint(x: rect.maxX - topCornerRadius, y: rect.maxY - bottomCornerRadius),
+            control: CGPoint(x: rect.maxX - topCornerRadius, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - topCornerRadius, y: rect.minY + topCornerRadius))
         path.addQuadCurve(
             to: CGPoint(x: rect.maxX, y: rect.minY),
-            control: CGPoint(x: rect.maxX - topR, y: rect.minY))
-        path.closeSubpath()
+            control: CGPoint(x: rect.maxX - topCornerRadius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY))
+
         return path
     }
 }
 
-// MARK: - NotchView (entry)
+// MARK: - NotchView (ContentView port)
 
+@MainActor
 struct NotchView: View {
-    @ObservedObject var viewModel: NotchViewModel
-    let onTap: () -> Void
+    @ObservedObject var vm: NotchViewModel
+
+    @State private var hoverTask: Task<Void, Never>?
+    @State private var isHovering: Bool = false
+    @State private var haptics: Bool = false
+
+    // Shared interactive spring for movement/resizing (boring.notch's).
+    private let animationSpring = Animation.interactiveSpring(response: 0.38, dampingFraction: 0.8, blendDuration: 0)
+
+    private var topCornerRadius: CGFloat {
+        vm.notchState == .open
+            ? NotchGeometry.cornerRadiusInsets.opened.top
+            : NotchGeometry.cornerRadiusInsets.closed.top
+    }
+
+    private var currentNotchShape: NotchShape {
+        NotchShape(
+            topCornerRadius: topCornerRadius,
+            bottomCornerRadius: vm.notchState == .open
+                ? NotchGeometry.cornerRadiusInsets.opened.bottom
+                : NotchGeometry.cornerRadiusInsets.closed.bottom
+        )
+    }
 
     var body: some View {
-        // Everything hangs from the TOP edge — the physical notch — and grows
-        // DOWNWARD. No re-centering, no floating: the window is pinned top-flush
-        // and the content stays glued to the notch.
         ZStack(alignment: .top) {
-            content
+            VStack(spacing: 0) {
+                NotchLayout()
+                    .frame(alignment: .top)
+                    .padding(
+                        .horizontal,
+                        vm.notchState == .open
+                            ? NotchGeometry.cornerRadiusInsets.opened.top
+                            : NotchGeometry.cornerRadiusInsets.closed.bottom
+                    )
+                    .padding([.horizontal, .bottom], vm.notchState == .open ? 12 : 0)
+                    .background(.black)
+                    .clipShape(currentNotchShape)
+                    .overlay(alignment: .top) {
+                        // The 1px seam filler that welds the island to the screen edge.
+                        Rectangle()
+                            .fill(.black)
+                            .frame(height: 1)
+                            .padding(.horizontal, topCornerRadius)
+                    }
+                    .shadow(
+                        color: (vm.notchState == .open || isHovering) ? .black.opacity(0.7) : .clear,
+                        radius: 6
+                    )
+                    .frame(height: vm.notchState == .open ? vm.notchSize.height : nil)
+                    .animation(
+                        vm.notchState == .open
+                            ? .spring(response: 0.42, dampingFraction: 0.8, blendDuration: 0)
+                            : .spring(response: 0.45, dampingFraction: 1.0, blendDuration: 0),
+                        value: vm.notchState)
+                    .animation(.smooth, value: vm.sneakPeek)
+                    .animation(.smooth, value: vm.taskActive)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        handleHover(hovering)
+                    }
+                    .onTapGesture {
+                        doOpen()
+                    }
+                    .onChange(of: vm.notchState) { _, newState in
+                        if newState == .closed && isHovering {
+                            withAnimation {
+                                isHovering = false
+                            }
+                        }
+                    }
+                    .sensoryFeedback(.alignment, trigger: haptics)
+                    .contextMenu {
+                        Button("Open Holmes") {
+                            MainPanelWindowController.shared.toggle()
+                        }
+                    }
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .animation(.notchResize, value: viewModel.state)
-        .animation(.notchResize, value: viewModel.isHovered)
-        .onAppear { viewModel.startIdleAnimation() }
-        .onDisappear { viewModel.stopIdleAnimation() }
+        .padding(.bottom, 8)
+        .frame(maxWidth: NotchGeometry.windowSize.width, maxHeight: NotchGeometry.windowSize.height, alignment: .top)
+        .compositingGroup()
+        .preferredColorScheme(.dark)
     }
 
     @ViewBuilder
-    private var content: some View {
-        switch viewModel.state {
-        case .idle:
-            CollapsedNotchBar(
-                notchSize: viewModel.notchSize,
-                contextLine: viewModel.contextLine,
-                breathingPhase: viewModel.breathingPhase,
-                isHovered: viewModel.isHovered,
-                onTap: onTap)
-            .onHover { viewModel.isHovered = $0 }
-
-        case .active(let taskName, let context, let progress):
-            NotchTaskCard(
-                notchWidth: viewModel.notchSize.width,
-                taskName: taskName,
-                context: context,
-                progress: progress,
-                onTap: onTap)
-
-        case .notification(let title, let subtitle, let symbol):
-            NotchBannerCard(
-                notchWidth: viewModel.notchSize.width,
-                title: title,
-                subtitle: subtitle,
-                symbol: symbol,
-                onTap: onTap)
-
-        case .expanded:
-            NotchBannerCard(
-                notchWidth: viewModel.notchSize.width,
-                title: "Holmes",
-                subtitle: viewModel.contextLine.isEmpty ? "Monitoring workspace activity" : viewModel.contextLine,
-                symbol: "sparkles",
-                onTap: onTap)
-        }
-    }
-}
-
-// MARK: - Collapsed bar (hugs the real notch)
-
-/// A black bar sized to the REAL notch. On a notch Mac it blends into the notch;
-/// a faint animated underline glow signals Holmes is alive. Hovering reveals the
-/// current live-context line in a small pill that drops below the notch.
-struct CollapsedNotchBar: View {
-    let notchSize: CGSize
-    let contextLine: String
-    let breathingPhase: CGFloat
-    let isHovered: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // The notch-hugging bar itself.
-            ZStack(alignment: .bottom) {
-                Rectangle()
-                    .fill(Color.black)
-                    .frame(width: notchSize.width, height: notchSize.height)
-
-                // Alive-glow: a thin cyan underline that breathes.
-                RoundedRectangle(cornerRadius: 1, style: .continuous)
-                    .fill(Color.cyan.opacity(0.35 + Darwin.sin(Double(breathingPhase)) * 0.25))
-                    .frame(width: max(24, notchSize.width * 0.5), height: 2)
-                    .shadow(color: Color.cyan.opacity(0.6), radius: 4)
-                    .padding(.bottom, 2)
-            }
-            .clipShape(NotchShape(topCornerRadius: 6, bottomCornerRadius: 10))
-
-            // Hover reveal: the current context, dropping out of the notch.
-            if isHovered, !contextLine.isEmpty {
-                Text(contextLine)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.85))
-                    .lineLimit(1)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 7)
-                    .background(
-                        NotchShape(topCornerRadius: 8, bottomCornerRadius: 14)
-                            .fill(Color.black.opacity(0.92))
-                            .overlay(
-                                NotchShape(topCornerRadius: 8, bottomCornerRadius: 14)
-                                    .stroke(Color.cyan.opacity(0.35), lineWidth: 1))
-                    )
-                    .padding(.top, 1)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { onTap() }
-    }
-}
-
-// MARK: - Task card (grows out of the notch while Holmes acts)
-
-/// The active-run card: WHAT Holmes is doing on top, the live CONTEXT beneath,
-/// and a progress bar — all inside a NotchShape that flares down from the notch.
-struct NotchTaskCard: View {
-    let notchWidth: CGFloat
-    let taskName: String
-    let context: String
-    let progress: Double
-    let onTap: () -> Void
-
-    private var cardWidth: CGFloat { max(360, notchWidth + 150) }
-
-    var body: some View {
-        VStack(spacing: 9) {
-            HStack(spacing: 11) {
-                ZStack {
-                    Circle()
-                        .fill(Color.yellow.opacity(0.18))
-                        .frame(width: 26, height: 26)
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(
-                            LinearGradient(colors: [Color.yellow, Color.orange],
-                                           startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .shadow(color: Color.yellow.opacity(0.5), radius: 5)
+    func NotchLayout() -> some View {
+        VStack(alignment: .leading) {
+            VStack(alignment: .leading) {
+                if vm.sneakPeek.show && vm.notchState == .closed {
+                    sneakPeekRow
+                        .fixedSize()
+                } else if vm.taskActive && vm.notchState == .closed {
+                    taskLiveActivity
+                } else if vm.notchState == .open {
+                    NotchHeader(vm: vm)
+                        .frame(height: max(24, vm.effectiveClosedNotchHeight))
+                } else {
+                    Rectangle()
+                        .fill(.clear)
+                        .frame(width: vm.closedNotchSize.width - 20, height: vm.effectiveClosedNotchHeight)
                 }
+            }
+            .zIndex(2)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(taskName)
-                        .font(.system(size: 12.5, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.white)
-                        .lineLimit(1)
-                    if !context.isEmpty {
-                        Text(context)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(Color.cyan.opacity(0.75))
-                            .lineLimit(1)
+            if vm.notchState == .open {
+                NotchHomeView(vm: vm)
+                    .transition(
+                        .scale(scale: 0.8, anchor: .top)
+                            .combined(with: .opacity)
+                            .animation(.smooth(duration: 0.35))
+                    )
+                    .zIndex(1)
+            }
+        }
+    }
+
+    /// boring.notch's battery-notification row structure: text on the left wing,
+    /// a black spacer exactly as wide as the physical notch, symbol on the right
+    /// wing. Holmes uses it for context flashes, step banners, and run results.
+    @ViewBuilder
+    private var sneakPeekRow: some View {
+        HStack(spacing: 0) {
+            HStack {
+                Text(vm.sneakPeek.subtitle.isEmpty ? vm.sneakPeek.title : vm.sneakPeek.subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .frame(maxWidth: 210, alignment: .trailing)
+            }
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: vm.closedNotchSize.width + 10)
+
+            HStack(spacing: 6) {
+                Image(systemName: vm.sneakPeek.symbol)
+                    .foregroundStyle(.white)
+                    .imageScale(.medium)
+                Text(vm.sneakPeek.subtitle.isEmpty ? "" : vm.sneakPeek.title)
+                    .font(.subheadline)
+                    .foregroundStyle(.gray)
+                    .lineLimit(1)
+            }
+            .frame(width: 130, alignment: .leading)
+        }
+        .frame(height: vm.effectiveClosedNotchHeight, alignment: .center)
+    }
+
+    /// boring.notch's music-live-activity wings, carrying Holmes's running task:
+    /// bolt on the left wing, circular progress on the right wing, black spacer
+    /// over the physical notch between them.
+    @ViewBuilder
+    private var taskLiveActivity: some View {
+        HStack {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.yellow.opacity(0.18))
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.yellow)
+            }
+            .frame(
+                width: max(0, vm.effectiveClosedNotchHeight - 12),
+                height: max(0, vm.effectiveClosedNotchHeight - 12)
+            )
+
+            Rectangle()
+                .fill(.black)
+                .frame(width: vm.closedNotchSize.width - NotchGeometry.cornerRadiusInsets.closed.top)
+
+            ZStack {
+                Circle()
+                    .stroke(Color.white.opacity(0.15), lineWidth: 2)
+                Circle()
+                    .trim(from: 0, to: max(0.04, vm.taskProgress))
+                    .stroke(Color.white, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(
+                width: max(0, vm.effectiveClosedNotchHeight - 14),
+                height: max(0, vm.effectiveClosedNotchHeight - 14)
+            )
+        }
+        .frame(height: vm.effectiveClosedNotchHeight, alignment: .center)
+    }
+
+    private func doOpen() {
+        withAnimation(animationSpring) {
+            vm.open()
+        }
+    }
+
+    // MARK: - Hover management (exact port of boring.notch's handleHover)
+
+    private func handleHover(_ hovering: Bool) {
+        hoverTask?.cancel()
+
+        if hovering {
+            withAnimation(animationSpring) {
+                isHovering = true
+            }
+
+            if vm.notchState == .closed {
+                haptics.toggle()
+            }
+
+            guard vm.notchState == .closed, !vm.sneakPeek.show else { return }
+
+            hoverTask = Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+
+                await MainActor.run {
+                    guard vm.notchState == .closed,
+                          isHovering,
+                          !vm.sneakPeek.show else { return }
+                    doOpen()
+                }
+            }
+        } else {
+            hoverTask = Task {
+                try? await Task.sleep(for: .milliseconds(100))
+                guard !Task.isCancelled else { return }
+
+                await MainActor.run {
+                    withAnimation(animationSpring) {
+                        isHovering = false
+                    }
+
+                    if vm.notchState == .open {
+                        vm.close()
                     }
                 }
+            }
+        }
+    }
+}
 
+// MARK: - NotchHeader (BoringHeader port)
+
+@MainActor
+struct NotchHeader: View {
+    @ObservedObject var vm: NotchViewModel
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack {
+                Text("Holmes")
+                    .font(.system(.headline, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .opacity(vm.notchState == .closed ? 0 : 1)
+            .blur(radius: vm.notchState == .closed ? 20 : 0)
+            .zIndex(2)
+
+            if vm.notchState == .open {
+                // The black mask that keeps the physical notch's silhouette
+                // visible inside the opened panel (boring.notch's signature).
+                Rectangle()
+                    .fill((NSScreen.main?.safeAreaInsets.top ?? 0) > 0 ? .black : .clear)
+                    .frame(width: vm.closedNotchSize.width)
+                    .mask {
+                        NotchShape()
+                    }
+            }
+
+            HStack(spacing: 4) {
+                if vm.notchState == .open {
+                    Button(action: {
+                        MainPanelWindowController.shared.toggle()
+                    }) {
+                        Capsule()
+                            .fill(.black)
+                            .frame(width: 30, height: 30)
+                            .overlay {
+                                Image(systemName: "rectangle.expand.vertical")
+                                    .foregroundColor(.white)
+                                    .padding()
+                                    .imageScale(.medium)
+                            }
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            .font(.system(.headline, design: .rounded))
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .opacity(vm.notchState == .closed ? 0 : 1)
+            .blur(radius: vm.notchState == .closed ? 20 : 0)
+            .zIndex(2)
+        }
+        .foregroundColor(.gray)
+    }
+}
+
+// MARK: - NotchHomeView (NotchHomeView slot, Holmes content)
+
+@MainActor
+struct NotchHomeView: View {
+    @ObservedObject var vm: NotchViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // What Holmes SEES right now.
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: vm.contextSymbol)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(.white.opacity(0.1)))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(vm.contextLine.isEmpty ? "Watching your screen" : vm.contextLine)
+                        .font(.system(size: 14, weight: .medium, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    Text("Live context")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.gray)
+                }
                 Spacer(minLength: 0)
             }
 
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.12))
-                    Capsule()
-                        .fill(LinearGradient(colors: [Color.cyan, Color.blue],
-                                             startPoint: .leading, endPoint: .trailing))
-                        .frame(width: max(6, geo.size.width * progress))
-                        .shadow(color: Color.cyan.opacity(0.6), radius: 4)
+            Divider()
+                .overlay(Color.white.opacity(0.1))
+
+            // What Holmes is DOING (or last did).
+            if vm.taskActive {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.yellow)
+                        Text(vm.taskStep.isEmpty ? vm.taskName : vm.taskStep)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    ProgressView(value: vm.taskProgress)
+                        .progressViewStyle(.linear)
+                        .tint(.white)
                 }
-            }
-            .frame(height: 5)
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 12)
-        .padding(.bottom, 14)
-        .frame(width: cardWidth)
-        .background(notchPanelBackground)
-        .contentShape(Rectangle())
-        .onTapGesture { onTap() }
-        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
-    }
-}
-
-// MARK: - Banner card (context reveal / result / one-off action)
-
-struct NotchBannerCard: View {
-    let notchWidth: CGFloat
-    let title: String
-    let subtitle: String
-    let symbol: String
-    let onTap: () -> Void
-
-    private var cardWidth: CGFloat { max(360, notchWidth + 150) }
-
-    var body: some View {
-        HStack(spacing: 13) {
-            ZStack {
-                Circle().fill(Color.white.opacity(0.14)).frame(width: 32, height: 32)
-                Image(systemName: symbol)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(Color.white)
-                    .shadow(color: Color.cyan.opacity(0.5), radius: 5)
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.system(size: 12.5, weight: .bold, design: .rounded))
-                    .foregroundStyle(
-                        LinearGradient(colors: [Color.white, Color.cyan.opacity(0.85)],
-                                       startPoint: .leading, endPoint: .trailing))
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.6))
-                    .lineLimit(1)
+            } else if !vm.lastResult.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.green)
+                    Text(vm.lastResult)
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundStyle(.gray)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "moon.zzz.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.gray)
+                    Text("No task running — Holmes acts when it spots something useful")
+                        .font(.system(size: 13, design: .rounded))
+                        .foregroundStyle(.gray)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
             }
 
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 12)
-        .padding(.bottom, 14)
-        .frame(width: cardWidth)
-        .background(notchPanelBackground)
-        .contentShape(Rectangle())
-        .onTapGesture { onTap() }
-        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
+        .padding(.top, 6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
-}
-
-// MARK: - Shared panel background (a NotchShape that grew from the notch)
-
-private var notchPanelBackground: some View {
-    ZStack {
-        NotchShape(topCornerRadius: 9, bottomCornerRadius: 22)
-            .fill(Color.black.opacity(0.92))
-        NotchShape(topCornerRadius: 9, bottomCornerRadius: 22)
-            .fill(LinearGradient(colors: [Color.cyan.opacity(0.10), Color.clear],
-                                 startPoint: .top, endPoint: .bottom))
-        NotchShape(topCornerRadius: 9, bottomCornerRadius: 22)
-            .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
-    }
-    .shadow(color: Color.black.opacity(0.55), radius: 14, y: 8)
-}
-
-#Preview {
-    ZStack {
-        Color.gray.ignoresSafeArea()
-        VStack(spacing: 30) {
-            CollapsedNotchBar(notchSize: CGSize(width: 200, height: 32),
-                              contextLine: "Coding in Ghostty",
-                              breathingPhase: 1, isHovered: true) {}
-            NotchTaskCard(notchWidth: 200, taskName: "Opening Finder…",
-                          context: "Organizing your Downloads", progress: 0.6) {}
-            NotchBannerCard(notchWidth: 200, title: "You're coding",
-                            subtitle: "Editing ScreenEngine.swift in holmes",
-                            symbol: "chevron.left.forwardslash.chevron.right") {}
-        }
-    }
-    .frame(width: 640, height: 500)
 }
