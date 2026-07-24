@@ -515,7 +515,21 @@ final class ComputerUseEngine {
                 NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
             }
             Self.diag("action=open_app OK name=\(name) url=\(url.path)")
-            return .ok("Opened \(app.localizedName ?? name). Take a screenshot to see its window before clicking anything in it.")
+            // Clicky "opens it": draw a clicking ring where the app's window is
+            // about to appear (center of the active display) + a notch banner, so
+            // the user WATCHES Holmes open the thing rather than it just popping up.
+            let appLabel = app.localizedName ?? name
+            let openScreen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main
+            if let openScreen {
+                await flashClickyPointer(
+                    at: CGPoint(x: openScreen.frame.midX, y: openScreen.frame.midY),
+                    label: "Opening \(appLabel)")
+            }
+            NotchWindowController.shared.flashAction(
+                "Opening \(appLabel)",
+                subtitle: "Holmes is launching the app",
+                symbol: "cursorarrow.click.2")
+            return .ok("Opened \(appLabel). Take a screenshot to see its window before clicking anything in it.")
         } catch {
             Self.diag("action=open_app FAILED — \(error.localizedDescription)")
             return .error("Failed to launch '\(name)': \(error.localizedDescription)")

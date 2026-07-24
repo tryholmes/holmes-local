@@ -181,7 +181,10 @@ final class ClickyController {
 
         ScreenGlowController.shared.set(state: .thinking)
 
-        guard let result = await VisualGuidance.answer(question: question) else {
+        // Ground the answer in the current live context so it stays pinned to the
+        // screen the user is actually looking at, never drifting to an off-screen topic.
+        let grounding = HolmesAgent.shared.currentContext.description
+        guard let result = await VisualGuidance.answer(question: question, context: grounding) else {
             ScreenGlowController.shared.set(state: .off)
             await speakIfEnabled("I couldn't get a read on your screen just now. Mind asking me again?")
             return

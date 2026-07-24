@@ -3,7 +3,7 @@ import Combine
 
 enum NotchState: Equatable {
     case idle
-    case active(taskName: String, progress: Double)
+    case active(taskName: String, context: String, progress: Double)
     case notification(title: String, subtitle: String, symbol: String)
     case expanded
 }
@@ -12,6 +12,10 @@ class NotchViewModel: ObservableObject {
     @Published var state: NotchState = .idle
     @Published var breathingPhase: CGFloat = 0
     @Published var isHovered: Bool = false
+    /// The live-context one-liner ("Coding in Ghostty", "Reading a PR on GitHub").
+    /// Drives the idle bar's hover subtitle so the notch always states the CURRENT
+    /// context, never a stale one. Set from HolmesAgent on every new screen.
+    @Published var contextLine: String = ""
     
     private var breathingTimer: Timer?
     private var notificationResetTask: DispatchWorkItem?
@@ -65,21 +69,33 @@ class NotchViewModel: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: task)
     }
     
-    func startTask(name: String) {
+    func startTask(name: String, context: String = "") {
         notificationResetTask?.cancel()
         withAnimation(NoirAnimations.smooth) {
-            state = .active(taskName: name, progress: 0)
+            state = .active(taskName: name, context: context, progress: 0)
         }
     }
-    
-    func updateProgress(_ progress: Double) {
-        if case .active(let name, _) = state {
-            state = .active(taskName: name, progress: progress)
+
+    /// Advance the active task. `step`, when given, replaces the top line with the
+    /// CURRENT action ("Opening Finder", "Clicking Send") while the context line
+    /// under it stays put — so the notch shows both "what Holmes is doing" and
+    /// "what context it's doing it in" at once.
+    func updateProgress(_ progress: Double, step: String? = nil) {
+        if case .active(let name, let context, _) = state {
+            state = .active(taskName: step ?? name, context: context, progress: progress)
         }
     }
-    
+
+    func setContextLine(_ line: String) {
+        contextLine = line
+        // Keep an in-flight task's context line current too.
+        if case .active(let name, _, let progress) = state {
+            state = .active(taskName: name, context: line, progress: progress)
+        }
+    }
+
     func completeTask() {
-        if case .active(_, _) = state {
+        if case .active = state {
             withAnimation(NoirAnimations.smooth) {
                 state = .idle
             }

@@ -166,6 +166,8 @@ final class AutonomousActionRunner {
         // Speak the opening intent — "On it — <goal>." — so the run announces
         // itself before the first action lands.
         narrate("On it — \(shorten(plan.goal, max: 90)).")
+        // Light up the notch HUD: WHAT Holmes is doing, over the live context.
+        NotchWindowController.shared.beginTask(shorten(plan.goal, max: 70))
 
         // .confirm — the WHOLE plan on one card; that single approval covers
         // the run (BackendRouter's userConfirmed contract names this exact case).
@@ -210,6 +212,9 @@ final class AutonomousActionRunner {
                 }
                 // Narrate the step as it starts (after any confirm), one line.
                 narrateStep(step)
+                NotchWindowController.shared.stepProgress(
+                    shorten(step.summary, max: 60),
+                    fraction: Double(executedCount) / Double(max(1, plan.steps.count)))
                 var result = await BackendRouter.run(step, composioApps: composioApps, userConfirmed: confirmed)
                 // The router's fail-closed backstop can flag a confirm the
                 // pre-check missed (dispatch-time knowledge). Honor its
@@ -262,6 +267,9 @@ final class AutonomousActionRunner {
                 }
                 // Narrate the visible on-screen work about to happen (high-level).
                 narrate(shorten(steps.first?.summary ?? "Working on the next steps.", max: 110))
+                NotchWindowController.shared.stepProgress(
+                    shorten(steps.first?.summary ?? "Working…", max: 60),
+                    fraction: Double(executedCount) / Double(max(1, plan.steps.count)))
                 let error = await executeModelSegment(steps, plan: plan, playbookId: playbookId)
                 for step in steps {
                     await logExecutedStep(step, playbookId: playbookId, level: level, via: "model-loop",
@@ -572,6 +580,8 @@ final class AutonomousActionRunner {
                 body: notifyBody)
         }
         ScreenGlowController.shared.set(state: succeeded ? .ready : .off)
+        // Close out the notch HUD with a result banner (auto-returns to idle).
+        NotchWindowController.shared.endTask(success: succeeded, summary: shorten(plan.goal, max: 70))
         // Speak the closing result. Quiet on a user decline (they just said no).
         if succeeded {
             narrate("Done — \(shorten(plan.goal, max: 70)).")

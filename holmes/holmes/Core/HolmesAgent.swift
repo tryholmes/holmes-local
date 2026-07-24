@@ -221,6 +221,17 @@ final class HolmesAgent {
         if isNewScreen {
             logActivity(context: currentContext)
             print("[Holmes] \(context.confidence.rawValue)/\(context.source.rawValue): \(context.headline)")
+            // Surface the change in the notch HUD — but only for a SPECIFIC reading,
+            // never a fallback ("can't see your screen") that would assert nothing.
+            if context.entities["headlineKind"] != "fallback" {
+                let activity = context.activity == "other" || context.activity.isEmpty
+                    ? context.app
+                    : "You're \(context.activity)"
+                NotchWindowController.shared.flashContext(
+                    context.headline,
+                    icon: Self.icon(for: context),
+                    activity: activity)
+            }
         }
 
         // TIER 1 — behind the headline, never in front of it.

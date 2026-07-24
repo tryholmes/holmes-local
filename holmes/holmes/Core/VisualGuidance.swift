@@ -32,13 +32,20 @@ enum VisualGuidance {
     /// Runs the full see → answer → (optionally) point pipeline. Returns `nil`
     /// when Claude isn't configured, the screen can't be captured, or the model
     /// produced neither a spoken answer nor a usable annotation.
-    static func answer(question: String) async -> Result? {
+    ///
+    /// `context` is the deterministic live-context headline ("Terminal error in
+    /// Ghostty"). It's passed to the model as ground truth so the answer stays
+    /// pinned to THIS screen — the guard against a mismatched teach question
+    /// (e.g. a meeting-notes playbook that fired on a code screen) dragging the
+    /// answer off into a topic that isn't visible.
+    static func answer(question: String, context: String = "") async -> Result? {
         guard AnthropicConfig.isConfigured else { return nil }
         guard let capture = await WindowCapture.captureForModel() else { return nil }
 
         let system = systemPrompt(
             width: capture.screenshotWidthInPixels,
-            height: capture.screenshotHeightInPixels
+            height: capture.screenshotHeightInPixels,
+            context: context
         )
 
         let raw: String
@@ -61,10 +68,21 @@ enum VisualGuidance {
 
     // MARK: - System prompt
 
-    private static func systemPrompt(width: Int, height: Int) -> String {
+    private static func systemPrompt(width: Int, height: Int, context: String = "") -> String {
+        let grounding = context.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : """
+
+        GROUND TRUTH — what the user is actually doing right now: "\(context)". \
+        This was read directly from the screen. Answer ONLY about what is genuinely \
+        visible in THIS screenshot and consistent with that. If the question you were \
+        handed doesn't match what's on screen, IGNORE the question and just help with \
+        what's actually here. NEVER mention an app, document, meeting, message, or \
+        topic that is not visibly present — no guessing, no carrying over from \
+        elsewhere. When unsure what something is, say what you can see, not what you \
+        assume.
         """
+        return """
         You are Holmes, an AI buddy living on the user's Mac. You are looking at a \
-        screenshot of the user's screen and answering a question they asked OUT LOUD.
+        screenshot of the user's screen and answering a question they asked OUT LOUD.\(grounding)
 
         Reply with ONE JSON object, and nothing else — no prose, no code fences:
         {

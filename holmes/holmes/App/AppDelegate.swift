@@ -134,6 +134,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startMainApp() {
         SideIconWindowController.shared.show()
+        // Install the notch HUD — it narrates WHAT Holmes is doing and the live
+        // context it's doing it in. Idle bar shows on notch Macs; task/context
+        // cards reveal on every Mac.
+        Task { @MainActor in NotchWindowController.shared.show() }
         startHolmesAgent()
     }
 }

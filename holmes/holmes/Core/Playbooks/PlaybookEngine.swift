@@ -632,7 +632,10 @@ final class PlaybookEngine {
         // it); the action path's budget is consumed inside the runner instead.
         AutonomyGate.recordAct(playbookId: playbook.id)
 
-        guard let result = await VisualGuidance.answer(question: playbook.makeGoal(ctx)) else {
+        // Pin the answer to the CURRENT screen so a mismatched teach question can't
+        // drag it off-topic (the "Ghostty error → meeting notes" drift).
+        let grounding = HolmesAgent.shared.currentContext.description
+        guard let result = await VisualGuidance.answer(question: playbook.makeGoal(ctx), context: grounding) else {
             print("[Holmes] Playbook '\(playbook.id)' teach — no guidance produced")
             ScreenGlowController.shared.set(state: .off)
             onCompletion?(false)

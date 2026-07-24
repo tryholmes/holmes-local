@@ -6,17 +6,18 @@ struct NotchView: View {
     let onTap: () -> Void
     
     var body: some View {
-        if viewModel.hasNotch {
-            notchContent
-                .onAppear {
-                    viewModel.startIdleAnimation()
-                }
-                .onDisappear {
-                    viewModel.stopIdleAnimation()
-                }
-        }
+        // Render regardless of a physical notch — the controller decides when the
+        // window is on screen (idle bar only on real-notch Macs; task/context
+        // cards on every Mac). Gating here on hasNotch would blank the HUD.
+        notchContent
+            .onAppear {
+                viewModel.startIdleAnimation()
+            }
+            .onDisappear {
+                viewModel.stopIdleAnimation()
+            }
     }
-    
+
     @ViewBuilder
     private var notchContent: some View {
         switch viewModel.state {
@@ -24,17 +25,18 @@ struct NotchView: View {
             HoverResponsiveNotchView(
                 breathingPhase: viewModel.breathingPhase,
                 isHovered: viewModel.isHovered,
-                title: "Holmes is listening",
-                subtitle: "Monitoring workspace activity",
+                title: viewModel.contextLine.isEmpty ? "Holmes is watching" : "Holmes sees",
+                subtitle: viewModel.contextLine.isEmpty ? "Monitoring workspace activity" : viewModel.contextLine,
                 onTap: onTap
             )
             .onHover { hovering in
                 viewModel.isHovered = hovering
             }
-            
-        case .active(let taskName, let progress):
+
+        case .active(let taskName, let context, let progress):
             ActiveNotchView(
                 taskName: taskName,
+                context: context,
                 progress: progress,
                 onTap: onTap
             )
@@ -400,9 +402,10 @@ struct HoverExpandedNotchView: View {
 
 struct ActiveNotchView: View {
     let taskName: String
+    let context: String
     let progress: Double
     let onTap: () -> Void
-    
+
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 10) {
@@ -411,7 +414,7 @@ struct ActiveNotchView: View {
                         Circle()
                             .fill(Color.yellow.opacity(0.2))
                             .frame(width: 28, height: 28)
-                        
+
                         Image(systemName: "bolt.fill")
                             .font(.system(size: 14, weight: .bold))
                             .foregroundStyle(
@@ -423,21 +426,32 @@ struct ActiveNotchView: View {
                             )
                             .shadow(color: Color.yellow.opacity(0.6), radius: 6)
                     }
-                    
-                    Text(taskName)
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [Color.white, Color.white.opacity(0.8)],
-                                startPoint: .leading,
-                                endPoint: .trailing
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        // Top line: WHAT Holmes is doing right now (the current step).
+                        Text(taskName)
+                            .font(.system(size: 13, weight: .bold, design: .monospaced))
+                            .foregroundStyle(
+                                LinearGradient(
+                                    colors: [Color.white, Color.white.opacity(0.8)],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
                             )
-                        )
-                        .lineLimit(1)
-                    
+                            .lineLimit(1)
+
+                        // Second line: the CONTEXT it's acting in ("Coding in Ghostty").
+                        if !context.isEmpty {
+                            Text(context)
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(Color.cyan.opacity(0.75))
+                                .lineLimit(1)
+                        }
+                    }
+
                     Spacer()
                 }
-                
+
                 GeometryReader { geometry in
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -578,7 +592,7 @@ struct QuickActionButton: View {
         
         VStack(spacing: 40) {
             IdleNotchView(breathingPhase: 0, isHovered: false) {}
-            ActiveNotchView(taskName: "Organizing files...", progress: 0.65) {}
+            ActiveNotchView(taskName: "Opening Finder…", context: "Organizing your Downloads", progress: 0.65) {}
             ExpandedNotchView(onCollapse: {}) {}
         }
         .padding()
