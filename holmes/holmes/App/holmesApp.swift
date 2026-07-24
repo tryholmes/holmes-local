@@ -259,14 +259,10 @@ struct PlaybookToggleRow: View {
         .padding(.vertical, 5)
     }
 
-    /// Scheduled playbooks reuse Autopilot's fire path (which keeps its
-    /// once-per-day bookkeeping); screen-grounded ones (ai-research) run
-    /// against the latest snapshot so "the question on screen" is real.
+    /// Screen-grounded playbooks run against the latest snapshot so "the thing
+    /// on screen" is real. (Scheduled playbooks were removed in the 154→5 purge.)
     @MainActor private func runNow() {
         switch playbook.id {
-        case "morning-brief", "email-triage",
-             "follow-up-chaser", "pr-radar", "schedule-guard", "evening-wrapup":
-            Autopilot.shared.fireNow(playbook.id)
         default:
             let ctx: PlaybookContext
             if let snapshot = HolmesAgent.shared.lastSnapshot {

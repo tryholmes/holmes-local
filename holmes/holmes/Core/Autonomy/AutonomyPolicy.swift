@@ -192,85 +192,24 @@ final class AutonomyPolicy {
     /// when the user opts them in. (Draft-mode behavior below .confirm is
     /// unchanged from today.)
     private static let confirmByDefault: Set<String> = [
-        "email-reply", "chat-reply", "email-triage", "follow-up-chaser", "linkedin-post",
-        // Finder Organizer moves the user's files — significant, so it pauses for
-        // one confirm (the runner still offers undo) even when opted in.
-        "finder-organizer",
-        // New autonomy ACTION scenarios that move/delete files, touch the inbox or
-        // calendar, or close tabs — all pause for one confirm even when opted in.
-        "finder-downloads-sort", "desktop-declutter", "empty-trash",
-        "close-duplicate-tabs", "rename-screenshots", "archive-newsletter",
-        "reply-and-stage", "accept-calendar-invite", "organize-messy-folder",
-        // Save-file prompt is a TEACH scenario (it only points at Save, never
-        // clicks) but is kept at confirm to underline that saving is irreversible.
-        "save-file-prompt",
-
-        // ── Autonomous task library — sensitive/irreversible ACTIONS (confirm) ──
-        // Files/Finder: move, rename, trash, or restructure the user's files.
-        "installer-cleanup", "dedupe-files", "archive-old-files", "batch-rename-pattern",
-        "sort-folder-by-kind", "consolidate-duplicate-folders", "project-folder-from-files",
-        "group-photos-by-date", "screenshots-pileup", "downloads-move-finished",
-        "trash-old-downloads", "archive-old-screenshots", "clean-partial-downloads",
-        "clean-duplicate-downloads", "sort-folder-by-date",
-        // Email/Calendar: unsubscribe, forward/send, decline, delete, OOO, bulk archive.
-        "unsubscribe-bulk-mail", "follow-up-chase-stage", "decline-overlapping-invite",
-        "forward-with-note", "draft-meeting-decline", "set-ooo-reply",
-        "clear-promotions-pileup", "delete-spam-email",
-        // Web: type credentials/PII into forms, apply codes at checkout.
-        "web-form-refill", "web-login-autofill", "web-shipping-address", "web-coupon-apply",
-        // Dev: a drafted commit message the user pastes themselves.
-        "commit-message-draft",
-        // Messaging: the one path that actually presses Send.
-        "message-reply-send"
+        // Chat Reply drafts a message that would leave the machine if staged —
+        // one confirm before anything is typed into the app.
+        "chat-reply",
+        // Downloads Sorter moves the user's files — significant, so it pauses
+        // for one confirm (the runner still offers undo) even when opted in.
+        "finder-downloads-sort",
     ]
 
     /// Read/prep playbooks: everything they produce stays on-device (briefs,
     /// prep sheets, research, radar summaries), so reversible auto-execution
     /// is safe once the master switch is on.
     private static let autoByDefault: Set<String> = [
-        "prompt-coach", "github-brief", "meeting-prep", "ai-research",
-        "morning-brief", "pr-radar", "schedule-guard", "evening-wrapup",
-        // Coding Copilot only explains + draws on screen — no mutation — so it's
-        // safe to run itself once the master switch is on.
-        "coding-copilot",
-        // New TEACH scenarios (explain + draw, never mutate) run themselves.
-        "coding-error-help", "terminal-command-failed", "git-conflict-help",
-        "form-field-guidance", "pr-review-brief", "doc-summarize",
-        "spreadsheet-insight", "shortcut-suggestion",
-        // Reversible ACTION scenarios: dismissing a consent banner and joining a
-        // meeting the user is about to enter are both undoable, so auto is safe.
-        "cookie-banner-dismiss", "meeting-join",
-
-        // ── Autonomous task library — TEACH (explain/draw only) + reversible ACT ──
-        // Files/Finder: reversible extract/eject, plus point-only TEACH helpers.
-        "unzip-archives", "eject-dmg", "flag-large-file", "low-disk-cleanup",
-        "safe-eject-reminder",
-        // Email/Calendar: read-only briefs/triage, reversible star/label/snooze/mute,
-        // personal-only calendar holds, and point-only double-booking TEACH.
-        "inbox-triage-sweep", "star-important-email", "label-email", "snooze-email",
-        "meeting-one-pager", "double-booking-flag", "add-calendar-event-from-email",
-        "remind-before-call", "extract-action-items", "summarize-email-thread",
-        "mute-email-thread", "block-focus-time",
-        // Web: reversible one-click tidying, read-only research/summaries/reading.
-        "web-cookie-consent", "web-stale-tab-cleanup", "web-article-to-notes",
-        "web-smart-bookmark", "web-price-check", "web-add-to-cart", "web-compare-products",
-        "web-research-question", "web-read-aloud", "web-translate-page", "web-download-sort",
-        "web-reopen-tab", "web-mute-autoplay", "web-gdpr-minimal", "web-thread-summary",
-        // Dev: TEACH explainers (draw + speak, never mutate) + clipboard-only commit note.
-        "stack-trace-explain", "merge-conflict-resolve", "pr-files-changed-brief",
-        "terminal-fail-explain", "failing-test-explain", "lint-error-point",
-        "todo-fixme-surface", "dependency-error-explain", "ci-failure-explain",
-        "unhandled-exception-point", "menu-shortcut-suggest", "regex-explain",
-        "off-by-one-point", "api-error-explain", "gitignore-suggest",
-        "dockerfile-issue-explain", "missing-import-point", "permission-denied-explain",
-        "unfamiliar-repo-brief",
-        // Messaging/Docs/Media: clipboard/stage-only drafts, reversible edits, TEACH,
-        // and reversible media/volume nudges. None press Send/publish on their own.
-        "doc-outline", "doc-format-fix", "chart-suggest", "formula-help", "tweet-draft",
-        "call-notes", "pause-music-on-call", "lower-volume-on-call", "linkedin-message-reply",
-        "youtube-summary", "extract-steps", "chat-to-tasks", "thank-you-note",
-        "slack-mentions-summary", "review-reply", "doc-proofread-fix",
-        "linkedin-work-post", "music-resume-on-call-end"
+        // Read-only brief — everything it produces stays on-device.
+        "github-brief",
+        // TEACH — explains + draws on screen, never mutates.
+        "terminal-command-failed",
+        // Reversible ACTION — joining a meeting is undoable (the user can leave).
+        "meeting-join",
     ]
 
     /// The level a playbook lands at when the user turns it ON without picking

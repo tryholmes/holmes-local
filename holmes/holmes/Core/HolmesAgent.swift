@@ -122,8 +122,9 @@ final class HolmesAgent {
         }
         IncomingMessageWatcher.shared.start()
 
-        // Autopilot — time-based scheduler (morning brief, email triage, meeting prep).
-        Autopilot.shared.start()
+        // Autopilot (time-based scheduler) is retired: its scheduled playbooks
+        // (morning-brief, email-triage, …) were removed in the 154→5 purge, so
+        // starting it would only fire "playbook not found" every tick.
 
         // MCP *server* — exposes Holmes's live screen context to other agents
         // (Claude Desktop, Cursor, voice agents) on http://127.0.0.1:5767/mcp.

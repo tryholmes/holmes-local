@@ -56,12 +56,12 @@ final class TriggerBrain {
     /// engine is asking about, so it must not key a draft.
     private static let contextFreshness: TimeInterval = 12
 
-    /// Opportunity -> playbook id. Only these four are trigger-fireable;
-    /// anything else is treated as "none".
+    /// Opportunity -> playbook id. Only these are trigger-fireable; anything
+    /// else is treated as "none". (email_reply / linkedin_post were removed in
+    /// the 154→5 playbook purge — a decide() that still names them dead-ends
+    /// safely at the map lookup.)
     private static let playbookIds: [String: String] = [
-        "email_reply": "email-reply",
         "github_brief": "github-brief",
-        "linkedin_post": "linkedin-post",
         "chat_reply": "chat-reply"
     ]
 

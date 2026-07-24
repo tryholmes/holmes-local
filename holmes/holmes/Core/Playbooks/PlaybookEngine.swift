@@ -722,10 +722,9 @@ final class PlaybookEngine {
     // "Reply to Ada" cards out of thin air, so they are DEFAULT OFF — opt-in only
     // via Settings. Every screen-triggered playbook (and manual-only ai-research)
     // stays default ON. Once the user toggles one in Settings the stored value wins.
-    static let defaultDisabledPlaybooks: Set<String> = [
-        "morning-brief", "email-triage", "follow-up-chaser",
-        "pr-radar", "schedule-guard", "evening-wrapup"
-    ]
+    static let defaultDisabledPlaybooks: Set<String> = []
+    // (The blind/scheduled playbooks this set guarded were removed in the
+    // 154→5 purge; kept as an empty set because AutonomyPolicy reads it.)
 
     static func isEnabled(_ playbookId: String) -> Bool {
         let key = "holmes.playbook." + playbookId + ".enabled"
