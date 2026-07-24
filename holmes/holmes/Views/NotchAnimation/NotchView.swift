@@ -1,601 +1,319 @@
+// Notch chrome adapted from notchify (MIT, © 2026 fr0sty):
+// https://github.com/fr0sty1122/notchify — the `NotchShape` (concave top corners
+// flaring into a flat top edge, convex rounded bottom) and the top-anchored
+// "grows out of the physical notch" layout + fluid resize springs. Holmes fills it
+// with its own content (task + live context + progress, and context banners).
+// See THIRD_PARTY_NOTICES.md.
+
 import SwiftUI
 import Foundation
+
+// MARK: - Animation curves (notchify baseline)
+
+extension Animation {
+    /// Island opening, closing, and resizing — a fluid, interruptible spring.
+    static let notchResize = Animation.smooth(duration: 0.44, extraBounce: 0.13)
+    /// Swapping the content inside the notch.
+    static let notchContent = Animation.smooth(duration: 0.34, extraBounce: 0.06)
+}
+
+// MARK: - NotchShape (notchify baseline)
+
+/// Concave top corners that flare outward into a flat top edge (like the real
+/// MacBook notch), with convex rounded bottom corners — so an expanded panel
+/// looks like it grew straight out of the notch.
+struct NotchShape: Shape {
+    var topCornerRadius: CGFloat
+    var bottomCornerRadius: CGFloat
+
+    var animatableData: AnimatablePair<CGFloat, CGFloat> {
+        get { AnimatablePair(topCornerRadius, bottomCornerRadius) }
+        set {
+            topCornerRadius = newValue.first
+            bottomCornerRadius = newValue.second
+        }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let topR = min(topCornerRadius, 9, rect.width / 2, rect.height)
+        let bottomR = min(bottomCornerRadius, (rect.width - 2 * topR) / 2, rect.height - topR)
+
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + topR, y: rect.minY + topR),
+            control: CGPoint(x: rect.minX + topR, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + topR, y: rect.maxY - bottomR))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + topR + bottomR, y: rect.maxY),
+            control: CGPoint(x: rect.minX + topR, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - topR - bottomR, y: rect.maxY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - topR, y: rect.maxY - bottomR),
+            control: CGPoint(x: rect.maxX - topR, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX - topR, y: rect.minY + topR))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY),
+            control: CGPoint(x: rect.maxX - topR, y: rect.minY))
+        path.closeSubpath()
+        return path
+    }
+}
+
+// MARK: - NotchView (entry)
 
 struct NotchView: View {
     @ObservedObject var viewModel: NotchViewModel
     let onTap: () -> Void
-    
+
     var body: some View {
-        // Render regardless of a physical notch — the controller decides when the
-        // window is on screen (idle bar only on real-notch Macs; task/context
-        // cards on every Mac). Gating here on hasNotch would blank the HUD.
-        notchContent
-            .onAppear {
-                viewModel.startIdleAnimation()
-            }
-            .onDisappear {
-                viewModel.stopIdleAnimation()
-            }
+        // Everything hangs from the TOP edge — the physical notch — and grows
+        // DOWNWARD. No re-centering, no floating: the window is pinned top-flush
+        // and the content stays glued to the notch.
+        ZStack(alignment: .top) {
+            content
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .animation(.notchResize, value: viewModel.state)
+        .animation(.notchResize, value: viewModel.isHovered)
+        .onAppear { viewModel.startIdleAnimation() }
+        .onDisappear { viewModel.stopIdleAnimation() }
     }
 
     @ViewBuilder
-    private var notchContent: some View {
+    private var content: some View {
         switch viewModel.state {
         case .idle:
-            HoverResponsiveNotchView(
+            CollapsedNotchBar(
+                notchSize: viewModel.notchSize,
+                contextLine: viewModel.contextLine,
                 breathingPhase: viewModel.breathingPhase,
                 isHovered: viewModel.isHovered,
-                title: viewModel.contextLine.isEmpty ? "Holmes is watching" : "Holmes sees",
-                subtitle: viewModel.contextLine.isEmpty ? "Monitoring workspace activity" : viewModel.contextLine,
-                onTap: onTap
-            )
-            .onHover { hovering in
-                viewModel.isHovered = hovering
-            }
+                onTap: onTap)
+            .onHover { viewModel.isHovered = $0 }
 
         case .active(let taskName, let context, let progress):
-            ActiveNotchView(
+            NotchTaskCard(
+                notchWidth: viewModel.notchSize.width,
                 taskName: taskName,
                 context: context,
                 progress: progress,
-                onTap: onTap
-            )
+                onTap: onTap)
 
         case .notification(let title, let subtitle, let symbol):
-            NotificationNotchView(
+            NotchBannerCard(
+                notchWidth: viewModel.notchSize.width,
                 title: title,
                 subtitle: subtitle,
                 symbol: symbol,
-                onTap: onTap
-            )
-            
+                onTap: onTap)
+
         case .expanded:
-            ExpandedNotchView(
-                onCollapse: { viewModel.collapse() },
-                onTap: onTap
-            )
+            NotchBannerCard(
+                notchWidth: viewModel.notchSize.width,
+                title: "Holmes",
+                subtitle: viewModel.contextLine.isEmpty ? "Monitoring workspace activity" : viewModel.contextLine,
+                symbol: "sparkles",
+                onTap: onTap)
         }
     }
 }
 
-struct NotificationNotchView: View {
-    let title: String
-    let subtitle: String
-    let symbol: String
-    let onTap: () -> Void
-    @State private var pulse = false
+// MARK: - Collapsed bar (hugs the real notch)
 
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 16) {
-                ZStack {
-                    Circle()
-                        .fill(Color.white.opacity(0.2))
-                        .frame(width: 36, height: 36)
-
-                    Image(systemName: symbol)
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [Color.white, Color.white.opacity(0.9)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .shadow(color: Color.white.opacity(0.6), radius: 6)
-                }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [Color.white, Color.cyan.opacity(0.8)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .lineLimit(1)
-
-                    Text(subtitle)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.6))
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 14)
-            .frame(width: 560, height: 56)
-            .background(
-                ZStack {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(Color.black.opacity(0.8))
-                    
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.cyan.opacity(0.15),
-                                    Color.clear
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                    
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color.cyan.opacity(0.7),
-                                    Color.blue.opacity(0.5),
-                                    Color.cyan.opacity(0.7)
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ),
-                            lineWidth: 2
-                        )
-                    
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.cyan.opacity(0.5), lineWidth: 3)
-                        .blur(radius: 6)
-                }
-            )
-            .shadow(color: Color.cyan.opacity(0.4), radius: 20, x: 0, y: 0)
-            .shadow(color: Color.black.opacity(0.5), radius: 24, x: 0, y: 12)
-            .scaleEffect(pulse ? 1.0 : 0.98)
-            .animation(.spring(response: 0.32, dampingFraction: 0.78), value: pulse)
-        }
-        .buttonStyle(.plain)
-        .onAppear {
-            pulse = true
-        }
-        .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .opacity))
-    }
-}
-
-struct IdleNotchView: View {
+/// A black bar sized to the REAL notch. On a notch Mac it blends into the notch;
+/// a faint animated underline glow signals Holmes is alive. Hovering reveals the
+/// current live-context line in a small pill that drops below the notch.
+struct CollapsedNotchBar: View {
+    let notchSize: CGSize
+    let contextLine: String
     let breathingPhase: CGFloat
     let isHovered: Bool
     let onTap: () -> Void
-    
+
     var body: some View {
-        Button(action: onTap) {
-            ZStack {
-                // WIDE futuristic bar extending from notch sides
-                ZStack {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.black.opacity(0.75 + Darwin.sin(Double(breathingPhase)) * 0.05),
-                                    Color.black.opacity(0.85 + Darwin.sin(Double(breathingPhase)) * 0.05)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                    
-                    // Silver glow overlay
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.15),
-                                    Color.clear
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                }
-                .frame(width: 580, height: isHovered ? 32 : 28)
-                .overlay(
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(0.8),
-                                        Color.white.opacity(0.6),
-                                        Color.white.opacity(0.8)
-                                    ],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                ),
-                                lineWidth: 2
-                            )
-                        
-                        // BRIGHT animated silver glow
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(
-                                Color.white.opacity(0.6 + Darwin.sin(Double(breathingPhase)) * 0.3),
-                                lineWidth: 3
-                            )
-                            .blur(radius: 8)
-                        
-                        // Extra outer glow
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(
-                                Color.white.opacity(0.3),
-                                lineWidth: 4
-                            )
-                            .blur(radius: 12)
-                    }
-                )
-                .shadow(color: Color.white.opacity(0.6), radius: 20, x: 0, y: 0)
-                .shadow(color: Color.white.opacity(0.4), radius: 30, x: 0, y: 0)
-                .shadow(color: Color.black.opacity(0.5), radius: 20, x: 0, y: 8)
+        VStack(spacing: 0) {
+            // The notch-hugging bar itself.
+            ZStack(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.black)
+                    .frame(width: notchSize.width, height: notchSize.height)
+
+                // Alive-glow: a thin cyan underline that breathes.
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(Color.cyan.opacity(0.35 + Darwin.sin(Double(breathingPhase)) * 0.25))
+                    .frame(width: max(24, notchSize.width * 0.5), height: 2)
+                    .shadow(color: Color.cyan.opacity(0.6), radius: 4)
+                    .padding(.bottom, 2)
             }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-}
+            .clipShape(NotchShape(topCornerRadius: 6, bottomCornerRadius: 10))
 
-struct HoverResponsiveNotchView: View {
-    let breathingPhase: CGFloat
-    let isHovered: Bool
-    let title: String
-    let subtitle: String
-    let onTap: () -> Void
-
-    var body: some View {
-        ZStack(alignment: .top) {
-            IdleNotchView(breathingPhase: breathingPhase, isHovered: isHovered, onTap: onTap)
-
-            if isHovered {
-                HoverExpandedNotchView(title: title, subtitle: subtitle, onTap: onTap)
-                    .offset(y: 22)
-            }
-        }
-        .animation(.spring(response: 0.28, dampingFraction: 0.82), value: isHovered)
-    }
-}
-
-struct HoverExpandedNotchView: View {
-    let title: String
-    let subtitle: String
-    let onTap: () -> Void
-    @State private var blink = false
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 16) {
-                // Holmes logo on left with silver glow
-                Image("HolmesLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 24, height: 24)
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [Color.white, Color.white.opacity(0.8)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
+            // Hover reveal: the current context, dropping out of the notch.
+            if isHovered, !contextLine.isEmpty {
+                Text(contextLine)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.85))
+                    .lineLimit(1)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .background(
+                        NotchShape(topCornerRadius: 8, bottomCornerRadius: 14)
+                            .fill(Color.black.opacity(0.92))
+                            .overlay(
+                                NotchShape(topCornerRadius: 8, bottomCornerRadius: 14)
+                                    .stroke(Color.cyan.opacity(0.35), lineWidth: 1))
                     )
-                    .shadow(color: Color.white.opacity(0.6), radius: 8)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(
-                            LinearGradient(
-                                colors: [Color.white, Color.cyan.opacity(0.8)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .lineLimit(1)
-
-                    Text(subtitle)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(0.6))
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 0)
-                
-                // Futuristic glowing green indicator on right
-                ZStack {
-                    // Large outer glow
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    Color.green.opacity(blink ? 0.5 : 0.2),
-                                    Color.clear
-                                ],
-                                center: .center,
-                                startRadius: 0,
-                                endRadius: 16
-                            )
-                        )
-                        .frame(width: 32, height: 32)
-                    
-                    // Core dot with white center
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [
-                                    Color.white,
-                                    Color.green
-                                ],
-                                center: .center,
-                                startRadius: 0,
-                                endRadius: 6
-                            )
-                        )
-                        .frame(width: 10, height: 10)
-                        .opacity(blink ? 1.0 : 0.4)
-                        .shadow(color: Color.green.opacity(blink ? 1.0 : 0.4), radius: blink ? 8 : 3)
-                }
-                .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: blink)
+                    .padding(.top, 1)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 14)
-            .frame(width: 560, height: 56)
-            .background(
-                ZStack {
-                    // Multi-layer blur
-                    VisualEffectBlur(material: .fullScreenUI, blendingMode: .behindWindow)
-                    
-                    // Deep glass background
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(Color.black.opacity(0.8))
-                    
-                    // Silver tint overlay
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.12),
-                                    Color.white.opacity(0.06),
-                                    Color.clear
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                    
-                    // BRIGHT futuristic silver border
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color.white.opacity(0.9),
-                                    Color.white.opacity(0.7),
-                                    Color.white.opacity(0.9)
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ),
-                            lineWidth: 2.5
-                        )
-                    
-                    // BRIGHT animated silver glow
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.white.opacity(0.7), lineWidth: 4)
-                        .blur(radius: 10)
-                    
-                    // Extra outer glow layer
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.white.opacity(0.4), lineWidth: 6)
-                        .blur(radius: 16)
-                }
-            )
-            .shadow(color: Color.white.opacity(0.7), radius: 25, x: 0, y: 0)
-            .shadow(color: Color.white.opacity(0.5), radius: 35, x: 0, y: 0)
-            .shadow(color: Color.green.opacity(0.2), radius: 16, x: 0, y: 0)
-            .shadow(color: Color.black.opacity(0.5), radius: 24, x: 0, y: 12)
         }
-        .buttonStyle(.plain)
-        .onAppear {
-            blink = true
-        }
-        .transition(.move(edge: .top).combined(with: .opacity))
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
     }
 }
 
-struct ActiveNotchView: View {
+// MARK: - Task card (grows out of the notch while Holmes acts)
+
+/// The active-run card: WHAT Holmes is doing on top, the live CONTEXT beneath,
+/// and a progress bar — all inside a NotchShape that flares down from the notch.
+struct NotchTaskCard: View {
+    let notchWidth: CGFloat
     let taskName: String
     let context: String
     let progress: Double
     let onTap: () -> Void
 
+    private var cardWidth: CGFloat { max(360, notchWidth + 150) }
+
     var body: some View {
-        Button(action: onTap) {
-            VStack(spacing: 10) {
-                HStack(spacing: 12) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.yellow.opacity(0.2))
-                            .frame(width: 28, height: 28)
-
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(
-                                LinearGradient(
-                                    colors: [Color.yellow, Color.orange],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .shadow(color: Color.yellow.opacity(0.6), radius: 6)
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        // Top line: WHAT Holmes is doing right now (the current step).
-                        Text(taskName)
-                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                            .foregroundStyle(
-                                LinearGradient(
-                                    colors: [Color.white, Color.white.opacity(0.8)],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .lineLimit(1)
-
-                        // Second line: the CONTEXT it's acting in ("Coding in Ghostty").
-                        if !context.isEmpty {
-                            Text(context)
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(Color.cyan.opacity(0.75))
-                                .lineLimit(1)
-                        }
-                    }
-
-                    Spacer()
-                }
-
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(Color.black.opacity(0.4))
-                        
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.white, Color.white.opacity(0.8)],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .frame(width: geometry.size.width * progress)
-                            .shadow(color: Color.white.opacity(0.6), radius: 4)
-                    }
-                }
-                .frame(height: 6)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 14)
-            .frame(width: 560)
-            .background(
+        VStack(spacing: 9) {
+            HStack(spacing: 11) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(Color.black.opacity(0.8))
-                    
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.cyan.opacity(0.15),
-                                    Color.clear
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-                    
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color.cyan.opacity(0.7),
-                                    Color.blue.opacity(0.5),
-                                    Color.cyan.opacity(0.7)
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            ),
-                            lineWidth: 2
-                        )
-                    
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .stroke(Color.cyan.opacity(0.5), lineWidth: 3)
-                        .blur(radius: 6)
+                    Circle()
+                        .fill(Color.yellow.opacity(0.18))
+                        .frame(width: 26, height: 26)
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(
+                            LinearGradient(colors: [Color.yellow, Color.orange],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .shadow(color: Color.yellow.opacity(0.5), radius: 5)
                 }
-            )
-            .shadow(color: Color.cyan.opacity(0.4), radius: 20, x: 0, y: 0)
-            .shadow(color: Color.black.opacity(0.5), radius: 24, x: 0, y: 12)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(taskName)
+                        .font(.system(size: 12.5, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(1)
+                    if !context.isEmpty {
+                        Text(context)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.cyan.opacity(0.75))
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.12))
+                    Capsule()
+                        .fill(LinearGradient(colors: [Color.cyan, Color.blue],
+                                             startPoint: .leading, endPoint: .trailing))
+                        .frame(width: max(6, geo.size.width * progress))
+                        .shadow(color: Color.cyan.opacity(0.6), radius: 4)
+                }
+            }
+            .frame(height: 5)
         }
-        .buttonStyle(.plain)
-        .transition(.move(edge: .top).combined(with: .opacity))
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 14)
+        .frame(width: cardWidth)
+        .background(notchPanelBackground)
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
+        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
     }
 }
 
-struct ExpandedNotchView: View {
-    let onCollapse: () -> Void
+// MARK: - Banner card (context reveal / result / one-off action)
+
+struct NotchBannerCard: View {
+    let notchWidth: CGFloat
+    let title: String
+    let subtitle: String
+    let symbol: String
     let onTap: () -> Void
-    
+
+    private var cardWidth: CGFloat { max(360, notchWidth + 150) }
+
     var body: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Text("Holmes")
-                    .font(NoirFonts.caption())
-                    .foregroundStyle(NoirColors.paperWhite)
-                
-                Spacer()
-                
-                Button(action: onCollapse) {
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(NoirColors.textTertiary)
-                }
-                .buttonStyle(.plain)
+        HStack(spacing: 13) {
+            ZStack {
+                Circle().fill(Color.white.opacity(0.14)).frame(width: 32, height: 32)
+                Image(systemName: symbol)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(Color.white)
+                    .shadow(color: Color.cyan.opacity(0.5), radius: 5)
             }
-            
-            HStack(spacing: 16) {
-                QuickActionButton(icon: "pause.fill", label: "Pause") {}
-                QuickActionButton(icon: "gearshape.fill", label: "Settings") {}
-                QuickActionButton(icon: "questionmark.circle.fill", label: "Help") {}
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(
+                        LinearGradient(colors: [Color.white, Color.cyan.opacity(0.85)],
+                                       startPoint: .leading, endPoint: .trailing))
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(Color.white.opacity(0.6))
+                    .lineLimit(1)
             }
+
+            Spacer(minLength: 0)
         }
-        .padding(16)
-        .frame(maxWidth: 320)
-        .background(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(NoirColors.charcoalGray.opacity(0.95))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(NoirColors.glassStroke, lineWidth: 1)
-        )
-        .transition(.move(edge: .top).combined(with: .opacity))
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 14)
+        .frame(width: cardWidth)
+        .background(notchPanelBackground)
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
+        .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .top)))
     }
 }
 
-struct QuickActionButton: View {
-    let icon: String
-    let label: String
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(NoirColors.paperWhite)
-                
-                Text(label)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(NoirColors.textTertiary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(NoirColors.smokeGray.opacity(0.3))
-            )
-        }
-        .buttonStyle(.plain)
+// MARK: - Shared panel background (a NotchShape that grew from the notch)
+
+private var notchPanelBackground: some View {
+    ZStack {
+        NotchShape(topCornerRadius: 9, bottomCornerRadius: 22)
+            .fill(Color.black.opacity(0.92))
+        NotchShape(topCornerRadius: 9, bottomCornerRadius: 22)
+            .fill(LinearGradient(colors: [Color.cyan.opacity(0.10), Color.clear],
+                                 startPoint: .top, endPoint: .bottom))
+        NotchShape(topCornerRadius: 9, bottomCornerRadius: 22)
+            .stroke(Color.white.opacity(0.10), lineWidth: 0.8)
     }
+    .shadow(color: Color.black.opacity(0.55), radius: 14, y: 8)
 }
 
 #Preview {
     ZStack {
-        Color.black.ignoresSafeArea()
-        
-        VStack(spacing: 40) {
-            IdleNotchView(breathingPhase: 0, isHovered: false) {}
-            ActiveNotchView(taskName: "Opening Finder…", context: "Organizing your Downloads", progress: 0.65) {}
-            ExpandedNotchView(onCollapse: {}) {}
+        Color.gray.ignoresSafeArea()
+        VStack(spacing: 30) {
+            CollapsedNotchBar(notchSize: CGSize(width: 200, height: 32),
+                              contextLine: "Coding in Ghostty",
+                              breathingPhase: 1, isHovered: true) {}
+            NotchTaskCard(notchWidth: 200, taskName: "Opening Finder…",
+                          context: "Organizing your Downloads", progress: 0.6) {}
+            NotchBannerCard(notchWidth: 200, title: "You're coding",
+                            subtitle: "Editing ScreenEngine.swift in holmes",
+                            symbol: "chevron.left.forwardslash.chevron.right") {}
         }
-        .padding()
     }
-    .frame(width: 400, height: 500)
+    .frame(width: 640, height: 500)
 }

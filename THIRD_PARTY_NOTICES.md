@@ -14,8 +14,12 @@ Holmes's voice layer and companion loop — `Core/VoiceInputController.swift`
 (push-to-talk on-device dictation), `Core/SpeechSynthesizer.swift` (two-backend
 ElevenLabs/Apple text-to-speech), and `Core/ClickyController.swift` (the
 hotkey → ask-and-point / do-the-task orchestration) — adapt OpenClicky's
-dictation, TTS, and companion-manager approaches. All are distributed under the
-MIT License and their notices are reproduced in full below.
+dictation, TTS, and companion-manager approaches. Holmes's notch HUD chrome —
+`Views/NotchAnimation/` (`NotchDetector.swift` real notch geometry, the
+`NotchShape` and top-anchored "grows out of the notch" layout in `NotchView.swift`,
+and the fixed top-flush overlay panel above the menu bar in `NotchWindow.swift`) —
+is adapted from notchify. All are distributed under the MIT License and their
+notices are reproduced in full below.
 
 ---
 
@@ -63,7 +67,43 @@ SOFTWARE.
 
 ---
 
-## 2. trycua/cua-driver
+## 2. notchify
+
+Holmes's notch HUD chrome (`Views/NotchAnimation/NotchDetector.swift`,
+`NotchView.swift`, `NotchWindow.swift`) adapts notchify: the real closed-notch
+geometry from `auxiliaryTopLeftArea` / `auxiliaryTopRightArea`, the `NotchShape`
+(concave top corners flaring into a flat top edge with convex rounded bottom
+corners), the top-anchored layout that grows the content straight out of the
+physical notch, the fixed top-flush overlay panel positioned above the menu bar,
+its display-change repositioning, and the fluid resize spring feel.
+
+Source reference: https://github.com/fr0sty1122/notchify
+
+MIT License
+
+Copyright (c) 2026 fr0sty
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 3. trycua/cua-driver
 
 By way of OpenClicky, Holmes's computer-control layer embeds a narrow, modified
 Swift subset inspired by trycua/cua-driver for native in-app computer use:

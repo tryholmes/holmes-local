@@ -22,6 +22,7 @@ class NotchWindowController: NSObject, ObservableObject {
     private var window: NSWindow?
     @Published var viewModel = NotchViewModel()
     @Published var isVisible: Bool = false
+    private var screenObserver: NSObjectProtocol?
 
     override private init() {
         super.init()
@@ -46,6 +47,16 @@ class NotchWindowController: NSObject, ObservableObject {
         isVisible = true
         viewModel.startIdleAnimation()
         applyVisibility()
+
+        // Re-hug the notch when displays change (monitor plugged/unplugged,
+        // resolution change, moving between a notch and a notchless screen).
+        if screenObserver == nil {
+            screenObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didChangeScreenParametersNotification,
+                object: nil, queue: .main) { [weak self] _ in
+                    Task { @MainActor in self?.handleScreenChange() }
+                }
+        }
     }
 
     func hide() {
@@ -119,62 +130,69 @@ class NotchWindowController: NSObject, ObservableObject {
     }
     
     private func createWindow() {
-        // MUCH WIDER to extend from sides of notch
+        // A FIXED, top-flush panel that stays put; the CONTENT inside it grows
+        // and shrinks and stays glued to the notch (notchify's model). Big enough
+        // to hold the widest expanded card.
+        let size = NotchDetector.panelSize
         let window = NotchPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 32),
+            contentRect: NSRect(x: 0, y: 0, width: size.width, height: size.height),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        
+
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.level = .screenSaver
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
-        window.ignoresMouseEvents = false
+        // Above the menu bar so the HUD overlays the notch region correctly
+        // (notchify uses .mainMenu + 3).
+        window.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 3)
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        // Mouse-transparent ALWAYS: a big top-center overlay must never swallow
+        // clicks meant for the menu bar or the app behind it. The HUD is
+        // display-only; interaction lives in the menu bar / hotkeys.
+        window.ignoresMouseEvents = true
         window.hasShadow = false
-        
+
         let hostingView = NSHostingView(rootView: NotchHostView(controller: self))
         hostingView.frame = window.contentView?.bounds ?? .zero
         hostingView.autoresizingMask = [.width, .height]
-        
+
         window.contentView = hostingView
-        
+
         self.window = window
     }
-    
-    private func positionWindow() {
-        guard let window = window, let screen = NSScreen.main else { return }
-        
-        let screenFrame = screen.frame
-        let windowWidth = window.frame.width
-        let windowHeight = window.frame.height
-        
-        // Simply position at the TOP CENTER of the screen
-        // This overlays the MacBook notch area
-        let x = screenFrame.midX - windowWidth / 2
-        let y = screenFrame.maxY - windowHeight
-        
-        window.setFrame(NSRect(x: x, y: y, width: windowWidth, height: windowHeight), display: true)
-    }
-    
-    func updateForState() {
-        guard let window = window else { return }
-        
-        switch viewModel.state {
-        case .idle:
-            let width: CGFloat = 600
-            let height: CGFloat = viewModel.isHovered ? 80 : 32
-            window.setContentSize(NSSize(width: width, height: height))
-        case .active:
-            window.setContentSize(NSSize(width: 600, height: 90))
-        case .notification:
-            window.setContentSize(NSSize(width: 600, height: 64))
-        case .expanded:
-            window.setContentSize(NSSize(width: 600, height: 160))
-        }
 
+    /// The screen the notch belongs to — the one under the mouse, else main.
+    private func targetScreen() -> NSScreen? {
+        NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
+            ?? NSScreen.main ?? NSScreen.screens.first
+    }
+
+    private func positionWindow() {
+        guard let window = window, let screen = targetScreen() else { return }
+        viewModel.refreshNotchSize(for: screen)
+        let frame = screen.frame
+        let size = window.frame.size
+        // Top-flush, centered — the window's TOP edge sits on the screen top so
+        // the content hangs straight out of the notch.
+        let target = NSRect(
+            x: (frame.midX - size.width / 2).rounded(),
+            y: (frame.maxY - size.height).rounded(),
+            width: size.width,
+            height: size.height)
+        window.setFrame(target, display: true, animate: false)
+    }
+
+    /// Reposition + refresh notch geometry when displays change (unplugged
+    /// monitor, resolution change, moving to a non-notch external).
+    func handleScreenChange() {
         positionWindow()
+        applyVisibility()
+    }
+
+    func updateForState() {
+        // The window stays a fixed size; only the SwiftUI content resizes, so
+        // there's nothing to resize here — just keep visibility in sync.
         applyVisibility()
     }
 }
@@ -186,25 +204,15 @@ class NotchPanel: NSPanel {
 
 struct NotchHostView: View {
     @ObservedObject var controller: NotchWindowController
-    
+
     var body: some View {
-        VStack {
-            Spacer()
-            
-            NotchView(viewModel: controller.viewModel) {
-                NotchHaptics.shared.medium()
-                MainPanelWindowController.shared.toggle()
-            }
+        // Content is pinned to the TOP of the window (the notch) and grows down.
+        NotchView(viewModel: controller.viewModel) {
+            NotchHaptics.shared.medium()
+            MainPanelWindowController.shared.toggle()
         }
-        .onChange(of: controller.viewModel.isHovered) { _, hovered in
-            if hovered {
-                NotchHaptics.shared.light()
-            }
-        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onChange(of: controller.viewModel.state) { _, _ in
-            controller.updateForState()
-        }
-        .onChange(of: controller.viewModel.isHovered) { _, _ in
             controller.updateForState()
         }
     }

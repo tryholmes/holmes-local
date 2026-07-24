@@ -16,6 +16,15 @@ class NotchViewModel: ObservableObject {
     /// Drives the idle bar's hover subtitle so the notch always states the CURRENT
     /// context, never a stale one. Set from HolmesAgent on every new screen.
     @Published var contextLine: String = ""
+
+    /// The REAL closed-notch size for the active screen — the collapsed bar hugs
+    /// exactly this so it blends into the physical notch. Refreshed on screen change.
+    @Published var notchSize: CGSize = NotchDetector.closedNotchSize(on: NSScreen.main)
+
+    func refreshNotchSize(for screen: NSScreen?) {
+        let newSize = NotchDetector.closedNotchSize(on: screen)
+        if newSize != notchSize { notchSize = newSize }
+    }
     
     private var breathingTimer: Timer?
     private var notificationResetTask: DispatchWorkItem?
