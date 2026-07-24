@@ -88,11 +88,12 @@ final class IncomingMessageWatcher {
     /// the message themselves.
     private static let pollInterval: TimeInterval = 1.5
 
-    /// iMessage read cadence while Messages is running but backgrounded. Three
-    /// ticks apart, so the AX walk costs a third of what a foreground read does
-    /// while the user is off doing something else — and a message still becomes
-    /// a draft within seconds of landing, with the user touching nothing.
-    private static let backgroundPollInterval: TimeInterval = 4.5
+    /// iMessage read cadence while Messages is running but backgrounded. The
+    /// transcript AX walk is main-thread IPC that can cost 100-800ms on
+    /// Electron chat apps, so a backgrounded app is read sparingly — a message
+    /// still becomes a waiting draft within ~10s of landing, and the main
+    /// thread stops paying near-constant walk tax while the user is coding.
+    private static let backgroundPollInterval: TimeInterval = 10
 
     /// One draft per conversation per this many seconds. A person who fires off
     /// four lines in a row is asking ONE thing.

@@ -224,6 +224,10 @@ struct GlowOverlayView: View {
             )
             .blur(radius: 14)
             .padding(2)
+            // Rasterize the stroked+blurred border once per frame on the GPU —
+            // without this, the .thinking TimelineView re-runs a full-screen
+            // CPU blur at display refresh for the whole run.
+            .drawingGroup()
     }
 
     private func rotationAngle(at date: Date) -> Angle {

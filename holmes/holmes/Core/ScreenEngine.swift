@@ -203,7 +203,10 @@ final class ScreenEngine {
                 guard let self else { return }
                 self.appSwitchGeneration += 1
                 let generation = self.appSwitchGeneration
-                try? await Task.sleep(nanoseconds: 350_000_000)
+                // 120ms: long enough for the new app's key window + AX tree to
+                // exist, short enough that context feels instant. (350ms was a
+                // third of a second of guaranteed staleness on every cmd-tab.)
+                try? await Task.sleep(nanoseconds: 120_000_000)
                 guard generation == self.appSwitchGeneration else { return }
                 self.captureNow()
             }

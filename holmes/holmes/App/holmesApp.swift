@@ -533,18 +533,30 @@ struct PrivacySettingsView: View {
     // "I see no drawing" / "Accessibility doesn't work" each get a definite answer.
     @State private var isTestingClicky = false
     @State private var clickyTestResult: String?
+    // Probed ONCE, off-main, on appear. checkScreenRecordingPermission blocks on
+    // a semaphore up to 1s — calling it (twice!) inside body froze Settings for
+    // up to 2s on every re-render.
+    @State private var screenRecordingGranted: Bool? = nil
 
     var body: some View {
         Form {
             LabeledContent("Screen Recording") {
                 HStack {
-                    Image(systemName: PermissionManager.checkScreenRecordingPermission() ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundColor(PermissionManager.checkScreenRecordingPermission() ? .green : .red)
+                    Image(systemName: screenRecordingGranted == true ? "checkmark.circle.fill"
+                          : screenRecordingGranted == false ? "xmark.circle.fill" : "hourglass.circle")
+                        .foregroundColor(screenRecordingGranted == true ? .green
+                                         : screenRecordingGranted == false ? .red : .secondary)
 
                     Button("Open Settings") {
                         PermissionManager.openScreenRecordingSettings()
                     }
                 }
+            }
+            .task {
+                let granted = await Task.detached(priority: .userInitiated) {
+                    PermissionManager.checkScreenRecordingPermission()
+                }.value
+                screenRecordingGranted = granted
             }
 
             LabeledContent("Accessibility") {

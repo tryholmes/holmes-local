@@ -110,7 +110,13 @@ final class CalendarEngine {
             meetings.append(meeting)
         }
 
-        upcomingMeetings = meetings.sorted { $0.startDate < $1.startDate }
+        let sorted = meetings.sorted { $0.startDate < $1.startDate }
+        // Only publish on real change — the unconditional 60s reassign was
+        // invalidating MainPanelView every minute even when nothing moved.
+        if sorted.map(\.id) != upcomingMeetings.map(\.id)
+            || sorted.map(\.minutesUntil) != upcomingMeetings.map(\.minutesUntil) {
+            upcomingMeetings = sorted
+        }
 
         // Auto-join trigger: ≤ 2 min away
         for meeting in upcomingMeetings where meeting.minutesUntil <= 2 {

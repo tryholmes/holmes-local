@@ -46,8 +46,13 @@ final class OCREngine {
                 ))
             }
 
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = true
+            // .fast: screen text is large, sharp, and rendered — the accurate
+            // path's 200-1000ms per pass was the context pipeline's single
+            // biggest serial cost, and its extra fidelity buys nothing on
+            // synthetic pixels. Language correction off for the same reason
+            // (it "corrects" code/paths into prose).
+            request.recognitionLevel = .fast
+            request.usesLanguageCorrection = false
             request.recognitionLanguages = ["en-US"]
 
             let handler = VNImageRequestHandler(cgImage: image, options: [:])

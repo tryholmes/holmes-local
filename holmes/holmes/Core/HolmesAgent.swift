@@ -174,12 +174,20 @@ final class HolmesAgent {
         }
 
         // The card says exactly what LiveContext determined — never a paraphrase,
-        // never a model's version of it.
-        currentContext = DetectedContext(icon: Self.icon(for: context),
-                                         description: context.headline,
-                                         appName: context.app)
-        lastUpdated = Date()
-        hasNewContext = true
+        // never a model's version of it. Publish ONLY on real change: the
+        // extension posts on every keystroke, and unconditional reassignment
+        // here invalidated every observing view (panel, side icon, notch)
+        // several times a second while typing in a browser.
+        let newDescription = context.headline
+        if currentContext.description != newDescription || currentContext.appName != context.app {
+            currentContext = DetectedContext(icon: Self.icon(for: context),
+                                             description: newDescription,
+                                             appName: context.app)
+            hasNewContext = true
+        }
+        // Freshness stamp, quantized to 2s — every view reading lastUpdated
+        // re-rendered per keystroke otherwise, for a label that shows seconds.
+        if Date().timeIntervalSince(lastUpdated ?? .distantPast) > 2 { lastUpdated = Date() }
         isAnalyzing = false
 
         // Prompt-building text. `bodyText` is contractually clean (DOM or AX);
@@ -192,8 +200,6 @@ final class HolmesAgent {
                                        ocrText: context.bodyText,
                                        timestamp: context.capturedAt)
         lastSnapshot = snapshot
-
-        suggestedActions = suggestions(for: context, snapshot: snapshot)
 
         // Deterministic opportunity detection reads this, not OCR text.
         TriggerBrain.shared.noteLiveContext(context)
@@ -210,6 +216,12 @@ final class HolmesAgent {
         // fingerprint — it is stable while a draft grows or a video plays.
         let isNewScreen = context.fingerprint != lastAppliedFingerprint
         lastAppliedFingerprint = context.fingerprint
+
+        // Suggested actions depend on the SCREEN, not on each keystroke —
+        // rebuilding them per post was part of the publish storm.
+        if isNewScreen {
+            suggestedActions = suggestions(for: context, snapshot: snapshot)
+        }
 
         // Persist immediately. recordLiveContext drops .inferred contexts and
         // dedupes on the fingerprint, so this is safe to call on every tick; the
@@ -242,6 +254,13 @@ final class HolmesAgent {
     // MARK: - Snapshot path (Accessibility / OCR)
 
     private var isRunningOCR = false
+    /// The newest snapshot that arrived while a previous pass's Vision/AX work
+    /// was still in flight. The old behavior DROPPED it — which turned a
+    /// mid-OCR app switch into a 3-4.5s context delay (nothing retried until
+    /// the next 3s timer tick). Now the latest one is kept and processed the
+    /// moment the current pass finishes. Only the newest matters; an older
+    /// queued snapshot describes a screen the user already left.
+    private var pendingSnapshot: CaptureResult? = nil
     /// Fingerprint of the last context we applied — the "is this actually a
     /// different screen?" gate for logging and dashboard refreshes.
     private var lastAppliedFingerprint = ""
@@ -260,9 +279,20 @@ final class HolmesAgent {
         let windowTitle = result.windowTitle
         // Skip Holmes itself — only analyze other apps
         guard !appName.lowercased().contains("holmes") else { return }
-        guard !isRunningOCR else { return }
+        guard !isRunningOCR else {
+            // Supersede, never drop: stash the newest snapshot and run it as
+            // soon as the in-flight pass completes.
+            pendingSnapshot = result
+            return
+        }
         isRunningOCR = true
-        defer { isRunningOCR = false }
+        defer {
+            isRunningOCR = false
+            if let queued = pendingSnapshot {
+                pendingSnapshot = nil
+                Task { @MainActor in await self.processSnapshot(queued) }
+            }
+        }
 
         // Capture failed entirely (Screen Recording permission stale) — show a clear
         // message instead of freezing on "Analyzing your screen…", and stop early.
