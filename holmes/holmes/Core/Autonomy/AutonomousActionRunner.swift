@@ -147,6 +147,20 @@ final class AutonomousActionRunner {
             return
         }
 
+        // ── PREFLIGHT ───────────────────────────────────────────────────────
+        // Refuse a run that CANNOT succeed before it narrates "On it", consumes
+        // rate budget, or half-executes and dies at step 3 — the honest fix for
+        // "it keeps saying step failed". The refusal is user-visible with the
+        // exact missing thing.
+        if let reason = await preflightFailure(plan: plan) {
+            await recordRunNote(playbookId: playbookId, plan: plan,
+                                summary: "Autonomy run refused — preflight",
+                                detail: reason)
+            postNotification(title: "Holmes can't run this yet", body: String(reason.prefix(140)))
+            print("[Holmes] Autonomy: preflight refusal — \(reason)")
+            return
+        }
+
         // Composio steps need the MCP host up before the router can resolve
         // tools (an unresolvable tool classifies as needs-confirm, fail closed).
         let composioApps = DefaultPlaybooks.all.first(where: { $0.id == playbookId })?.composioApps ?? []
@@ -451,8 +465,89 @@ final class AutonomousActionRunner {
             return "no Anthropic API key configured"
         case .text(let text):
             statusLine = shorten(text, max: 160)
+            // Honest accounting: an API failure or an explicit model-reported
+            // inability used to come back as "success" (the run then notified
+            // "completed" over work that never happened).
+            if text.hasPrefix("Claude API error") || text.hasPrefix("Holmes declined:") {
+                return shorten(text, max: 160)
+            }
             return nil
         }
+    }
+
+    // MARK: - Preflight
+
+    /// The verbs the app lane can actually execute (BackendRouter.runApp).
+    private static let appLaneActions: Set<String> = [
+        "open_app", "open_url", "reveal_file", "move_file", "trash_file",
+        "applescript", "create_folder", "join_meeting", "calendar_create_event",
+        "ax_press", "ax_type"
+    ]
+    private static let appLaneBackends: Set<String> = [
+        "app", "nsworkspace", "workspace", "file", "files", "fs",
+        "finder", "filesystem", "applescript", "eventkit", "calendar", "ax"
+    ]
+    private static let composioBackends: Set<String> = ["composio", "mcp", "api"]
+    private static let mutatingComputerVerbs: Set<String> = [
+        "left_click", "right_click", "middle_click", "double_click",
+        "triple_click", "left_mouse_down", "left_mouse_up", "left_click_drag",
+        "scroll", "key", "hold_key", "type", "mouse_move"
+    ]
+
+    /// One reason this plan cannot succeed, or nil when it may run. Every check
+    /// mirrors a failure the run would otherwise hit MID-EXECUTION.
+    private func preflightFailure(plan: ActionPlan) async -> String? {
+        let segments = Self.segmentize(plan.steps)
+        let hasModelSegment = segments.contains { if case .model = $0 { return true }; return false }
+        var needsComputerControl = hasModelSegment
+        var needsAccessibility = hasModelSegment
+
+        for step in plan.steps {
+            let backend = step.backend.lowercased()
+            if Self.appLaneBackends.contains(backend) {
+                if !Self.appLaneActions.contains(step.action) {
+                    return "the plan uses an action ('\(step.action)') Holmes has no executor for"
+                }
+                if step.action == "ax_press" || step.action == "ax_type" {
+                    needsAccessibility = true
+                }
+                // File preconditions, hoisted: fail at step 0, not step 3.
+                if step.action == "move_file" || step.action == "trash_file" {
+                    let source = (step.input["from"] as? String) ?? (step.input["path"] as? String) ?? ""
+                    if !source.isEmpty {
+                        let expanded = (source as NSString).expandingTildeInPath
+                        if !FileManager.default.fileExists(atPath: expanded) {
+                            return "file not found at \(source)"
+                        }
+                    }
+                }
+            } else if !Self.composioBackends.contains(backend) {
+                // Computer lane (including unknown backends, which route there).
+                needsComputerControl = true
+                if Self.mutatingComputerVerbs.contains(step.action) { needsAccessibility = true }
+                // A planner-supplied coordinate is text-derived fiction mapped
+                // against a nil capture — it fails twice and gets skipped.
+                if Self.pointingVerbs.contains(step.action), step.input["coordinate"] != nil {
+                    return "the plan contains a click at an invented coordinate — replanning is needed"
+                }
+            }
+        }
+
+        if needsComputerControl, !ComputerUseEngine.shared.isEnabled {
+            return "Computer control is off — enable it in Settings ▸ Privacy ▸ Computer control"
+        }
+        if needsAccessibility, !PermissionManager.checkAccessibilityPermission() {
+            return PermissionManager.needsRelaunchForAccessibility()
+                ? "Accessibility was granted but macOS applies it only after a relaunch — click Relaunch Holmes in Settings ▸ Privacy"
+                : "Accessibility permission is missing — System Settings ▸ Privacy & Security ▸ Accessibility"
+        }
+        if hasModelSegment {
+            guard AnthropicConfig.isConfigured else { return "no Anthropic API key is configured" }
+            if await WindowCapture.captureForModel() == nil {
+                return "screen capture isn't working — Screen Recording permission is missing or stale (relaunch Holmes after granting)"
+            }
+        }
+        return nil
     }
 
     // MARK: - Approval cards (the draft flow's ConfirmationBus surface)

@@ -852,7 +852,11 @@ final class ComputerUseEngine {
             str(kAXDescriptionAttribute as String),
             str(kAXRoleDescriptionAttribute as String),
             str(kAXHelpAttribute as String),
-            str(kAXValueAttribute as String),
+            // kAXValueAttribute is deliberately EXCLUDED: for text areas the
+            // value is the user's own CONTENT, so clicking inside a draft that
+            // merely mentioned "send"/"delete" raised a spurious confirm card
+            // (and a decline then failed the whole run). A control's identity
+            // lives in its title/description/role/help — its value is data.
             str("AXIdentifier")
         ].filter { !$0.isEmpty }.joined(separator: " ")
     }
@@ -891,8 +895,13 @@ final class ComputerUseEngine {
     }
 
     private func chordTokens(_ raw: String) -> [String] {
-        raw.lowercased()
-            .split(whereSeparator: { $0 == "+" || $0 == " " || $0 == "-" })
+        let lowered = raw.lowercased()
+        // "-" is only a separator in dash-style chords ("cmd-s"). When the
+        // chord uses "+", a "-" is the MINUS KEY itself — splitting on it
+        // silently dropped the key from "cmd+-" (zoom out) and failed the step.
+        let splitsOnDash = !lowered.contains("+")
+        return lowered
+            .split(whereSeparator: { $0 == "+" || $0 == " " || (splitsOnDash && $0 == "-") })
             .map { $0.replacingOccurrences(of: "_", with: "") }
             .filter { !$0.isEmpty }
     }

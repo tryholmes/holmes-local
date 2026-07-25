@@ -46,6 +46,48 @@ final class CalendarEngine {
         timer = nil
     }
 
+    // MARK: - Create / delete (the autonomy "eventkit" lane's executor)
+    // The planner was TAUGHT an "eventkit" backend, but no executor existed —
+    // every planned calendar step routed to pixels and failed with "Unknown
+    // computer action". This is the real one.
+
+    /// Creates an event in the default calendar. Returns (eventId, nil) on
+    /// success or (nil, reason) on failure.
+    func createEvent(title: String, start: Date, end: Date, notes: String?, location: String?) -> (id: String?, error: String?) {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        guard status == .authorized || status == .fullAccess else {
+            return (nil, "Calendar access is not granted — System Settings ▸ Privacy & Security ▸ Calendars ▸ enable Holmes.")
+        }
+        guard let calendar = store.defaultCalendarForNewEvents else {
+            return (nil, "No default calendar is configured for new events.")
+        }
+        let event = EKEvent(eventStore: store)
+        event.title = title
+        event.startDate = start
+        event.endDate = end
+        event.notes = notes
+        event.location = location
+        event.calendar = calendar
+        do {
+            try store.save(event, span: .thisEvent, commit: true)
+            return (event.eventIdentifier, nil)
+        } catch {
+            return (nil, error.localizedDescription)
+        }
+    }
+
+    /// Removes an event created by createEvent — the undo closure's body.
+    @discardableResult
+    func deleteEvent(id: String) -> Bool {
+        guard let event = store.event(withIdentifier: id) else { return false }
+        do {
+            try store.remove(event, span: .thisEvent, commit: true)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     // MARK: - Permission
 
     func requestAccess() async -> Bool {

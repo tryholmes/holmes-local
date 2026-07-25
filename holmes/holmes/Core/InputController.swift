@@ -156,13 +156,14 @@ enum InputController {
         }
 
         /// Resolve a key name to a hardware virtual keycode: named keys first,
-        /// then single-character letter/digit fallbacks.
+        /// then single-character letter/digit/punctuation fallbacks.
         private static func virtualKeyCode(for name: String) -> Int? {
             let lowercasedName = name.lowercased()
             if let named = namedKeys[lowercasedName] { return named }
             guard lowercasedName.count == 1, let first = lowercasedName.first else { return nil }
             if let letter = letterKeys[first] { return letter }
             if let digit = digitKeys[first] { return digit }
+            if let punctuation = punctuationKeys[first] { return punctuation }
             return nil
         }
 
@@ -190,7 +191,15 @@ enum InputController {
             "shift": 0x38, "cmd": 0x37, "command": 0x37,
             "option": 0x3A, "alt": 0x3A, "opt": 0x3A,
             "ctrl": 0x3B, "control": 0x3B,
-            "fn": 0x3F, "capslock": 0x39
+            "fn": 0x3F, "capslock": 0x39,
+            // Named punctuation — chords like "cmd+," (Settings) or "cmd+-"
+            // (zoom out) previously threw unknownKey and failed the whole step.
+            "comma": 0x2B, "period": 0x2F, "dot": 0x2F, "slash": 0x2C,
+            "semicolon": 0x29, "quote": 0x27, "apostrophe": 0x27,
+            "minus": 0x1B, "dash": 0x1B, "hyphen": 0x1B,
+            "equals": 0x18, "equal": 0x18, "plus": 0x18,
+            "leftbracket": 0x21, "rightbracket": 0x1E,
+            "backslash": 0x2A, "grave": 0x32, "backtick": 0x32, "tilde": 0x32
         ]
 
         private static let letterKeys: [Character: Int] = [
@@ -204,6 +213,13 @@ enum InputController {
         private static let digitKeys: [Character: Int] = [
             "0": 0x1D, "1": 0x12, "2": 0x13, "3": 0x14, "4": 0x15,
             "5": 0x17, "6": 0x16, "7": 0x1A, "8": 0x1C, "9": 0x19
+        ]
+
+        /// ANSI/US punctuation keycodes — the literal characters a chord can
+        /// carry ("cmd+,", "cmd+/", "cmd+[").
+        private static let punctuationKeys: [Character: Int] = [
+            ",": 0x2B, ".": 0x2F, "/": 0x2C, ";": 0x29, "'": 0x27,
+            "-": 0x1B, "=": 0x18, "[": 0x21, "]": 0x1E, "\\": 0x2A, "`": 0x32
         ]
     }
 

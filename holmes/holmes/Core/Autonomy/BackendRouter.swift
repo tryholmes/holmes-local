@@ -105,9 +105,12 @@ enum BackendRouter {
 
     private static func lane(for backend: String) -> Lane {
         switch backend.lowercased() {
-        // Structured native lane: NSWorkspace / FileManager / AppleScript.
+        // Structured native lane: NSWorkspace / FileManager / AppleScript /
+        // EventKit / AX element actions. ("eventkit" was TAUGHT to the planner
+        // but had no lane — every calendar step fell to pixels and failed with
+        // "Unknown computer action". It routes here now.)
         case "app", "nsworkspace", "workspace", "file", "files", "fs",
-             "finder", "filesystem", "applescript":
+             "finder", "filesystem", "applescript", "eventkit", "calendar", "ax":
             return .app
         // API lane: hosted Composio / any configured MCP server.
         case "composio", "mcp", "api":
@@ -145,6 +148,11 @@ enum BackendRouter {
         case .app:
             if step.action == "applescript" {
                 return matchesSendVerb(scriptSource(step.input))
+            }
+            if step.action == "ax_press" {
+                // Pressing a send/submit-class button is the commit itself.
+                let label = (step.input["label"] as? String) ?? (step.input["button"] as? String) ?? ""
+                return matchesSendVerb(label)
             }
             return false
         case .computer:
@@ -270,9 +278,175 @@ enum BackendRouter {
         case "applescript":
             return await doAppleScript(step, userConfirmed: userConfirmed)
 
+        case "create_folder":
+            return doCreateFolder(step.input)
+
+        case "join_meeting":
+            return doJoinMeeting(step.input)
+
+        case "calendar_create_event":
+            return await doCalendarCreateEvent(step.input)
+
+        case "ax_press":
+            return await doAXPress(step, userConfirmed: userConfirmed)
+
+        case "ax_type":
+            return await doAXType(step.input)
+
         default:
-            return StepResult(ok: false, text: "Unknown app action '\(step.action)'. Supported: open_app, open_url, reveal_file, move_file, trash_file, applescript.")
+            return StepResult(ok: false, text: "Unknown app action '\(step.action)'. Supported: open_app, open_url, reveal_file, move_file, trash_file, create_folder, join_meeting, calendar_create_event, ax_press, ax_type, applescript.")
         }
+    }
+
+    /// FileManager.createDirectory — deterministic, idempotent, undoable while
+    /// the folder stays empty.
+    private static func doCreateFolder(_ input: [String: Any]) -> StepResult {
+        guard let url = fileURL(from: input, keys: ["path", "to", "folder"]) else {
+            return StepResult(ok: false, text: "Missing 'path' for create_folder.")
+        }
+        if FileManager.default.fileExists(atPath: url.path) {
+            return StepResult(ok: true, text: "Folder already exists at \(url.path).")
+        }
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            diag("create_folder \(url.path) ok")
+            return StepResult(ok: true, text: "Created folder \(url.path).", undo: {
+                // Undo only removes the folder while it is still empty —
+                // never anything the user has since put inside it.
+                let contents = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+                if contents.isEmpty { try? FileManager.default.removeItem(at: url) }
+            })
+        } catch {
+            return StepResult(ok: false, text: "Failed to create folder: \(error.localizedDescription)")
+        }
+    }
+
+    /// Deterministic meeting join: open the meeting URL (any scheme —
+    /// zoommtg://, msteams://, https://zoom.us/j/…) and let macOS route it.
+    private static func doJoinMeeting(_ input: [String: Any]) -> StepResult {
+        let raw = ((input["url"] as? String) ?? (input["text"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: raw), url.scheme != nil else {
+            return StepResult(ok: false, text: "Missing or malformed meeting 'url'.")
+        }
+        let opened = NSWorkspace.shared.open(url)
+        diag("join_meeting \(url.absoluteString) ok=\(opened)")
+        return StepResult(
+            ok: opened,
+            text: opened
+                ? "Opened the meeting link — joining is reversible, the user can leave."
+                : "Failed to open \(url.absoluteString).")
+    }
+
+    /// The real EventKit executor for calendar_create_event, with a real undo
+    /// (delete the created event).
+    private static func doCalendarCreateEvent(_ input: [String: Any]) async -> StepResult {
+        let title = ((input["title"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else {
+            return StepResult(ok: false, text: "Missing 'title' for calendar_create_event.")
+        }
+        guard let start = parseEventDate(input["start"] ?? input["start_time"] ?? input["startDate"]) else {
+            return StepResult(ok: false, text: "Missing or unparseable 'start' — use ISO-8601, e.g. 2026-07-25T15:00:00.")
+        }
+        let end: Date
+        if let explicitEnd = parseEventDate(input["end"] ?? input["end_time"]) {
+            end = explicitEnd
+        } else {
+            let minutes = (input["duration_minutes"] as? Int)
+                ?? Int((input["duration_minutes"] as? Double) ?? 30)
+            end = start.addingTimeInterval(TimeInterval(max(5, minutes)) * 60)
+        }
+        let notes = input["notes"] as? String
+        let location = input["location"] as? String
+        let outcome = await MainActor.run {
+            CalendarEngine.shared.createEvent(title: title, start: start, end: end, notes: notes, location: location)
+        }
+        if let id = outcome.id {
+            diag("calendar_create_event '\(title)' ok id=\(id)")
+            return StepResult(ok: true, text: "Created calendar event “\(title)”.", undo: {
+                await MainActor.run { _ = CalendarEngine.shared.deleteEvent(id: id) }
+            })
+        }
+        return StepResult(ok: false, text: "Calendar event failed: \(outcome.error ?? "unknown error")")
+    }
+
+    /// ISO-8601 (with/without fractional seconds) or "yyyy-MM-dd HH:mm".
+    private static func parseEventDate(_ raw: Any?) -> Date? {
+        guard let string = (raw as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !string.isEmpty else { return nil }
+        let iso = ISO8601DateFormatter()
+        if let date = iso.date(from: string) { return date }
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: string) { return date }
+        // Local-time forms the model commonly emits without a zone.
+        for format in ["yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd HH:mm", "yyyy-MM-dd'T'HH:mm"] {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = .current
+            formatter.dateFormat = format
+            if let date = formatter.date(from: string) { return date }
+        }
+        return nil
+    }
+
+    /// AX press: the deterministic "click the button named X" — no pixels, no
+    /// coordinates, works regardless of window position. Send-class labels
+    /// hold for one confirm.
+    private static func doAXPress(_ step: PlannedStep, userConfirmed: Bool) async -> StepResult {
+        let input = step.input
+        let label = ((input["label"] as? String) ?? (input["button"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let appName = ((input["app"] as? String) ?? (input["name"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !label.isEmpty, !appName.isEmpty else {
+            return StepResult(ok: false, text: "ax_press needs {\"app\":\"AppName\",\"label\":\"Button title\"}.")
+        }
+        if matchesSendVerb(label), !userConfirmed {
+            return needsConfirm(step, "pressing “\(label)” looks like a send/submit-class action")
+        }
+        return await MainActor.run {
+            guard let app = runningApp(named: appName) else {
+                return StepResult(ok: false, text: "App '\(appName)' is not running.")
+            }
+            let ok = ActionExecutor.shared.clickButton(label: label, in: app)
+            diag("ax_press '\(label)' in \(appName) ok=\(ok)")
+            return StepResult(
+                ok: ok,
+                text: ok ? "Pressed “\(label)” in \(appName)."
+                         : "No accessible button labeled “\(label)” in \(appName) — a visible click may be needed instead.")
+        }
+    }
+
+    /// AX type: set the field's value through Accessibility — atomic and
+    /// un-droppable, unlike blind CGEvent typing into whatever has focus.
+    private static func doAXType(_ input: [String: Any]) async -> StepResult {
+        let text = (input["text"] as? String) ?? ""
+        let appName = ((input["app"] as? String) ?? (input["name"] as? String) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !appName.isEmpty else {
+            return StepResult(ok: false, text: "ax_type needs {\"app\":\"AppName\",\"text\":\"…\"} (optional \"fieldHint\").")
+        }
+        let fieldHint = (input["fieldHint"] as? String) ?? (input["field"] as? String)
+        return await MainActor.run {
+            guard let app = runningApp(named: appName) else {
+                return StepResult(ok: false, text: "App '\(appName)' is not running.")
+            }
+            let ok = ActionExecutor.shared.focusAndType(in: app, fieldHint: fieldHint, text: text)
+            diag("ax_type into \(appName) ok=\(ok)")
+            return StepResult(
+                ok: ok,
+                text: ok ? "Typed into \(appName) via Accessibility."
+                         : "Couldn't find a writable field in \(appName)\(fieldHint.map { " matching “\($0)”" } ?? "").")
+        }
+    }
+
+    /// Frontmost-name match, exact first then contains.
+    @MainActor
+    private static func runningApp(named name: String) -> NSRunningApplication? {
+        let lowered = name.lowercased()
+        let apps = NSWorkspace.shared.runningApplications
+        return apps.first { ($0.localizedName ?? "").lowercased() == lowered }
+            ?? apps.first { ($0.localizedName ?? "").lowercased().contains(lowered) }
     }
 
     private static func doOpenURL(_ input: [String: Any]) -> StepResult {
@@ -281,10 +455,13 @@ enum BackendRouter {
               url.scheme != nil else {
             return StepResult(ok: false, text: "Missing or malformed 'url'.")
         }
-        // Only web/mail-compose-class schemes; file: goes through reveal_file so a
+        // Web/mail schemes plus the meeting-app deep links (zoom://, msteams://…)
+        // that a join legitimately needs; file: goes through reveal_file so a
         // plan can't smuggle an arbitrary local open through the URL lane.
-        guard ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") else {
-            return StepResult(ok: false, text: "Only http(s)/mailto URLs are supported here. Use reveal_file for local paths.")
+        let allowedSchemes = ["http", "https", "mailto",
+                              "zoommtg", "zoomus", "msteams", "slack", "webex", "facetime"]
+        guard allowedSchemes.contains(url.scheme?.lowercased() ?? "") else {
+            return StepResult(ok: false, text: "URL scheme '\(url.scheme ?? "")' isn't allowed here. Use reveal_file for local paths.")
         }
         let opened = NSWorkspace.shared.open(url)
         diag("open_url \(url.absoluteString) ok=\(opened)")
