@@ -228,7 +228,7 @@ final class ClickyController {
         // Acknowledge immediately, but don't block the task on the ack — let "On it."
         // play WHILE the agent gets to work. The closing line supersedes it cleanly.
         if speakAnswersEnabled {
-            Task { @MainActor in await SpeechSynthesizer.shared.speak("On it.") }
+            Task { @MainActor in SpeechSynthesizer.shared.enqueue("On it.", priority: .status) }
         }
 
         let result = await HolmesBrain.shared.run(goal: goal, narrateAloud: false) { _ in

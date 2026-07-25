@@ -619,15 +619,10 @@ final class PlaybookEngine {
             onCompletion?(false)
             return
         }
-        // Don't cut off an explanation already in progress. If Holmes is still
-        // speaking a previous answer, skip this fire — returning "not done" so the
-        // playbook re-evaluates on a later tick once the current explanation has
-        // finished, instead of a second teach talking over the first mid-sentence.
-        if SpeechSynthesizer.shared.isSpeaking {
-            ScreenGlowController.shared.set(state: .off)
-            onCompletion?(false)
-            return
-        }
+        // (No isSpeaking pre-check: the speech queue serializes utterances
+        // atomically, so a new explanation waits its turn instead of cutting
+        // off — and the old checked-then-awaited-Claude guard was a TOCTOU
+        // hole that also starved teach fires during any narration.)
         // Consume the hourly autonomy budget for this fire (mayAct already cleared
         // it); the action path's budget is consumed inside the runner instead.
         AutonomyGate.recordAct(playbookId: playbook.id)

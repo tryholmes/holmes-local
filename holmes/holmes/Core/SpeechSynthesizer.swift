@@ -96,6 +96,10 @@ enum ElevenLabsConfig {
         return defaultVoiceID
     }
 
+    /// Fired after a key/voice write so SpeechSynthesizer can refresh its
+    /// cached credentials (it no longer does 2 Keychain IPC reads per speak).
+    static var onCredentialsChanged: (() -> Void)?
+
     static func setAPIKey(_ key: String) {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
@@ -103,6 +107,7 @@ enum ElevenLabsConfig {
         } else {
             KeychainManager.save(trimmed, service: keychainService, account: apiKeyAccount)
         }
+        onCredentialsChanged?()
     }
 
     static func setVoiceID(_ id: String) {
@@ -113,7 +118,19 @@ enum ElevenLabsConfig {
         } else {
             KeychainManager.save(trimmed, service: keychainService, account: voiceIDAccount)
         }
+        onCredentialsChanged?()
     }
+}
+
+/// How a line of speech competes for the voice.
+///   .utterance — an ANSWER the user asked for (teach explanations, ask
+///                replies). Never auto-cancelled; queues in order.
+///   .status    — run narration ("On it", "Opening Finder…"). A new status
+///                REPLACES any queued-but-unstarted statuses (only the latest
+///                matters) and NEVER cuts audio that is already playing.
+enum SpeechPriority {
+    case utterance
+    case status
 }
 
 // MARK: - SpeechSynthesizer
@@ -146,8 +163,8 @@ final class SpeechSynthesizer {
 
     // MARK: Private state
 
-    /// Monotonic token. Each `speak` captures the value at start; `stop`
-    /// (or a newer `speak`) bumps it, which supersedes any in-flight loop
+    /// Monotonic token. Each utterance captures the value at start; `cancelAll`
+    /// (or the next utterance) bumps it, which supersedes any in-flight loop
     /// without needing to thread a cancellation token through every await.
     private var activeGeneration: Int = 0
 
@@ -158,6 +175,30 @@ final class SpeechSynthesizer {
     private let appleSynth = AVSpeechSynthesizer()
     private var speechContinuation: CheckedContinuation<Void, Never>?
     private let utteranceDelegate = UtteranceDelegate()
+
+    /// In-flight ElevenLabs fetches for the CURRENT utterance — cancelled on
+    /// cancelAll() so a superseded speak can't park its caller for up to 30s
+    /// on an orphan download (and can't waste API spend).
+    private var inflightFetches: [Task<Data?, Never>] = []
+
+    /// Credentials cached at init and refreshed on change — the old code did
+    /// two synchronous Keychain IPC reads on the main actor per utterance.
+    private var cachedAPIKey: String?
+    private var cachedVoiceID: String = ElevenLabsConfig.defaultVoiceID
+
+    // MARK: The speech queue
+    // FIFO with two priorities (see SpeechPriority). The queue is what fixes
+    // "the voice messes itself up": the old speak() began by killing whatever
+    // was playing — every two lines within a few seconds truncated each other.
+
+    private struct PendingSpeech {
+        let text: String
+        let priority: SpeechPriority
+        var continuations: [CheckedContinuation<Void, Never>] = []
+    }
+
+    private var queue: [PendingSpeech] = []
+    private var isPumping = false
 
     /// Dedicated URLSession so TTS requests don't share timeouts with the
     /// Claude client.
@@ -171,38 +212,94 @@ final class SpeechSynthesizer {
 
     private init() {
         appleSynth.delegate = utteranceDelegate
+        reloadCredentials()
+        ElevenLabsConfig.onCredentialsChanged = { [weak self] in
+            Task { @MainActor in self?.reloadCredentials() }
+        }
+    }
+
+    private func reloadCredentials() {
+        cachedAPIKey = ElevenLabsConfig.apiKey
+        cachedVoiceID = ElevenLabsConfig.voiceID
     }
 
     // MARK: - Public API
 
-    /// Speaks `text` out loud, picking the backend automatically. Any
-    /// currently-playing utterance is stopped first. Returns when playback
-    /// finishes (or is superseded / stopped).
+    /// Fire-and-forget speech. `.status` lines coalesce (a newer status
+    /// replaces queued-unstarted ones) and never interrupt playing audio;
+    /// `.utterance` lines queue in order and are never auto-cancelled.
+    func enqueue(_ text: String, priority: SpeechPriority = .status) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        if priority == .status {
+            for item in queue where item.priority == .status {
+                item.continuations.forEach { $0.resume() }
+            }
+            queue.removeAll { $0.priority == .status }
+        }
+        queue.append(PendingSpeech(text: trimmed, priority: priority))
+        pump()
+    }
+
+    /// Speaks `text` and returns when ITS playback finishes (or the queue is
+    /// cancelled). Queues at `.utterance` priority — it no longer cuts off
+    /// whatever is currently playing.
     func speak(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        // Supersede anything currently playing.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            queue.append(PendingSpeech(text: trimmed, priority: .utterance, continuations: [continuation]))
+            pump()
+        }
+    }
+
+    /// USER-INTENT cancel (push-to-talk key-down, kill switch): drops the
+    /// whole queue and stops audio immediately. Nothing else may cut speech.
+    func cancelAll() {
+        activeGeneration &+= 1
+        for item in queue { item.continuations.forEach { $0.resume() } }
+        queue.removeAll()
         stopInternal()
+        isSpeaking = false
+        activeBackend = .none
+    }
+
+    /// Back-compat alias — existing callers say stop().
+    func stop() { cancelAll() }
+
+    /// Drains the queue one item at a time. Single pump task; re-entrancy
+    /// guarded by `isPumping`.
+    private func pump() {
+        guard !isPumping else { return }
+        isPumping = true
+        isSpeaking = true
+        Task { @MainActor in
+            while !queue.isEmpty {
+                let item = queue.removeFirst()
+                await speakNow(item.text)
+                item.continuations.forEach { $0.resume() }
+            }
+            isPumping = false
+            isSpeaking = false
+            activeBackend = .none
+        }
+    }
+
+    /// Speaks one queue item to completion. Called only from the pump, so it
+    /// never races another utterance.
+    private func speakNow(_ text: String) async {
         activeGeneration &+= 1
         let generation = activeGeneration
-        isSpeaking = true
         activeBackend = .none
         lastError = nil
 
-        defer {
-            // Only clear the flag if we still own the latest generation.
-            // A newer speak()/stop() already set the correct state.
-            if generation == activeGeneration {
-                isSpeaking = false
-            }
-        }
-
-        if let apiKey = ElevenLabsConfig.apiKey {
+        if let apiKey = cachedAPIKey {
             let spokeSomething = await speakWithElevenLabs(
-                trimmed,
+                text,
                 apiKey: apiKey,
-                voiceID: ElevenLabsConfig.voiceID,
+                voiceID: cachedVoiceID,
                 generation: generation
             )
             // If ElevenLabs is configured but produced no audio at all
@@ -210,19 +307,11 @@ final class SpeechSynthesizer {
             // Apple for the whole utterance — never mid-utterance, to
             // avoid two different voices in one answer.
             if !spokeSomething, generation == activeGeneration {
-                await speakWithApple(trimmed, generation: generation)
+                await speakWithApple(text, generation: generation)
             }
         } else {
-            await speakWithApple(trimmed, generation: generation)
+            await speakWithApple(text, generation: generation)
         }
-    }
-
-    /// Stops any in-flight fetch/playback immediately and quietly.
-    func stop() {
-        activeGeneration &+= 1
-        stopInternal()
-        isSpeaking = false
-        activeBackend = .none
     }
 
     // MARK: - ElevenLabs backend
@@ -241,10 +330,11 @@ final class SpeechSynthesizer {
 
         activeBackend = .elevenLabs
         var playedAny = false
+        inflightFetches.removeAll()
 
         // Kick off the first fetch immediately.
         var pendingFetch: Task<Data?, Never>? = fetchTask(
-            chunks[0], apiKey: apiKey, voiceID: voiceID
+            chunks[0], apiKey: apiKey, voiceID: voiceID, generation: generation
         )
 
         for index in chunks.indices {
@@ -255,7 +345,7 @@ final class SpeechSynthesizer {
             // Prefetch the next chunk while the current one plays.
             if index + 1 < chunks.count {
                 pendingFetch = fetchTask(
-                    chunks[index + 1], apiKey: apiKey, voiceID: voiceID
+                    chunks[index + 1], apiKey: apiKey, voiceID: voiceID, generation: generation
                 )
             } else {
                 pendingFetch = nil
@@ -291,20 +381,28 @@ final class SpeechSynthesizer {
     private func fetchTask(
         _ text: String,
         apiKey: String,
-        voiceID: String
+        voiceID: String,
+        generation: Int
     ) -> Task<Data?, Never> {
-        Task { await self.fetchElevenLabsMP3(text, apiKey: apiKey, voiceID: voiceID) }
+        let task = Task { await self.fetchElevenLabsMP3(text, apiKey: apiKey, voiceID: voiceID, generation: generation) }
+        inflightFetches.append(task)
+        return task
     }
 
     /// POSTs one chunk to ElevenLabs and returns the MP3 bytes, or nil on
-    /// any failure (the caller degrades quietly).
+    /// any failure (the caller degrades quietly). `generation` gates the
+    /// lastError writes — a superseded fetch's failure must not clobber the
+    /// state of the utterance that replaced it.
     private func fetchElevenLabsMP3(
         _ text: String,
         apiKey: String,
-        voiceID: String
+        voiceID: String,
+        generation: Int
     ) async -> Data? {
         guard let url = URL(string: "https://api.elevenlabs.io/v1/text-to-speech/\(voiceID)") else {
-            lastError = "Invalid ElevenLabs voice id \u{201C}\(voiceID)\u{201D}."
+            if generation == activeGeneration {
+                lastError = "Invalid ElevenLabs voice id \u{201C}\(voiceID)\u{201D}."
+            }
             ttsLog.error("Invalid voice id, cannot build URL: \(voiceID, privacy: .public)")
             return nil
         }
@@ -328,7 +426,7 @@ final class SpeechSynthesizer {
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
-                lastError = "ElevenLabs returned no HTTP response."
+                if generation == activeGeneration { lastError = "ElevenLabs returned no HTTP response." }
                 ttsLog.error("ElevenLabs returned a non-HTTP response.")
                 return nil
             }
@@ -340,20 +438,31 @@ final class SpeechSynthesizer {
                 // dropping to the Apple voice.
                 let snippet = String(data: data.prefix(400), encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines) ?? "<binary body>"
-                lastError = "ElevenLabs HTTP \(http.statusCode): \(snippet)"
+                if generation == activeGeneration {
+                    lastError = "ElevenLabs HTTP \(http.statusCode): \(snippet)"
+                }
                 ttsLog.error("ElevenLabs TTS HTTP \(http.statusCode, privacy: .public): \(snippet, privacy: .public)")
                 return nil
             }
             guard !data.isEmpty else {
-                lastError = "ElevenLabs returned an empty audio body (HTTP \(http.statusCode))."
+                if generation == activeGeneration {
+                    lastError = "ElevenLabs returned an empty audio body (HTTP \(http.statusCode))."
+                }
                 ttsLog.error("ElevenLabs TTS empty body, HTTP \(http.statusCode, privacy: .public).")
                 return nil
             }
             // Success — retire any earlier failure so the UI reflects reality.
-            lastError = nil
+            if generation == activeGeneration { lastError = nil }
             return data
+        } catch is CancellationError {
+            // cancelAll() cancelled the fetch — silence, not an error.
+            return nil
+        } catch let error as URLError where error.code == .cancelled {
+            return nil
         } catch {
-            lastError = "ElevenLabs request failed: \(error.localizedDescription)"
+            if generation == activeGeneration {
+                lastError = "ElevenLabs request failed: \(error.localizedDescription)"
+            }
             ttsLog.error("ElevenLabs TTS request error: \(error.localizedDescription, privacy: .public)")
             return nil
         }
@@ -384,20 +493,28 @@ final class SpeechSynthesizer {
             currentPlayer = player
             playbackContinuation = continuation
 
+            // Tag the callback with THIS chunk's generation. A stale delegate
+            // event (the natural finish of an old chunk arriving after a new
+            // utterance stored its continuation) used to resume the NEW
+            // utterance's continuation early — chunks skipped, isSpeaking
+            // false while audio still played. Now stale callbacks are ignored.
             playbackDelegate.onFinish = { [weak self] in
-                Task { @MainActor in self?.finishPlaybackChunk() }
+                Task { @MainActor in self?.finishPlaybackChunk(generation: generation) }
             }
 
             if !player.play() {
                 // Engine refused to start — don't hang the loop.
-                finishPlaybackChunk()
+                finishPlaybackChunk(generation: generation)
             }
         }
     }
 
-    /// Resolves the current chunk's continuation exactly once and clears
-    /// the player. Safe to call from both natural completion and stop().
-    private func finishPlaybackChunk() {
+    /// Resolves the current chunk's continuation exactly once and clears the
+    /// player. `generation` nil = forced teardown (cancelAll); a non-nil
+    /// generation that doesn't match the active one is a stale delegate
+    /// callback and is dropped.
+    private func finishPlaybackChunk(generation: Int? = nil) {
+        if let generation, generation != activeGeneration { return }
         currentPlayer = nil
         if let continuation = playbackContinuation {
             playbackContinuation = nil
@@ -428,13 +545,16 @@ final class SpeechSynthesizer {
 
             speechContinuation = continuation
             utteranceDelegate.onFinish = { [weak self] in
-                Task { @MainActor in self?.finishAppleUtterance() }
+                Task { @MainActor in self?.finishAppleUtterance(generation: generation) }
             }
             appleSynth.speak(utterance)
         }
     }
 
-    private func finishAppleUtterance() {
+    /// Same stale-callback discipline as finishPlaybackChunk: nil = forced
+    /// teardown, mismatched generation = stale didFinish/didCancel, dropped.
+    private func finishAppleUtterance(generation: Int? = nil) {
+        if let generation, generation != activeGeneration { return }
         if let continuation = speechContinuation {
             speechContinuation = nil
             continuation.resume()
@@ -460,6 +580,11 @@ final class SpeechSynthesizer {
     // MARK: - Teardown
 
     private func stopInternal() {
+        // Cancel in-flight downloads — a superseded utterance must not park
+        // its caller on a 30s orphan fetch, or bill for audio never played.
+        for task in inflightFetches { task.cancel() }
+        inflightFetches.removeAll()
+
         currentPlayer?.stop()
         finishPlaybackChunk()
 
@@ -497,10 +622,18 @@ final class SpeechSynthesizer {
         if sentences.isEmpty { sentences = [trimmed] }
 
         // 2. Group sentences up to the soft cap; hard-split runaway sentences.
+        //    The FIRST chunk uses a much smaller cap (one short sentence-ish
+        //    piece): time-to-first-audio is the whole perceived latency, and
+        //    ElevenLabs must synthesize + download an entire chunk before
+        //    playback starts — a 240-char first chunk was the "voice is laggy"
+        //    start delay.
+        let firstCap = 100
         let softCap = 240
         let hardCap = softCap * 2
         var chunks: [String] = []
         var buffer = ""
+
+        func currentCap() -> Int { chunks.isEmpty ? firstCap : softCap }
 
         func flushBuffer() {
             let value = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -521,7 +654,10 @@ final class SpeechSynthesizer {
 
             if buffer.isEmpty {
                 buffer = sentence
-            } else if buffer.count + 1 + sentence.count <= softCap {
+                // A long opening sentence still flushes alone so the first
+                // request stays as small as its sentence allows.
+                if chunks.isEmpty, buffer.count >= firstCap { flushBuffer() }
+            } else if buffer.count + 1 + sentence.count <= currentCap() {
                 buffer += " " + sentence
             } else {
                 flushBuffer()

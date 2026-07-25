@@ -637,7 +637,10 @@ final class AutonomousActionRunner {
         guard ClickyController.shared.narrateActionsEnabled else { return }
         let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        Task { @MainActor in await SpeechSynthesizer.shared.speak(text) }
+        // .status: run narration coalesces (only the latest queued line
+        // matters) and never cuts audio mid-word — fast step sequences used to
+        // truncate every line at the mouth of the last-wins synthesizer.
+        SpeechSynthesizer.shared.enqueue(text, priority: .status)
     }
 
     /// The one-line narration for a step about to run. Uses the step's own summary

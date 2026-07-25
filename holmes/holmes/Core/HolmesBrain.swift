@@ -61,9 +61,9 @@ final class HolmesBrain {
 
         let narrates = narrateAloud && ClickyController.shared.narrateActionsEnabled
         if narrates {
-            // Fire-and-forget so speaking never delays the run; it plays while the
-            // agent gets to work and is superseded cleanly by the closing line.
-            Task { @MainActor in await SpeechSynthesizer.shared.speak("On it.") }
+            // Status line: queues without cutting anything, and a fast run's
+            // closing line no longer clips it mid-word (statuses coalesce).
+            Task { @MainActor in SpeechSynthesizer.shared.enqueue("On it.", priority: .status) }
         }
 
         await MCPClient.shared.startAll() // no-op if already started
@@ -108,8 +108,10 @@ final class HolmesBrain {
             }
             if narrates {
                 // Speak the closing result (a short summary, not the whole log).
+                // .utterance: the result is an ANSWER — it queues after any
+                // playing audio instead of cutting it off.
                 let spoken = String(text.prefix(220))
-                Task { @MainActor in await SpeechSynthesizer.shared.speak(spoken) }
+                Task { @MainActor in SpeechSynthesizer.shared.enqueue(spoken, priority: .utterance) }
             }
             return .text(text)
         } catch let AnthropicClient.AgentError.refused(msg) {
