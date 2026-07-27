@@ -4,7 +4,7 @@ import Foundation
 // Turns a detected context + playbook goal into a concrete, ordered ActionPlan.
 //
 // This is the PLANNING half of Holmes's autonomy loop — it never executes
-// anything. It asks claude-opus-4-8 (via AnthropicClient.complete) for a short
+// anything. It asks claude-opus-5 (via AnthropicClient.complete) for a short
 // list of steps, each tagged with the backend that should carry it out and an
 // honest reversibility bit. Execution, the global "Autonomous actions" master
 // switch, the per-playbook level picker, and the irreversible-confirm gate
@@ -82,7 +82,7 @@ enum ActionPlanner {
     /// so one giant page can't crowd out the goal/instructions.
     private static let screenTextCap = 4000
 
-    /// Asks claude-opus-4-8 to produce an ordered plan for accomplishing the
+    /// Asks claude-opus-5 to produce an ordered plan for accomplishing the
     /// playbook's goal given the current context + recent memory. Returns nil
     /// on any failure (not configured, transport, refusal, unparseable or
     /// empty plan) — callers treat nil as "don't act".

@@ -706,7 +706,7 @@ struct PrivacySettingsView: View {
 
             Divider()
 
-            Text("Screen context stays on this Mac. Text you act on — a command you run, a reply Holmes drafts, the goal behind the current screen — is sent to Anthropic's API (claude-opus-4-8) to produce that result, and only then.")
+            Text("Screen context stays on this Mac. Text you act on — a command you run, a reply Holmes drafts, the goal behind the current screen — is sent to Anthropic's API (claude-opus-5) to produce that result, and only then.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

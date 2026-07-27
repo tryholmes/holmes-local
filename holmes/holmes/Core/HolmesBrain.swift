@@ -8,7 +8,7 @@ import AppKit
 // Side-effecting tool calls are gated through the existing ConfirmationBus approval
 // card, so nothing runs without the user's OK. Read-only tools run automatically.
 //
-// There is exactly one model in Holmes: Claude (claude-opus-4-8) through
+// There is exactly one model in Holmes: Claude (claude-opus-5) through
 // AnthropicClient. Perception is model-free — LiveContext's headline is computed
 // deterministically from structured data — so everything the model does here is
 // action, not description.
@@ -29,7 +29,7 @@ final class HolmesBrain {
     }
 
     /// Folds Claude + MCP status into the model label shown in the Main Panel,
-    /// e.g. "Claude (claude-opus-4-8) · MCP: 12 tools". There is no local
+    /// e.g. "Claude (claude-opus-5) · MCP: 12 tools". There is no local
     /// backend to report — without an API key Holmes says so plainly rather than
     /// implying a degraded model is standing in.
     func updateBackendLabel() {
@@ -74,11 +74,17 @@ final class HolmesBrain {
         WindowCapture.resolveForCurrentRun()
         ComputerUseEngine.shared.beginRun()
         let tools = builtinTools + MCPClient.shared.anthropicTools()
-        let system = await buildSystemPrompt()
+        // Split the system prompt: the stable guidelines (and the tool definitions
+        // rendered ahead of them) become a cacheable prefix, while the per-turn
+        // screen context rides after the cache breakpoint. A long computer session
+        // re-sends this prefix on every single turn, so this is where it pays off.
+        let system = stableSystemPrompt
+        let systemContext = await screenContextPreamble()
 
         do {
             let outcome = try await AnthropicClient.shared.runAgent(
                 system: system,
+                systemContext: systemContext,
                 userText: goal,
                 tools: tools,
                 // A real multi-step computer session needs headroom beyond the
@@ -457,8 +463,12 @@ final class HolmesBrain {
         """
     }
 
-    private func buildSystemPrompt() async -> String {
-        await screenContextPreamble() + "\n\n" + """
+    /// The STABLE half of the system prompt: byte-identical on every turn of every
+    /// run. That is exactly what makes it — and the tool definitions rendered
+    /// ahead of it — cacheable, so anything screen-, time-, or session-dependent
+    /// must stay OUT of here and live in `screenContextPreamble()` instead.
+    private var stableSystemPrompt: String {
+        """
         Guidelines:
         - Call read_screen first if you need fresh, fuller screen content before acting.
         - Use the most specific tool available. MCP tools (named "<server>__<tool>") often do a \
@@ -487,6 +497,12 @@ final class HolmesBrain {
         before the next step. Never click a coordinate you have not seen in a recent screenshot \
         (open_app is the exception — it needs no coordinates, and after it you screenshot to see \
         the app's window).
+        - When a target is small or you are unsure what a control says, call `zoom_screen` on that \
+        region and LOOK before you click. Reading the pixels beats guessing from a wide shot, and \
+        it is the cheapest way to avoid a misclick. Zoom is read-only and does NOT move the \
+        coordinate space: keep using coordinates from the full `screenshot`, never from the \
+        zoomed image. Use it to verify your own work too — after an action, zoom the area that \
+        should have changed and confirm it actually did.
         - Prefer `browser_control` for anything inside a web page — it reads the real DOM and is \
         safer and more reliable than clicking pixels. Reserve `computer` for NATIVE-app UI that no \
         other tool can reach.
@@ -496,6 +512,13 @@ final class HolmesBrain {
         "User declined", stop and explain. If computer control is off, say so and suggest the user \
         enable it in Settings ▸ Privacy ▸ Computer control.
         """
+    }
+
+    /// Full system prompt as ONE string (volatile screen context first, then the
+    /// stable guidelines) for callers that don't split it. The agent loop does
+    /// split it — see `run(goal:)` — so the stable half can be cached.
+    private func buildSystemPrompt() async -> String {
+        await screenContextPreamble() + "\n\n" + stableSystemPrompt
     }
 
     // MARK: - Built-in tools
@@ -548,6 +571,21 @@ final class HolmesBrain {
                                     "timeout_ms": ["type": "integer", "description": "For wait_for_selector: how long to wait, in milliseconds."]
                                 ],
                                 "required": ["action"]]),
+            // Look closer before acting. Pixel-level clicking fails most often on
+            // small or ambiguous targets, and the cheapest fix is to let the model
+            // actually READ them at full resolution instead of inferring from a
+            // downscaled wide shot. Read-only, and it never moves the coordinate
+            // space the model clicks in.
+            .init(name: "zoom_screen",
+                  description: "Magnify a region of the screen so you can READ it: small text, an ambiguous icon, a control you are about to click, or the spot you just changed (to verify it changed). Coordinates are in the same pixel space as the last `screenshot`, top-left origin. Read-only — it moves nothing and does NOT change the coordinate space, so keep clicking with coordinates taken from the full screenshot.",
+                  inputSchema: ["type": "object",
+                                "properties": [
+                                    "x": ["type": "integer", "description": "Left edge of the region, in screenshot pixels."],
+                                    "y": ["type": "integer", "description": "Top edge of the region, in screenshot pixels."],
+                                    "width": ["type": "integer", "description": "Region width in screenshot pixels. Keep it tight — a few hundred pixels reads far better than half the screen."],
+                                    "height": ["type": "integer", "description": "Region height in screenshot pixels."]
+                                ],
+                                "required": ["x", "y", "width", "height"]]),
             // Native Anthropic computer tool (pixel-level mouse/keyboard control of
             // the whole Mac). Built via rawAPIDict because a native server tool has
             // no input_schema — it is sent verbatim. display_*_px MUST equal the
@@ -569,6 +607,7 @@ final class HolmesBrain {
     private func runTool(name: String, input: [String: Any]) async -> AnthropicClient.ToolResult {
         switch name {
         case "read_screen":   return readScreen()
+        case "zoom_screen":   return await zoomScreen(input)
         case "recall_memory": return await recallMemory(input)
         case "type_text":     return await typeText(input)
         case "send_message":  return await sendMessage(input)
@@ -578,6 +617,36 @@ final class HolmesBrain {
         case "computer":      return await computerUse(input)
         default:              return await callMCP(name: name, input: input)
         }
+    }
+
+    /// Magnifies one region of the current screen so the model can READ it before
+    /// (or after) acting. Returns the crop as an image block. Deliberately leaves
+    /// the run's capture state alone — the model keeps clicking in full-screenshot
+    /// coordinates, which is the invariant that makes zooming safe.
+    private func zoomScreen(_ input: [String: Any]) async -> AnthropicClient.ToolResult {
+        func intValue(_ any: Any?) -> Int? {
+            if let i = any as? Int { return i }
+            if let d = any as? Double { return Int(d) }
+            if let s = any as? String { return Int(s) }
+            return nil
+        }
+        guard let x = intValue(input["x"]), let y = intValue(input["y"]),
+              let width = intValue(input["width"]), let height = intValue(input["height"]),
+              width > 0, height > 0
+        else {
+            return AnthropicClient.ToolResult(
+                "zoom_screen needs x, y, width and height, in the pixel space of the last screenshot.",
+                isError: true)
+        }
+        guard let region = await WindowCapture.captureRegionBase64(x: x, y: y, width: width, height: height)
+        else {
+            return AnthropicClient.ToolResult(
+                "Couldn't capture that region. Take a screenshot first, and keep the region inside the frame.",
+                isError: true)
+        }
+        return AnthropicClient.ToolResult(
+            "Zoomed view of the region at (\(x), \(y)), \(width)×\(height) in the screenshot's pixel space, magnified to \(region.w)×\(region.h). READ this — do not take click coordinates from it; those still come from the full screenshot.",
+            imageBase64: region.base64)
     }
 
     private func readScreen() -> AnthropicClient.ToolResult {

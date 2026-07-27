@@ -104,7 +104,7 @@ struct ScreenReading {
 // MARK: - VisionEncoder
 
 /// Screenshot → base64 JPEG, for the rare tick where text falls short and the
-/// pixels have to go to Claude (Opus 4.8 is a vision model). Non-isolated on
+/// pixels have to go to Claude (Opus 5 is a vision model). Non-isolated on
 /// purpose: the downscale + encode is tens of milliseconds and must run off the
 /// main actor, so callers hop to a background queue and call this there.
 enum VisionEncoder {

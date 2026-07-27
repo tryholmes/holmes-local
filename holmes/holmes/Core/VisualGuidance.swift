@@ -11,7 +11,7 @@ import Foundation
 
 // MARK: - VisualGuidance
 
-/// Captures the screen, asks Opus 4.8 to answer the user's spoken question about
+/// Captures the screen, asks Opus 5 to answer the user's spoken question about
 /// what's on screen, and — when pointing at specific UI would help — to return
 /// annotations in the DECLARED SCREENSHOT-PIXEL space (top-left origin). The caller
 /// speaks `Result.spokenAnswer` (TTS) and hands `Result.annotations` +

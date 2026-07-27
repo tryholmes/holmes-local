@@ -62,25 +62,33 @@ enum WindowCapture {
     /// display_height_px) so the tool declaration and the screenshots agree. They
     /// are (re)resolved from the captured display's aspect ratio by
     /// `resolveForCurrentRun()` and by every `captureForModel()`.
-    private(set) static var declaredWidth: Int = 1280
-    private(set) static var declaredHeight: Int = 800
+    private(set) static var declaredWidth: Int = 1920
+    private(set) static var declaredHeight: Int = 1200
 
-    /// Anthropic-recommended Computer Use resolutions, paired with their aspect
-    /// ratios (OpenClicky ElementLocationDetector.swift:33-37). Intentionally small:
-    /// the API downsamples larger frames, which degrades coordinate precision.
-    /// We pick the one whose aspect is closest to the display to avoid stretching
-    /// the image Claude sees (distortion mainly wrecks X-axis accuracy).
+    /// Computer-use capture resolutions, paired with their aspect ratios.
+    ///
+    /// HIGH-RESOLUTION. These used to be 1024×768 / 1280×800 / 1366×768 because
+    /// older models capped at 1568px on the long edge and silently downsampled
+    /// anything bigger — sending more pixels than that genuinely HURT coordinate
+    /// precision. That ceiling is gone: current models accept up to 2576px on the
+    /// long edge and return coordinates that map 1:1 to these pixels. The old
+    /// sizes were therefore throwing away resolution on exactly the small targets
+    /// (menu items, toolbar icons, table cells) that a misclick lands next to.
+    /// 1080p-class is the documented balance of accuracy against image-token cost.
+    ///
+    /// We still pick the aspect closest to the display so the image Claude sees is
+    /// never stretched (distortion mainly wrecks X-axis accuracy).
     nonisolated private static let supportedResolutions: [(w: Int, h: Int, aspect: Double)] = [
-        (1024, 768, 1024.0 / 768.0),  // 4:3    = 1.333 (legacy displays)
-        (1280, 800, 1280.0 / 800.0),  // 16:10  = 1.600 (MacBook Air/Pro, most Macs)
-        (1366, 768, 1366.0 / 768.0)   // ~16:9  = 1.779 (external monitors, ultrawide)
+        (1440, 1080, 1440.0 / 1080.0),  // 4:3   = 1.333 (legacy displays)
+        (1920, 1200, 1920.0 / 1200.0),  // 16:10 = 1.600 (MacBook Air/Pro, most Macs)
+        (1920, 1080, 1920.0 / 1080.0)   // 16:9  = 1.778 (external monitors, ultrawide)
     ]
 
     /// Picks the recommended resolution whose aspect ratio best matches `aspect`
     /// (width / height). Pure and side-effect free, so it is safe to call from any
     /// actor. (OpenClicky ElementLocationDetector.swift:128-148.)
     nonisolated static func recommendedResolution(forAspect aspect: Double) -> (w: Int, h: Int) {
-        var best = (w: 1280, h: 800)
+        var best = (w: 1920, h: 1200)
         var smallestDifference = Double.greatestFiniteMagnitude
         for resolution in supportedResolutions {
             let difference = abs(aspect - resolution.aspect)
@@ -149,6 +157,50 @@ enum WindowCapture {
             screenshotWidthInPixels: resolution.w,
             screenshotHeightInPixels: resolution.h
         )
+    }
+
+    // MARK: - Zoom (read-only magnification of one region)
+
+    /// Crops a region of the CURRENT screen — expressed in the model's screenshot
+    /// pixel space (top-left origin, the same space clicks use) — and returns it
+    /// magnified so fine text and small controls are legible.
+    ///
+    /// READ-ONLY BY CONSTRUCTION: it deliberately does NOT touch `declaredWidth` /
+    /// `declaredHeight` or the run's `lastCapture`, so click coordinates keep
+    /// referring to the full-frame screenshot. Letting the model actually LOOK
+    /// closer at a control beats making it reason harder about a blurry one, but
+    /// only if the coordinate space it clicks in never moves underneath it.
+    ///
+    /// Returns nil when capture fails or the requested region is degenerate.
+    static func captureRegionBase64(x: Int, y: Int, width: Int, height: Int) async -> (base64: String, w: Int, h: Int)? {
+        guard width > 0, height > 0 else { return nil }
+        guard let cgImage = await ScreenEngine.shared.grabScreenshotForVision(targetDisplayID: targetDisplayID())
+        else { return nil }
+
+        // Model pixel space → raw capture pixels. The raw frame is the display's
+        // native (retina) size, so this scale is normally > 1 — which is exactly
+        // where the extra detail comes from.
+        let scaleX = Double(cgImage.width) / Double(max(1, declaredWidth))
+        let scaleY = Double(cgImage.height) / Double(max(1, declaredHeight))
+
+        // Clamp into the frame. CGImage.cropping uses a top-left origin, matching
+        // the model's coordinate space, so no Y-flip belongs here.
+        let rawX = max(0, min(Double(x) * scaleX, Double(cgImage.width) - 1))
+        let rawY = max(0, min(Double(y) * scaleY, Double(cgImage.height) - 1))
+        let rawW = max(1, min(Double(width) * scaleX, Double(cgImage.width) - rawX))
+        let rawH = max(1, min(Double(height) * scaleY, Double(cgImage.height) - rawY))
+        guard let cropped = cgImage.cropping(to: CGRect(x: rawX, y: rawY, width: rawW, height: rawH))
+        else { return nil }
+
+        // Magnify so small text is readable, but cap it: one zoom must not
+        // dominate the context window (long edge ≤ 1512px, never beyond 3× native).
+        let longEdge = Double(max(cropped.width, cropped.height))
+        let scale = min(3.0, max(1.0, 1512.0 / max(1.0, longEdge)))
+        let outW = Int((Double(cropped.width) * scale).rounded())
+        let outH = Int((Double(cropped.height) * scale).rounded())
+        guard let base64 = retinaSafeResizedJPEGBase64(cropped, toWidth: outW, toHeight: outH)
+        else { return nil }
+        return (base64, outW, outH)
     }
 
     // MARK: - Coordinate mapping (model pixels → global AppKit point)
