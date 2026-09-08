@@ -617,7 +617,11 @@ final class IncomingMessageWatcher {
 
         lastDetected = message
         detectionCount += 1
+        #if DEBUG
         print("[Holmes] IncomingMessageWatcher: \(candidate.surface) from \(candidate.sender) — \"\(String(text.prefix(80)))\"")
+        #else
+        print("[Holmes] IncomingMessageWatcher: \(candidate.surface) message detected (\(text.count) chars)")
+        #endif
 
         // Detection ends here. What happens next — topic extraction, recall,
         // a grounded draft — is the caller's business, and none of it sends.
@@ -663,8 +667,10 @@ final class IncomingMessageWatcher {
     ///      is caught here).
     /// Anything else is a statement, and a statement does not need a draft.
     static func warrantsReply(_ raw: String) -> Bool {
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.count >= 2, text.count <= 8000 else { return false }
+        // A long quoted email thread with a one-line question on top must not
+        // be ignored: judge the head of the text instead of rejecting by length.
+        let text = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(8000))
+        guard text.count >= 2 else { return false }
 
         // 1 — normalize: lowercase, drop everything that isn't a letter, digit
         //     or space (emoji, punctuation, apostrophes), squash whitespace.

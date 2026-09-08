@@ -10,18 +10,18 @@ import Foundation
 //
 // Schedules:
 //   • morning-brief — checked every 5 min; fires once per calendar day between
-//     07:00 and 12:00 local, only when Claude is configured (needs MCP tools).
+//     07:00 and 12:00 local, only when the local model is ready (needs MCP tools).
 //     The fired day persists in UserDefaults so relaunches don't double-brief.
 //   • email-triage  — every 30 min (first fire ~3 min after start), only when
-//     Claude is configured; skipped silently otherwise.
+//     the local model is ready; skipped silently otherwise.
 //   • meeting-prep  — every 60 s scan of CalendarEngine.upcomingMeetings; any
 //     meeting starting within 15 min fires once (in-memory prepped set; the
 //     engine's per-eventId cooldown is a second line of defense).
 //   • follow-up-chaser — checked every 5 min; fires once per calendar day
 //     between 09:30 and 13:00 local (same success-only day-slot persistence
-//     as morning-brief). Claude required.
+//     as morning-brief). Local model required.
 //   • pr-radar        — every 45 min (first fire ~5 min after start), only
-//     when Claude is configured; skipped silently otherwise.
+//     when the local model is ready; skipped silently otherwise.
 //   • schedule-guard  — checked every 5 min; once per day, 15:00–19:00 local.
 //   • evening-wrapup  — checked every 5 min; once per day, 17:00–21:00 local.
 //
@@ -185,7 +185,7 @@ final class Autopilot {
         started = false
     }
 
-    // MARK: - Morning brief (once per day, 07:00–12:00 local, Claude required)
+    // MARK: - Morning brief (once per day, 07:00–12:00 local, local model required)
 
     private func morningBriefTick() {
         guard !morningBriefInFlight else { return }
@@ -197,13 +197,13 @@ final class Autopilot {
         let hour = Calendar.autoupdatingCurrent.component(.hour, from: Date())
         guard hour >= 7 && hour < 12 else { return }
 
-        // This playbook needs Claude + MCP (real calendar/email data); the local
+        // This playbook needs the local model + MCP (real calendar/email data); the local
         // model can't fetch anything, so skip — but keep retrying through the
-        // window in case the key gets configured mid-morning.
-        guard AnthropicConfig.isConfigured else {
+        // window in case Ollama comes up mid-morning.
+        guard OllamaConfig.isConfigured else {
             if morningBriefSkipLogDay != today {
                 morningBriefSkipLogDay = today
-                print("[Holmes] Autopilot: morning brief skipped — Claude not configured (will keep checking until 12:00)")
+                print("[Holmes] Autopilot: morning brief skipped — local model not ready (will keep checking until 12:00)")
             }
             return
         }
@@ -230,12 +230,12 @@ final class Autopilot {
         }
     }
 
-    // MARK: - Email triage (every 30 min, Claude required)
+    // MARK: - Email triage (every 30 min, local model required)
 
     private func emailTriageTick() {
-        // Needs GMAIL_FETCH_EMAILS via MCP — without Claude there is nothing to
+        // Needs GMAIL_FETCH_EMAILS via MCP — without the model there is nothing to
         // triage, so skip silently (this runs 48 times a day).
-        guard AnthropicConfig.isConfigured else { return }
+        guard OllamaConfig.isConfigured else { return }
         guard PlaybookEngine.isEnabled(Self.emailTriageId) else { return }
         guard !PlaybookEngine.shared.isExecuting else { return }  // retry in 30 min
 
@@ -280,13 +280,13 @@ final class Autopilot {
         let minuteOfDay = (now.hour ?? 0) * 60 + (now.minute ?? 0)
         guard minuteOfDay >= schedule.startMinute && minuteOfDay < schedule.endMinute else { return }
 
-        // These playbooks need Claude + MCP (Gmail/Calendar/GitHub data). Without
+        // These playbooks need the local model + MCP (Gmail/Calendar/GitHub data). Without
         // a key there is nothing to fall back to, so skip — but keep retrying
-        // through the window in case the key gets configured mid-window.
-        guard AnthropicConfig.isConfigured else {
+        // through the window in case Ollama comes up mid-window.
+        guard OllamaConfig.isConfigured else {
             if dailySkipLogDay[schedule.playbookId] != today {
                 dailySkipLogDay[schedule.playbookId] = today
-                print("[Holmes] Autopilot: \(schedule.playbookId) skipped — Claude not configured (will keep checking through the window)")
+                print("[Holmes] Autopilot: \(schedule.playbookId) skipped — local model not ready (will keep checking through the window)")
             }
             return
         }
@@ -313,12 +313,12 @@ final class Autopilot {
         }
     }
 
-    // MARK: - PR radar (every 45 min, Claude required)
+    // MARK: - PR radar (every 45 min, local model required)
 
     private func prRadarTick() {
-        // Needs GitHub via MCP — without Claude there is nothing to scan, so
+        // Needs GitHub via MCP — without the model there is nothing to scan, so
         // skip silently (this runs 32 times a day).
-        guard AnthropicConfig.isConfigured else { return }
+        guard OllamaConfig.isConfigured else { return }
         guard PlaybookEngine.isEnabled(Self.prRadarId) else { return }
         guard !PlaybookEngine.shared.isExecuting else { return }  // retry in 45 min
 
@@ -340,8 +340,8 @@ final class Autopilot {
 
         switch playbookId {
         case Self.morningBriefId:
-            guard AnthropicConfig.isConfigured else {
-                print("[Holmes] Autopilot fireNow('\(playbookId)') skipped — Claude not configured")
+            guard OllamaConfig.isConfigured else {
+                print("[Holmes] Autopilot fireNow('\(playbookId)') skipped — local model not ready")
                 return
             }
             morningBriefInFlight = true
@@ -353,8 +353,8 @@ final class Autopilot {
             }
 
         case Self.emailTriageId:
-            guard AnthropicConfig.isConfigured else {
-                print("[Holmes] Autopilot fireNow('\(playbookId)') skipped — Claude not configured")
+            guard OllamaConfig.isConfigured else {
+                print("[Holmes] Autopilot fireNow('\(playbookId)') skipped — local model not ready")
                 return
             }
             fire(playbookId: playbookId, windowTitle: "Email Triage", entities: [:])
@@ -373,8 +373,8 @@ final class Autopilot {
             }
 
         case Self.followUpChaserId, Self.scheduleGuardId, Self.eveningWrapupId:
-            guard AnthropicConfig.isConfigured else {
-                print("[Holmes] Autopilot fireNow('\(playbookId)') skipped — Claude not configured")
+            guard OllamaConfig.isConfigured else {
+                print("[Holmes] Autopilot fireNow('\(playbookId)') skipped — local model not ready")
                 return
             }
             guard let schedule = Self.dailySchedules.first(where: { $0.playbookId == playbookId }) else {
@@ -390,8 +390,8 @@ final class Autopilot {
             }
 
         case Self.prRadarId:
-            guard AnthropicConfig.isConfigured else {
-                print("[Holmes] Autopilot fireNow('\(playbookId)') skipped — Claude not configured")
+            guard OllamaConfig.isConfigured else {
+                print("[Holmes] Autopilot fireNow('\(playbookId)') skipped — local model not ready")
                 return
             }
             fire(playbookId: playbookId, windowTitle: "PR Radar", entities: [:])

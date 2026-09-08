@@ -5,7 +5,7 @@ import UserNotifications
 // MARK: - PlaybookEngine
 // Evaluates proactive playbooks against the live screen context and produces
 // ProactiveDrafts. Draft-only by construction: generation goes through
-// HolmesBrain.runPlaybook (Claude, tool list pre-filtered by
+// HolmesBrain.runPlaybook (the local model, tool list pre-filtered by
 // ComposioCatalog.isPlaybookSafe). Nothing here can send, post, or publish —
 // approved drafts are staged/copied by the review card, never dispatched.
 //
@@ -88,8 +88,10 @@ final class PlaybookEngine {
         guard !started else { return }
         started = true
         requestNotificationPermissionIfNeeded()
-        let enabled = DefaultPlaybooks.all.filter { Self.isEnabled($0.id) }.map(\.id)
-        print("[Holmes] PlaybookEngine started — \(DefaultPlaybooks.all.count) playbooks, enabled: \(enabled.joined(separator: ", "))")
+        PlaybookRegistry.reload()
+        PlaybookRegistry.startWatching()
+        let enabled = PlaybookRegistry.all.filter { Self.isEnabled($0.id) }.map(\.id)
+        print("[Holmes] PlaybookEngine started — \(PlaybookRegistry.all.count) playbooks, enabled: \(enabled.joined(separator: ", "))")
     }
 
     // MARK: - Evaluate (called on every context snapshot)
@@ -116,7 +118,7 @@ final class PlaybookEngine {
         var sawFirstSighting = false
         var matchedThisTick = false
 
-        for playbook in DefaultPlaybooks.all where playbook.autoTriggers && Self.isEnabled(playbook.id) {
+        for playbook in PlaybookRegistry.all where playbook.autoTriggers && Self.isEnabled(playbook.id) {
             guard let key = playbook.matches(ctx) else { continue }
             matchedThisTick = true
             let firstSeen = previousKeys[playbook.id]?.key == presenceKey
@@ -212,7 +214,7 @@ final class PlaybookEngine {
         let now = Date()
         cooldowns = cooldowns.filter { entry in
             let playbookId = String(entry.key.prefix(while: { $0 != "|" }))
-            let ttl = DefaultPlaybooks.all.first(where: { $0.id == playbookId })?.cooldownSeconds ?? 3600
+            let ttl = PlaybookRegistry.all.first(where: { $0.id == playbookId })?.cooldownSeconds ?? 3600
             return now.timeIntervalSince(entry.value) < ttl
         }
     }
@@ -229,12 +231,22 @@ final class PlaybookEngine {
     /// playbook's declared cooldownSeconds measured from its last successful
     /// fire — otherwise a keyless playbook's cooldown is dead code and a
     /// "Run now" click right after a scheduled fire runs a full duplicate
-    /// Claude+MCP pass (ai-research declares 0 and stays uncapped).
+    /// model+MCP pass (ai-research declares 0 and stays uncapped).
     /// - onCompletion: reports whether the run SUCCEEDED — it produced a draft,
     ///   or came back all-clear (NOTHING_TO_REPORT) — so schedulers (Autopilot's
     ///   once-per-day slot) can burn state on success only.
+
+    /// True while a run the USER started (Automations pane, command bar) is
+    /// executing; context-triggered fires leave it false so their glow/ding
+    /// are suppressed unless the user opted in (ScreenGlowController.contextGlowEnabled).
+    private(set) var currentRunIsManual = false
+    var glowOrigin: ScreenGlowController.Origin { currentRunIsManual ? .user : .context }
+    private func glow(_ state: ScreenGlowController.GlowState) {
+        ScreenGlowController.shared.set(state: state, origin: glowOrigin)
+    }
+
     func runManually(playbookId: String, context: PlaybookContext, onCompletion: ((Bool) -> Void)? = nil) {
-        guard let playbook = DefaultPlaybooks.all.first(where: { $0.id == playbookId }) else {
+        guard let playbook = PlaybookRegistry.all.first(where: { $0.id == playbookId }) else {
             print("[Holmes] Playbook '\(playbookId)' not found")
             onCompletion?(false)
             return
@@ -268,7 +280,7 @@ final class PlaybookEngine {
             return
         }
         print("[Holmes] Playbook '\(playbookId)' run manually")
-        fire(playbook, ctx: context, cooldownKeys: cooldownKeys, onCompletion: onCompletion)
+        fire(playbook, ctx: context, cooldownKeys: cooldownKeys, manual: true, onCompletion: onCompletion)
     }
 
     // MARK: - Trigger-brain fire (debounce-exempt, cooldown-checked, single-flight)
@@ -286,7 +298,7 @@ final class PlaybookEngine {
     /// Cooldowns are still consumed on success only.
     func fireFromTrigger(playbookId: String, context: PlaybookContext) {
         guard started, !isExecuting else { return }
-        guard let playbook = DefaultPlaybooks.all.first(where: { $0.id == playbookId }) else {
+        guard let playbook = PlaybookRegistry.all.first(where: { $0.id == playbookId }) else {
             print("[Holmes] TriggerBrain fire skipped — playbook '\(playbookId)' not found")
             return
         }
@@ -333,11 +345,13 @@ final class PlaybookEngine {
         ctx: PlaybookContext,
         cooldownKeys: [String] = [],
         fromTrigger: Bool = false,
+        manual: Bool = false,
         onCompletion: ((Bool) -> Void)? = nil
     ) {
         isExecuting = true
         lastFireAttempt[playbook.id] = Date()
-        ScreenGlowController.shared.set(state: .thinking)
+        currentRunIsManual = manual
+        glow(.thinking)
 
         Task { @MainActor in
             defer { isExecuting = false }
@@ -348,7 +362,12 @@ final class PlaybookEngine {
             // off this seam behaves EXACTLY like the historical draft-only Holmes.
             // All fire-time brakes (cooldown, debounce, 60s floor, single-flight)
             // already ran before we got here and are unchanged.
-            let level = AutonomyPolicy.shared.effectiveLevel(for: playbook.id)
+            // SDK (manifest) playbooks are confined to the draft-only path no
+            // matter how the dial is set: their goal text is third-party prompt
+            // and must never reach ActionPlanner / AutonomousActionRunner.
+            let level = playbook.source == nil
+                ? AutonomyPolicy.shared.effectiveLevel(for: playbook.id)
+                : min(AutonomyPolicy.shared.effectiveLevel(for: playbook.id), .draft)
             switch level {
             case .observe:
                 // Watch only: record what WOULD have run; act on nothing.
@@ -357,7 +376,7 @@ final class PlaybookEngine {
                     activity: "autonomy-observed",
                     summary: "Observed (not run): \(playbook.name)",
                     detail: "playbook=\(playbook.id) level=observe context=\(ctx.appName) — \(ctx.windowTitle)")
-                ScreenGlowController.shared.set(state: .off)
+                glow(.off)
                 onCompletion?(false)
 
             case .draft:
@@ -386,7 +405,7 @@ final class PlaybookEngine {
 
     // MARK: - Draft path (the historical draft-only pipeline, UNCHANGED)
 
-    /// The draft-only generation path: HolmesBrain.runPlaybook (Claude, tool list
+    /// The draft-only generation path: HolmesBrain.runPlaybook (the local model, tool list
     /// pre-filtered by ComposioCatalog.isPlaybookSafe) produces a ProactiveDraft
     /// the user stages/copies via the review card. Nothing here can send. This is
     /// the code the fire() Task used to run inline — moved verbatim so the .draft
@@ -403,7 +422,7 @@ final class PlaybookEngine {
             var gmailDraftsCreated = 0
             var stagedDraftNotes: [String] = []
 
-            if AnthropicConfig.isConfigured {
+            if OllamaConfig.isConfigured {
                 // The sanctioned Gmail-draft write clears the meta-execute guard
                 // only for the kinds whose prompts and UI disclose it —
                 // read-only personas (morning-brief, meeting-prep) stay read-only
@@ -417,21 +436,24 @@ final class PlaybookEngine {
                 let isRepoBrief = playbook.kind == .repoBrief
                 if let outcome = await HolmesBrain.shared.runPlaybook(
                     goal: goal,
-                    systemHint: Self.systemHint(for: playbook.kind),
+                    systemHint: playbook.persona.map { Self.communityPersona($0, kind: playbook.kind) }
+                        ?? Self.systemHint(for: playbook.kind),
                     composioApps: playbook.composioApps,
+                    mcpServers: playbook.mcpServers,
                     allowDraftWrite: allowDraftWrite,
                     maxToolCalls: isRepoBrief ? 4 : 6,
-                    maxIterations: isRepoBrief ? 6 : nil
+                    maxIterations: isRepoBrief ? 6 : nil,
+                    log: { line in print("[Holmes] Playbook '\(playbook.id)': \(line)") }
                 ) {
                     text = outcome.text
                     gmailDraftsCreated = outcome.gmailDraftsCreated
                     stagedDraftNotes = outcome.stagedDraftNotes
                 }
             } else {
-                // No key, no draft. There is no second-tier model to fall back to,
-                // and a playbook that quietly produced a worse draft would be
-                // indistinguishable from one that worked.
-                print("[Holmes] Playbook '\(playbook.id)' skipped — no Anthropic API key configured")
+                // No local model, no draft. There is no second-tier model to fall
+                // back to, and a playbook that quietly produced a worse draft would
+                // be indistinguishable from one that worked.
+                print("[Holmes] Playbook '\(playbook.id)' skipped — \(OllamaConfig.notReadyMessage)")
             }
 
             var body = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -447,7 +469,7 @@ final class PlaybookEngine {
                 // No cooldown burned on failure — lastFireAttempt's floor is the
                 // only brake, so the context can retry once a backend is up.
                 print("[Holmes] Playbook '\(playbook.id)' produced no draft")
-                ScreenGlowController.shared.set(state: .off)
+                glow(.off)
                 onCompletion?(false)
                 return
             }
@@ -483,7 +505,7 @@ final class PlaybookEngine {
                         kind: "playbook", app: ctx.appName, windowTitle: ctx.windowTitle,
                         summary: "\(playbook.id) ran — nothing to report")
                 }
-                ScreenGlowController.shared.set(state: .off)
+                glow(.off)
                 onCompletion?(true)
                 return
             }
@@ -511,7 +533,7 @@ final class PlaybookEngine {
 
             // Truth-in-UI: only show the "Saved in Gmail Drafts" affordance when
             // a GMAIL_CREATE_EMAIL_DRAFT call actually succeeded this run. The
-            // local fallback has no tools at all, and a Claude run may skip or
+            // local fallback has no tools at all, and a model run may skip or
             // fail the create — those drafts land on the clipboard instead.
             var target = playbook.makeTarget(ctx)
             if case .remoteDraft = target, gmailDraftsCreated == 0 {
@@ -552,9 +574,9 @@ final class PlaybookEngine {
 
             ConfirmationBus.shared.proposeDraft(draft)
             postDraftNotification(for: draft)
-            ScreenGlowController.shared.set(state: .ready)
+            glow(.ready)
             if playbook.usesDing {
-                ScreenGlowController.shared.ding()
+                ScreenGlowController.shared.ding(origin: glowOrigin)
             }
             print("[Holmes] Playbook '\(playbook.id)' drafted — \(draft.title)\(stagedNote.map { " (\($0))" } ?? "")")
             onCompletion?(true)
@@ -576,16 +598,16 @@ final class PlaybookEngine {
         fromTrigger: Bool,
         onCompletion: ((Bool) -> Void)?
     ) async {
-        guard AnthropicConfig.isConfigured else {
-            print("[Holmes] Playbook '\(playbook.id)' autonomy skipped — no Anthropic API key")
-            ScreenGlowController.shared.set(state: .off)
+        guard OllamaConfig.isConfigured else {
+            print("[Holmes] Playbook '\(playbook.id)' autonomy skipped — \(OllamaConfig.notReadyMessage)")
+            glow(.off)
             onCompletion?(false)
             return
         }
         let goal = playbook.makeGoal(ctx)
         guard let plan = await ActionPlanner.plan(playbookId: playbook.id, goal: goal, context: ctx) else {
             print("[Holmes] Playbook '\(playbook.id)' autonomy — no plan produced")
-            ScreenGlowController.shared.set(state: .off)
+            glow(.off)
             onCompletion?(false)
             return
         }
@@ -613,15 +635,15 @@ final class PlaybookEngine {
         fromTrigger: Bool,
         onCompletion: ((Bool) -> Void)?
     ) async {
-        guard AnthropicConfig.isConfigured else {
-            print("[Holmes] Playbook '\(playbook.id)' teach skipped — no Anthropic API key")
-            ScreenGlowController.shared.set(state: .off)
+        guard OllamaConfig.isConfigured else {
+            print("[Holmes] Playbook '\(playbook.id)' teach skipped — \(OllamaConfig.notReadyMessage)")
+            glow(.off)
             onCompletion?(false)
             return
         }
         // (No isSpeaking pre-check: the speech queue serializes utterances
         // atomically, so a new explanation waits its turn instead of cutting
-        // off — and the old checked-then-awaited-Claude guard was a TOCTOU
+        // off — and the old checked-then-awaited-model guard was a TOCTOU
         // hole that also starved teach fires during any narration.)
         // Consume the hourly autonomy budget for this fire (mayAct already cleared
         // it); the action path's budget is consumed inside the runner instead.
@@ -632,7 +654,7 @@ final class PlaybookEngine {
         let grounding = HolmesAgent.shared.currentContext.description
         guard let result = await VisualGuidance.answer(question: playbook.makeGoal(ctx), context: grounding) else {
             print("[Holmes] Playbook '\(playbook.id)' teach — no guidance produced")
-            ScreenGlowController.shared.set(state: .off)
+            glow(.off)
             onCompletion?(false)
             return
         }
@@ -656,7 +678,7 @@ final class PlaybookEngine {
 
         for cooldownKey in cooldownKeys { cooldowns[cooldownKey] = Date() }
         lastSuccessfulFire[playbook.id] = (at: Date(), windowTitle: ctx.windowTitle, fromTrigger: fromTrigger)
-        ScreenGlowController.shared.set(state: .ready)
+        glow(.ready)
         onCompletion?(true)
     }
 
@@ -736,6 +758,20 @@ final class PlaybookEngine {
     }
 
     // MARK: - Draft-only personas
+
+    /// A manifest author's persona, wrapped so it can only NARROW the built-in
+    /// contract. The preamble states the draft-only rule and the epilogue pins
+    /// the output shape; the author's text sits between them and cannot undo
+    /// either — and the tool filter is code regardless of what the prompt says.
+    static func communityPersona(_ persona: String, kind: DraftKind) -> String {
+        let trimmed = String(persona.prefix(1500)).trimmingCharacters(in: .whitespacesAndNewlines)
+        return "You are Holmes, a local assistant on the user's Mac, preparing something for the user to review. "
+            + "You work in draft-only mode: you may read the screen and use the read-only tools offered to gather context, "
+            + "but you can never send, post, publish, submit, delete, or modify anything — the user reviews and acts. "
+            + "Never claim to have taken an action. "
+            + "Author's guidance for this playbook: " + trimmed + " "
+            + "Your final message must be ONLY the deliverable itself — no preamble, no commentary, no labels."
+    }
 
     private static func systemHint(for kind: DraftKind) -> String {
         switch kind {

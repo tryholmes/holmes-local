@@ -150,9 +150,13 @@ enum BackendRouter {
                 return matchesSendVerb(scriptSource(step.input))
             }
             if step.action == "ax_press" {
-                // Pressing a send/submit-class button is the commit itself.
+                // Pressing a send/submit-class button is the commit itself. The
+                // executor matches button titles by SUBSTRING, so a fragment like
+                // "Sen" or "end" would press Send while dodging a whole-word
+                // check: any label that is a fragment of a commit verb, or too
+                // short to be a real title, confirms as well.
                 let label = (step.input["label"] as? String) ?? (step.input["button"] as? String) ?? ""
-                return matchesSendVerb(label)
+                return matchesSendVerb(label) || couldMatchCommitControl(label)
             }
             return false
         case .computer:
@@ -747,7 +751,7 @@ enum BackendRouter {
     /// same line ComputerUseEngine's AX-label gate draws — applied here to
     /// AppleScript SOURCE text, which no token classifier upstream can see.
     private static let sendVerbRegex = try! NSRegularExpression(
-        pattern: #"\b(send|submit|post|publish|tweet|reply|confirm|pay|buy|order|delete|archive)\b"#,
+        pattern: #"\b(send|submit|post|publish|tweet|reply|confirm|pay|buy|order|delete|archive|trash|purchase|accept|share|discard|remove|keystroke|key code|do shell script)\b"#,
         options: [.caseInsensitive]
     )
 
@@ -755,6 +759,21 @@ enum BackendRouter {
         guard !text.isEmpty else { return false }
         let range = NSRange(text.startIndex..., in: text)
         return sendVerbRegex.firstMatch(in: text, options: [], range: range) != nil
+    }
+
+    private static let commitControlWords: [String] = [
+        "send", "submit", "post", "publish", "tweet", "reply", "confirm", "pay", "buy", "order",
+        "delete", "archive", "trash", "purchase", "accept", "share", "discard", "remove", "move to trash",
+        "empty trash", "don't save", "dont save"
+    ]
+
+    /// True when `label` (as the executor's substring match would apply it)
+    /// could land on a commit control: it is empty/very short, or a substring of
+    /// a known commit word, or contains one.
+    private static func couldMatchCommitControl(_ label: String) -> Bool {
+        let l = label.trimmingCharacters(in: .whitespaces).lowercased()
+        if l.count < 4 { return true }
+        return commitControlWords.contains { $0.contains(l) || l.contains($0) }
     }
 
     /// First non-empty string under any of `keys`, tilde-expanded, as a file URL.

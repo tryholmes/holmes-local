@@ -35,8 +35,8 @@ import os
 private let ttsLog = Logger(subsystem: "com.grain.holmes", category: "tts")
 
 // MARK: - ElevenLabsConfig
-// Configuration for the ElevenLabs TTS backend. Mirrors AnthropicConfig
-// EXACTLY: key lives in the Keychain (never in source); a plain-text file
+// Configuration for the ElevenLabs TTS backend, the ONE optional cloud service
+// in Holmes Local: the key lives in the Keychain (never in source); a plain-text file
 // fallback lets the user enable voice without a settings UI and is migrated
 // into the Keychain on first read. Without a key, SpeechSynthesizer falls
 // back to Apple's on-device voice.
@@ -60,11 +60,14 @@ enum ElevenLabsConfig {
            !key.isEmpty {
             return key
         }
-        // Fallback: a plain-text key file, mirroring the Anthropic convention.
+        // Fallback: a plain-text key file under ~/.holmes or Application Support.
         // Lets the user enable voice without a settings UI. Migrated into the
         // Keychain on read.
         if let fileKey = keyFromFile() {
-            setAPIKey(fileKey)
+            // Migrate WITHOUT going through setAPIKey: its onCredentialsChanged
+            // hook re-reads apiKey, and if the Keychain write does not stick
+            // (locked keychain, dev-build ACL prompt) that is an endless loop.
+            KeychainManager.save(fileKey, service: keychainService, account: apiKeyAccount)
             return fileKey
         }
         return nil
@@ -201,7 +204,7 @@ final class SpeechSynthesizer {
     private var isPumping = false
 
     /// Dedicated URLSession so TTS requests don't share timeouts with the
-    /// Claude client.
+    /// Ollama client.
     private let session: URLSession = {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
@@ -278,6 +281,9 @@ final class SpeechSynthesizer {
         Task { @MainActor in
             while !queue.isEmpty {
                 let item = queue.removeFirst()
+                // cancelAll() clears the flag but may leave this loop alive; an
+                // item enqueued right after must still report as speaking.
+                isSpeaking = true
                 await speakNow(item.text)
                 item.continuations.forEach { $0.resume() }
             }

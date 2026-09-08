@@ -564,11 +564,7 @@ final class ContextEngine {
     /// signals like github.com so a code editor showing that URL in a comment
     /// isn't mistaken for the page itself).
     private func isBrowserApp(_ appL: String) -> Bool {
-        return appL.contains("safari") || appL.contains("chrome") ||
-               appL.contains("firefox") || appL.contains("arc") ||
-               appL.contains("comet") || appL.contains("opera") ||
-               appL.contains("brave") || appL.contains("edge") ||
-               appL.contains("vivaldi") || appL.contains("orion")
+        BrowserBridge.isBrowserName(appL)
     }
 
     /// True when the surface is genuinely an email client or webmail. Email

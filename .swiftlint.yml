@@ -1,18 +1,18 @@
-# SwiftLint Configuration for Grain Project
+# SwiftLint configuration for Holmes Local
+# CI runs this as an advisory pass (see .github/workflows/build.yml).
 
 # Paths to include for linting
 included:
-  - Grain/
-  - GrainAI/
+  - holmes/holmes/
 
 # Paths to exclude from linting
 excluded:
-  - Pods/
-  - Carthage/
+  - holmes/holmes-extension/
+  - holmes/holmes.xcodeproj/
+  - holmes/assets/
   - .build/
+  - build/
   - DerivedData/
-  - fastlane/
-  - Grain.app/
 
 # Opt-in rules for better code quality
 opt_in_rules:
@@ -83,15 +83,6 @@ custom_rules:
       - identifier
     message: "Use proper logging instead of print()"
     severity: warning
-
-  # Force unwrapping is dangerous
-  force_unwrapping:
-    name: "Force Unwrapping"
-    regex: '!$'
-    match_kinds:
-      - identifier
-    message: "Avoid force unwrapping - use optional binding or guard"
-    severity: error
 
   # TODO comments should be tracked
   todo_comments:

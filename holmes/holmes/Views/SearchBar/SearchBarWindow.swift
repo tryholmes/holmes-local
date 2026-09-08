@@ -97,19 +97,26 @@ class SearchBarWindowController: NSObject {
         isVisible = true
     }
 
+    private var hideGeneration = 0
+
     func hide() {
         guard isVisible, let window else { return }
         isVisible = false
         isResizing = false
+        hideGeneration += 1
+        let generation = hideGeneration
 
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             window.animator().alphaValue = 0
         } completionHandler: { [weak self, weak window] in
+            // A show() that raced in during the fade owns the window now (or
+            // replaced it); tearing it down here would leave a dangling panel.
+            guard let self, generation == self.hideGeneration, !self.isVisible else { return }
             window?.orderOut(nil)
             window?.close()
-            self?.window = nil  // destroy — next show() creates a fresh window with clean SwiftUI state
+            self.window = nil  // destroy — next show() creates a fresh window with clean SwiftUI state
         }
     }
     

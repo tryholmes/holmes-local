@@ -9,7 +9,7 @@
 //
 //  This is the integrator that ties the built subsystems together:
 //    • VoiceInputController  — push-to-talk, on-device speech → text.
-//    • VisualGuidance        — screenshot → Claude → spoken answer + annotations.
+//    • VisualGuidance        — screenshot → local model → spoken answer + annotations.
 //    • VisualGuidanceOverlay — draws those annotations on the real screen.
 //    • SpeechSynthesizer     — speaks the answer (ElevenLabs, else Apple voice).
 //    • HolmesBrain           — the existing computer-control agent (the DO path).
@@ -170,12 +170,12 @@ final class ClickyController {
 
     // MARK: - ASK / TEACH (answer + draw; never clicks)
 
-    /// Sees the screen, asks Claude for a spoken answer plus optional draw-on-screen
+    /// Sees the screen, asks the local model for a spoken answer plus optional draw-on-screen
     /// annotations, then speaks the answer and paints the annotations. Needs only
     /// Screen Recording — no computer-control permission, because it never clicks.
     private func runAskTeach(question: String) async {
-        guard AnthropicConfig.isConfigured else {
-            await speakIfEnabled("I need an Anthropic API key first. You can add one in Holmes settings.")
+        guard OllamaConfig.isConfigured else {
+            await speakIfEnabled(Self.notReadySpoken)
             return
         }
 
@@ -218,8 +218,8 @@ final class ClickyController {
     /// weakens it and never force-enables it. A short spoken confirmation bookends
     /// the run.
     private func runAgent(goal: String) async {
-        guard AnthropicConfig.isConfigured else {
-            await speakIfEnabled("I need an Anthropic API key first. You can add one in Holmes settings.")
+        guard OllamaConfig.isConfigured else {
+            await speakIfEnabled(Self.notReadySpoken)
             return
         }
 
@@ -241,7 +241,7 @@ final class ClickyController {
 
         switch result {
         case .notConfigured:
-            await speakIfEnabled("I need an Anthropic API key first. You can add one in Holmes settings.")
+            await speakIfEnabled(Self.notReadySpoken)
         case .text:
             // A short confirmation, not the whole transcript. If computer control
             // was off, HolmesBrain already narrated that in-run; this just closes
@@ -251,6 +251,14 @@ final class ClickyController {
     }
 
     // MARK: - Helpers
+
+    /// What Clicky says when the local model can't answer yet. Spoken, so it
+    /// names the actual problem (Ollama not running / model not downloaded) in
+    /// one plain sentence and points at the Settings pane that fixes it.
+    private static var notReadySpoken: String {
+        let why = OllamaConfig.lastProblem ?? "The local model isn't ready"
+        return "\(why). You can fix that in Holmes settings, under Local Model."
+    }
 
     /// Speaks `text` only when "Speak answers" is on. Awaits completion so callers
     /// can sequence spoken lines without overlap.

@@ -78,13 +78,14 @@ struct FeatureCard: View {
                     .pixelBevel(cornerRadius: 6)
 
                 VStack(spacing: 4) {
+                    // The tile fill (deepTeal) resolves to white: dark glyph + label.
                     Image(systemName: icon)
                         .font(.system(size: 22, weight: .bold, design: .monospaced))
-                        .foregroundColor(NoirColors.creamWhite)
+                        .foregroundColor(Color.black.opacity(0.82))
 
                     Text(shortcut)
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(NoirColors.tanBrown)
+                        .foregroundColor(Color.black.opacity(0.6))
                 }
             }
 

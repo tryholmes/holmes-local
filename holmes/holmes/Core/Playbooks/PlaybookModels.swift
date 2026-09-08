@@ -105,6 +105,16 @@ struct Playbook: Identifiable {
     /// — the playbook explains/points rather than mutating anything. Defaults to
     /// false so every existing playbook keeps its behavior unchanged.
     var isTeachScenario: Bool = false
+    /// SDK (manifest) playbooks only. A custom draft-only persona; PlaybookEngine
+    /// wraps it in a fixed safety preamble so the author's text can narrow the
+    /// voice and shape of the deliverable but never widen what the model may do.
+    var persona: String? = nil
+    /// SDK playbooks only. Names of servers in mcp.json whose tools may be
+    /// offered — still filtered to readOnlyHint + ComposioCatalog.isPlaybookSafe,
+    /// exactly like Composio tools. Built-ins leave this empty.
+    var mcpServers: [String] = []
+    /// SDK playbooks only: the manifest file name, shown as a badge in Settings.
+    var source: String? = nil
 }
 
 // MARK: - ComposioCatalog

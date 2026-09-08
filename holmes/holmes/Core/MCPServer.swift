@@ -124,6 +124,10 @@ final class MCPServer {
             // and terminate the whole app — send() returns EPIPE instead.
             var on: Int32 = 1
             setsockopt(clientFD, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+            // A client that connects and never sends must not park a global-queue
+            // thread forever; 10 s is generous for a loopback JSON-RPC request.
+            var rcvTimeout = timeval(tv_sec: 10, tv_usec: 0)
+            setsockopt(clientFD, SOL_SOCKET, SO_RCVTIMEO, &rcvTimeout, socklen_t(MemoryLayout<timeval>.size))
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 self?.handleClient(clientFD)
             }
@@ -288,6 +292,9 @@ final class MCPServer {
             if !key.isEmpty { headers[key] = value }
         }
         let contentLength = Int(headers["content-length"] ?? "") ?? 0
+        // A negative length would skip the read loop and trap in body.prefix;
+        // an absurd one would let a local client grow memory without bound.
+        guard contentLength >= 0, contentLength <= Self.maxBodyBytes else { return nil }
 
         var body = buffer[he.upperBound...]
         while body.count < contentLength {
@@ -302,6 +309,9 @@ final class MCPServer {
     /// Allows native MCP clients (no Origin, localhost Host) and localhost browser
     /// tooling; rejects real websites — including DNS-rebinding, where the browser
     /// still sends the attacker page's own origin.
+    /// JSON-RPC requests are small; 1 MB is generous.
+    private static let maxBodyBytes = 1_048_576
+
     private func isLocalRequest(_ r: HTTPRequest) -> Bool {
         func isLocalHostName(_ s: String) -> Bool {
             // Strip scheme + port → bare host.
@@ -313,8 +323,11 @@ final class MCPServer {
         }
         // Host header must be local (defeats rebinding: attacker's Host is its domain).
         if let host = r.headers["host"], !isLocalHostName(host) { return false }
-        // If an Origin is present it must be local; "null" and absent are fine (native clients).
-        if let origin = r.headers["origin"], origin != "null", !isLocalHostName(origin) { return false }
+        // If an Origin is present it must be local. Absent is fine (native
+        // clients). "null" is NOT: sandboxed iframes, file:/data: pages and
+        // redirect-stripped requests all send it, and with the permissive CORS
+        // reply below any website could read the user's screen text.
+        if let origin = r.headers["origin"], !isLocalHostName(origin) { return false }
         return true
     }
 

@@ -285,6 +285,10 @@ actor MemoryStore {
                 source: String = "", confidence: String = "", url: String = "",
                 site: String = "", entitiesJSON: String = "") {
         guard openIfNeeded(), !summary.isEmpty else { return }
+        // prune() otherwise runs only at open; an always-on agent up for weeks
+        // would exceed the documented 45-day / 20k-row bound until relaunch.
+        insertsSincePrune += 1
+        if insertsSincePrune >= 500 { insertsSincePrune = 0; prune() }
         let sql = """
         INSERT INTO events(ts, kind, app, window_title, activity, summary, detail,
                            source, confidence, url, site, entities_json)
@@ -479,7 +483,7 @@ actor MemoryStore {
         let sql = """
         SELECT \(Self.columnList("e."))
         FROM events_fts f JOIN events e ON e.id = f.rowid
-        WHERE events_fts MATCH ? ORDER BY rank LIMIT ?
+        WHERE events_fts MATCH ? AND e.kind <> 'draft' ORDER BY rank LIMIT ?
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
@@ -546,7 +550,7 @@ actor MemoryStore {
         SELECT \(Self.columnList("e."))
         FROM events_fts f JOIN events e ON e.id = f.rowid
         WHERE events_fts MATCH ? AND (e.activity = ? OR (? <> '' AND e.site = ?)) AND e.ts < ?
-              AND NOT (e.summary = ? AND e.ts > ?)
+              AND NOT (e.summary = ? AND e.ts > ?) AND e.kind <> 'draft'
         ORDER BY rank LIMIT ?
         """
         let now = Date().timeIntervalSince1970
@@ -795,7 +799,8 @@ actor MemoryStore {
         let sql = """
         SELECT \(Self.columnList("e."))
         FROM events e
-        WHERE \(predicates.joined(separator: " OR "))
+        WHERE (\(predicates.joined(separator: " OR ")))
+              AND e.kind <> 'draft' -- Holmes's own drafts are not evidence: recalling one as "memory" makes the next reply parrot it
         ORDER BY e.ts DESC LIMIT ?
         """
         var stmt: OpaquePointer?
@@ -1017,6 +1022,8 @@ actor MemoryStore {
 
     /// Keeps the DB bounded for an always-on agent: drop events older than 45
     /// days, and hard-cap total rows so a runaway logger can't grow unchecked.
+    private var insertsSincePrune = 0
+
     private func prune() {
         _ = exec("DELETE FROM events WHERE ts < \(Date().timeIntervalSince1970 - 45 * 86400)")
         _ = exec("DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY ts DESC LIMIT 20000)")

@@ -7,7 +7,12 @@ final class ConfirmationWindowController: NSObject {
     private var window: NSWindow?
     private override init() {}
 
+    private var hideGeneration = 0
+
     func show() {
+        // Invalidate any in-flight hide() fade so its completion cannot order
+        // out the window we are about to present.
+        hideGeneration += 1
         if window == nil { createWindow() }
         guard let window, let screen = NSScreen.main else { return }
 
@@ -37,12 +42,17 @@ final class ConfirmationWindowController: NSObject {
 
     func hide() {
         guard let window else { return }
+        hideGeneration += 1
+        let generation = hideGeneration
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.18
             window.animator().alphaValue = 0
         } completionHandler: { [weak self] in
+            // Only the most recent hide() may tear the window down; a show()
+            // that raced in during the fade keeps it.
+            guard let self, generation == self.hideGeneration, self.window === window else { return }
             window.orderOut(nil)
-            self?.window = nil
+            self.window = nil
         }
     }
 

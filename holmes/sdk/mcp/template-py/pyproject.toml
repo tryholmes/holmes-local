@@ -1,0 +1,7 @@
+[project]
+name = "holmes-mcp-__NAME__"
+version = "0.1.0"
+description = "A read only MCP server for Holmes."
+requires-python = ">=3.10"
+# mcp 2.x renamed FastMCP (mcp.server.mcpserver.MCPServer); this template targets 1.x.
+dependencies = ["mcp>=1.9,<2"]

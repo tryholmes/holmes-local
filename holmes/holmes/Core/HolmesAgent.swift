@@ -15,7 +15,7 @@ import Observation
 //     generated. This tier is also what persists to memory.
 //
 //   TIER 1 — ENRICHMENT, NON-BLOCKING. Once per changed screen (and at most
-//     once per 8s per screen), Claude is asked ONE question: what is the user
+//     once per 8s per screen), the local model is asked ONE question: what is the user
 //     trying to accomplish here. It may add a goal and a gist behind the
 //     already-correct headline; it may never make the headline vaguer, and it
 //     can never touch a .exact one at all (see acceptedHeadline).
@@ -80,9 +80,10 @@ final class HolmesAgent {
     // MARK: - Start
 
     func start() async {
-        modelBackend = AnthropicConfig.isConfigured
-            ? "Claude (\(AnthropicConfig.model))"
-            : "No API key — add one in Settings to enable Claude"
+        // "Local model (<tag>) · MCP: N tools", or the Ollama problem text.
+        // OllamaConfig.onStatusChanged (wired in AppDelegate) re-renders it
+        // whenever the server or the pulled model changes.
+        HolmesBrain.shared.updateBackendLabel()
 
         // Browser extension bridge — the ONLY source of exact context. The
         // callback is invoked on the main actor, and tier 0 runs synchronously
@@ -270,8 +271,8 @@ final class HolmesAgent {
     /// browser window. The extension posts on every real change plus a 5s
     /// heartbeat, so six seconds means "the extension is alive right now".
     private static let browserContextTTL: TimeInterval = 6
-    /// The real screenshot tied to the latest OCR snapshot — fed to Claude's
-    /// vision during enrichment when the text was too thin to describe.
+    /// The real screenshot tied to the latest OCR snapshot — fed to the local
+    /// model's vision during enrichment when the text was too thin to describe.
     private var lastCapturedImage: CGImage? = nil
 
     private func processSnapshot(_ result: CaptureResult) async {
@@ -472,7 +473,7 @@ final class HolmesAgent {
     /// the thing somebody asked about" is a strictly more specific claim than
     /// "rows that resemble the screen you're on", and it is the one a pending
     /// draft's receipts refer to. The hold lasts as long as the draft does, or —
-    /// when no draft could be produced at all, e.g. no API key — for
+    /// when no draft could be produced at all, e.g. Ollama not running — for
     /// RecallSpotlight's own grace period, so the answer to "what is holmes?" is
     /// still on the dashboard when the user gets round to looking at it.
     private var mayPublishActivityRecall: Bool {
@@ -538,7 +539,7 @@ final class HolmesAgent {
 
             // draftReply runs the topic recall FIRST and publishes it, so the
             // dashboard's REFERENCED NOW section fills in even when this call
-            // comes back nil (no API key, unparseable answer).
+            // comes back nil (local model not ready, unparseable answer).
             guard let draft = await ReplyComposer.shared.draftReply(to: message, context: context) else {
                 print("[Holmes] Reply: no draft for \(who.isEmpty ? message.surface : who) — recall was still published")
                 return
@@ -632,11 +633,11 @@ final class HolmesAgent {
         return deep
     }
 
-    /// Asks Claude ONE question about an already-described screen: what is the
+    /// Asks the local model ONE question about an already-described screen: what is the
     /// user trying to get done. Single-flight, fingerprint-gated, and applied
     /// only if the user is still on the same screen when the answer lands.
     private func enrichLiveContext(_ context: LiveContext) {
-        guard AnthropicConfig.isConfigured else { return }
+        guard OllamaConfig.isConfigured else { return }
         // Never enrich a guess. An .inferred context has no facts to build on,
         // and dressing one up with a plausible "goal" is exactly the failure
         // mode this architecture exists to prevent.
@@ -652,6 +653,8 @@ final class HolmesAgent {
         // backoff after a failed call (the fingerprint is only recorded on
         // success, so a failure re-queues rather than sticking).
         guard Date().timeIntervalSince(lastEnrichAttemptAt) >= Self.enrichFloor else { return }
+        // Local model: background enrichment is opt-in (Settings ▸ Local Model).
+        guard OllamaConfig.backgroundModelEnabled else { return }
 
         isRunningEnrichment = true
         let requestedAt = Date()
@@ -680,13 +683,17 @@ final class HolmesAgent {
 
             let raw: String
             do {
-                raw = try await AnthropicClient.shared.complete(
+                raw = try await OllamaClient.shared.complete(
                     system: Self.enrichmentSystemPrompt,
                     user: Self.enrichmentPrompt(for: context),
                     maxTokens: 400,
                     asJSON: true,
                     schema: Self.enrichmentSchema,
                     imageBase64: imageBase64)
+            } catch OllamaClient.AgentError.busy {
+                // The GPU is owned by an agent session; the screen is retried
+                // after the floor (fingerprint is only recorded on success).
+                return
             } catch {
                 print("[Holmes] Enrichment failed — \(error.localizedDescription)")
                 return
@@ -822,7 +829,7 @@ final class HolmesAgent {
     /// Only the sanctioned enrichment slots. `entities` is a fixed shape on
     /// purpose: structured outputs reject undeclared keys, so the model cannot
     /// smuggle a new fact into a field the formatter might read.
-    private static let enrichmentSchema: [String: Any] = AnthropicClient.objectSchema([
+    private static let enrichmentSchema: [String: Any] = OllamaClient.objectSchema([
         "goal": [
             "type": "string",
             "description": "What the user is trying to accomplish, one short clause. Empty string when unsupported by the context."

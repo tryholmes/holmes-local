@@ -4,6 +4,8 @@
 <dict>
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
+    <key>CFBundleDisplayName</key>
+    <string>Holmes Local</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIconFile</key>
@@ -19,7 +21,7 @@
     <key>CFBundlePackageType</key>
     <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSApplicationCategoryType</key>
@@ -29,7 +31,7 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>Copyright © 2026. All rights reserved.</string>
+    <string>Copyright © 2026 Holmes Local contributors. Licensed under the GNU GPL v3.0.</string>
     <key>NSMainStoryboardFile</key>
     <string></string>
     <key>NSPrincipalClass</key>
@@ -44,18 +46,13 @@
     <string>Holmes reads your calendar to detect upcoming meetings and auto-join video calls 2 minutes before they start.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Holmes listens when you hold the talk hotkey, so you can ask about your screen out loud.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <!-- Ollama on another machine on the LAN by IP address (Settings ▸ Local Model ▸ Server). macOS 14+ blocks plain-IP connections without this. -->
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Holmes transcribes what you say on-device to understand your request.</string>
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key>
-            <string>com.grain.holmes.oauth</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>holmes</string>
-            </array>
-        </dict>
-    </array>
 </dict>
 </plist>

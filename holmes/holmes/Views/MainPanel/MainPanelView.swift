@@ -71,7 +71,7 @@ struct MainPanelView: View {
                         }
 
                         // Activity log
-                        ActivityLog(activities: agent.recentActivities.isEmpty ? ActivityItem.samples : agent.recentActivities)
+                        ActivityLog(activities: agent.recentActivities)
                             .cardEntrance(appeared: cardsAppeared, delay: 0.20)
                     }
                     .padding(12)

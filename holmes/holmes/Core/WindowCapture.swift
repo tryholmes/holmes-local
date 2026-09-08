@@ -14,8 +14,11 @@ import Foundation
 //
 // Three fields form the load-bearing pair of coordinate spaces:
 //   • screenshotWidthInPixels / screenshotHeightInPixels — the EXACT pixel size of
-//     `jpegBase64`, and the same numbers declared to Claude as display_width_px /
-//     display_height_px. The model returns coordinates in THIS space (top-left).
+//     `jpegBase64`, and the same numbers declared to the model as the screenshot
+//     size in the `computer` tool's description and the system prompt. The model
+//     returns coordinates in THIS space (top-left) — or, when
+//     OllamaConfig.coordinateSpace is .normalized1000, in a 0-1000 grid that
+//     `modelPointToScreenshotPixels` maps onto this space first.
 //   • displayWidthInPoints / displayHeightInPoints + displayFrame — the AppKit
 //     (bottom-left origin) geometry of the physical display those pixels belong to,
 //     used to scale + Y-flip + offset the model's coordinate back to a global point.
@@ -43,10 +46,11 @@ struct ComputerUseCapture {
 // ScreenEngine's on-demand raw CGImage grab (which already excludes Holmes' own
 // windows and blank-checks the frame) but deliberately does NOT go through
 // VisionEncoder — VisionEncoder downscales to a 1024 long-edge, which would NOT
-// match the pixel dims declared to the model and would silently corrupt Claude's
-// pixel-counting. Instead we resize to an aspect-matched, Anthropic-recommended
-// resolution via the retina-safe NSBitmapImageRep exact-pixel path adapted from
-// OpenClicky's ElementLocationDetector (the single biggest accuracy lever).
+// match the pixel dims declared to the model and would silently corrupt the
+// model's pixel-counting. Instead we resize to an aspect-matched resolution from
+// the small set below via the retina-safe NSBitmapImageRep exact-pixel path
+// adapted from OpenClicky's ElementLocationDetector (the single biggest accuracy
+// lever).
 //
 // @MainActor because it touches ScreenEngine (@MainActor) and NSScreen (main
 // thread). The two pure helpers — `recommendedResolution` and
@@ -58,37 +62,37 @@ enum WindowCapture {
     // MARK: - Declared resolution (resolved once per run, kept in sync)
 
     /// The current run's chosen screenshot resolution, in pixels. HolmesBrain reads
-    /// these to build the `computer` tool declaration (display_width_px /
-    /// display_height_px) so the tool declaration and the screenshots agree. They
+    /// these to state the pixel space in the `computer` tool's description and
+    /// the system prompt, so the tool declaration and the screenshots agree. They
     /// are (re)resolved from the captured display's aspect ratio by
     /// `resolveForCurrentRun()` and by every `captureForModel()`.
-    private(set) static var declaredWidth: Int = 1920
-    private(set) static var declaredHeight: Int = 1200
+    private(set) static var declaredWidth: Int = 1280
+    private(set) static var declaredHeight: Int = 800
 
     /// Computer-use capture resolutions, paired with their aspect ratios.
     ///
-    /// HIGH-RESOLUTION. These used to be 1024×768 / 1280×800 / 1366×768 because
-    /// older models capped at 1568px on the long edge and silently downsampled
-    /// anything bigger — sending more pixels than that genuinely HURT coordinate
-    /// precision. That ceiling is gone: current models accept up to 2576px on the
-    /// long edge and return coordinates that map 1:1 to these pixels. The old
-    /// sizes were therefore throwing away resolution on exactly the small targets
-    /// (menu items, toolbar icons, table cells) that a misclick lands next to.
-    /// 1080p-class is the documented balance of accuracy against image-token cost.
+    /// 1280-CLASS, ON PURPOSE. The hosted build used 1080p-class frames because a
+    /// frontier vision model accepts them at full detail. A LOCAL vision model
+    /// (qwen3-vl and friends) spends roughly one token per 32×32 block, so a
+    /// 1920×1200 frame costs ~2.2k tokens of a 16k context — and every turn of a
+    /// computer session carries one or two frames. 1280×800 is ~1k tokens, which
+    /// keeps a multi-step session inside the window and roughly halves per-turn
+    /// latency on a laptop, while UI text is still legible for the model. Small
+    /// targets get `zoom_screen` (a magnified crop) rather than a bigger frame.
     ///
-    /// We still pick the aspect closest to the display so the image Claude sees is
-    /// never stretched (distortion mainly wrecks X-axis accuracy).
+    /// We still pick the aspect closest to the display so the image the model sees
+    /// is never stretched (distortion mainly wrecks X-axis accuracy).
     nonisolated private static let supportedResolutions: [(w: Int, h: Int, aspect: Double)] = [
-        (1440, 1080, 1440.0 / 1080.0),  // 4:3   = 1.333 (legacy displays)
-        (1920, 1200, 1920.0 / 1200.0),  // 16:10 = 1.600 (MacBook Air/Pro, most Macs)
-        (1920, 1080, 1920.0 / 1080.0)   // 16:9  = 1.778 (external monitors, ultrawide)
+        (1024, 768, 1024.0 / 768.0),    // 4:3   = 1.333 (legacy displays)
+        (1280, 800, 1280.0 / 800.0),    // 16:10 = 1.600 (MacBook Air/Pro, most Macs)
+        (1280, 720, 1280.0 / 720.0)     // 16:9  = 1.778 (external monitors, ultrawide)
     ]
 
     /// Picks the recommended resolution whose aspect ratio best matches `aspect`
     /// (width / height). Pure and side-effect free, so it is safe to call from any
     /// actor. (OpenClicky ElementLocationDetector.swift:128-148.)
     nonisolated static func recommendedResolution(forAspect aspect: Double) -> (w: Int, h: Int) {
-        var best = (w: 1920, h: 1200)
+        var best = (w: 1280, h: 800)
         var smallestDifference = Double.greatestFiniteMagnitude
         for resolution in supportedResolutions {
             let difference = abs(aspect - resolution.aspect)
@@ -138,7 +142,7 @@ enum WindowCapture {
 
         // Aspect-match the target resolution to the display, then LOCK it into the
         // declared dims. Recording screenshot pixels == declared dims is the invariant
-        // that keeps Claude's returned coordinates interpretable.
+        // that keeps the model's returned coordinates interpretable.
         let resolution = recommendedResolution(
             forAspect: Double(geometry.widthPts) / Double(max(1, geometry.heightPts))
         )
@@ -203,16 +207,75 @@ enum WindowCapture {
         return (base64, outW, outH)
     }
 
+    // MARK: - Model coordinate space (pixels vs. a normalized 0-1000 grid)
+
+    /// THE ONE PLACE the model's coordinate convention is interpreted. Holmes asks
+    /// for pixels of the declared screenshot, but some local vision models are
+    /// trained to answer in a normalized 0-1000 grid regardless of what the prompt
+    /// says; OllamaConfig.coordinateSpace lets the user flip that at runtime.
+    /// Converts a point as the model gave it into DECLARED-RESOLUTION PIXELS
+    /// (top-left origin). Identity in `.pixels` mode. Linear with a zero origin,
+    /// so it also converts a SIZE (w,h) when handed one as a point.
+    nonisolated static func modelPointToScreenshotPixels(_ p: CGPoint, width: Int, height: Int) -> CGPoint {
+        switch OllamaConfig.coordinateSpace {
+        case .pixels:
+            return p
+        case .normalized1000:
+            return CGPoint(x: p.x / 1000.0 * CGFloat(max(1, width)),
+                           y: p.y / 1000.0 * CGFloat(max(1, height)))
+        }
+    }
+
+    nonisolated static func modelPointToScreenshotPixels(_ p: CGPoint, in cap: ComputerUseCapture) -> CGPoint {
+        modelPointToScreenshotPixels(p, width: cap.screenshotWidthInPixels, height: cap.screenshotHeightInPixels)
+    }
+
+    /// Inverse of `modelPointToScreenshotPixels`: declared pixels → the model's
+    /// own convention. Used when Holmes REPORTS a coordinate to the model
+    /// (`cursor_position`) so the number it reads back is in the space it speaks.
+    nonisolated static func screenshotPixelsToModelPoint(_ p: CGPoint, width: Int, height: Int) -> CGPoint {
+        switch OllamaConfig.coordinateSpace {
+        case .pixels:
+            return p
+        case .normalized1000:
+            return CGPoint(x: p.x * 1000.0 / CGFloat(max(1, width)),
+                           y: p.y * 1000.0 / CGFloat(max(1, height)))
+        }
+    }
+
+    /// The valid range of a model coordinate in the model's own convention:
+    /// (W, H) in pixel mode, (1000, 1000) in normalized mode. For clamping
+    /// values that stay in model space (VisualGuidance annotations).
+    nonisolated static func modelCoordinateBounds(width: Int, height: Int) -> CGSize {
+        switch OllamaConfig.coordinateSpace {
+        case .pixels:         return CGSize(width: width, height: height)
+        case .normalized1000: return CGSize(width: 1000, height: 1000)
+        }
+    }
+
+    /// One sentence, reused verbatim by every prompt and tool description that
+    /// tells the model how to express a coordinate, so they can never disagree.
+    nonisolated static func coordinateSpaceDescription(width: Int, height: Int) -> String {
+        switch OllamaConfig.coordinateSpace {
+        case .pixels:
+            return "Coordinates are pixels of the last screenshot, which is \(width)×\(height) (width × height), origin top-left: x runs 0…\(width) left to right, y runs 0…\(height) top to bottom."
+        case .normalized1000:
+            return "Coordinates are on a 0-1000 grid laid over the last screenshot (which is \(width)×\(height) pixels), origin top-left: x runs 0 (left edge) to 1000 (right edge), y runs 0 (top edge) to 1000 (bottom edge). Do NOT answer in pixels."
+        }
+    }
+
     // MARK: - Coordinate mapping (model pixels → global AppKit point)
 
     /// Maps a coordinate the model returned — in DECLARED-RESOLUTION PIXEL space,
-    /// TOP-LEFT origin — into a GLOBAL AppKit point (bottom-left origin, union of
-    /// all displays). The output is exactly what `InputController.Mouse.leftClick`
-    /// expects; that layer then does the final per-display AppKit→Quartz conversion.
+    /// TOP-LEFT origin (or the normalized grid, see `modelPointToScreenshotPixels`)
+    /// — into a GLOBAL AppKit point (bottom-left origin, union of all displays).
+    /// The output is exactly what `InputController.Mouse.leftClick` expects; that
+    /// layer then does the final per-display AppKit→Quartz conversion.
     ///
     /// Pipeline (OpenClicky ElementLocationDetector.swift:103-121 for scale + flip,
     /// plus `+ displayFrame.origin` for the multi-display global offset):
-    ///   1. clamp to the screenshot's pixel bounds — Claude occasionally returns a
+    ///   0. interpret the model's coordinate convention (pixels or 0-1000 grid).
+    ///   1. clamp to the screenshot's pixel bounds — a model occasionally returns a
     ///      coordinate slightly outside the declared dims, which would otherwise map
     ///      off-screen after scaling.
     ///   2. scale from pixel space into display POINT space.
@@ -220,9 +283,12 @@ enum WindowCapture {
     ///   4. offset by the display's global AppKit origin.
     /// Pure and side-effect free, so it is safe to call from any actor.
     nonisolated static func modelPointToGlobalAppKit(_ p: CGPoint, in cap: ComputerUseCapture) -> CGPoint {
+        // 0. Model convention → declared screenshot pixels (identity in pixel mode).
+        let pixel = modelPointToScreenshotPixels(p, in: cap)
+
         // 1. Clamp to the declared screenshot pixel bounds.
-        let clampedX = max(0, min(p.x, CGFloat(cap.screenshotWidthInPixels)))
-        let clampedY = max(0, min(p.y, CGFloat(cap.screenshotHeightInPixels)))
+        let clampedX = max(0, min(pixel.x, CGFloat(cap.screenshotWidthInPixels)))
+        let clampedY = max(0, min(pixel.y, CGFloat(cap.screenshotHeightInPixels)))
 
         // 2. Scale pixel space → display point space.
         let scaleX = CGFloat(cap.displayWidthInPoints) / CGFloat(max(1, cap.screenshotWidthInPixels))
@@ -282,8 +348,8 @@ enum WindowCapture {
     /// instead of `NSImage.lockFocus()`. On a 2× (Retina) display, lockFocus produces
     /// a bitmap at TWICE the requested size (e.g. 2560×1600 for a 1280×800 target),
     /// so the JPEG would be double the resolution declared to the computer tool and
-    /// Claude's pixel-counting would return coordinates in the wrong scale. This path
-    /// guarantees the output is exactly `targetWidth` × `targetHeight` pixels.
+    /// the model's pixel-counting would return coordinates in the wrong scale. This
+    /// path guarantees the output is exactly `targetWidth` × `targetHeight` pixels.
     private static func retinaSafeResizedJPEGBase64(
         _ cgImage: CGImage,
         toWidth targetWidth: Int,
@@ -326,8 +392,11 @@ enum WindowCapture {
         )
         NSGraphicsContext.restoreGraphicsState()
 
+        // 0.8: a local model gets no benefit from a heavier JPEG (its vision
+        // encoder resamples to a token grid anyway), and the smaller base64 is
+        // fewer bytes to ship to the server on every turn.
         guard let jpegData = bitmapRep.representation(
-            using: .jpeg, properties: [.compressionFactor: 0.85]
+            using: .jpeg, properties: [.compressionFactor: 0.8]
         ) else {
             return nil
         }

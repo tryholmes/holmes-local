@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "id": "linear-ticket-summary",
+  "name": "Linear Ticket Summary",
+  "icon": "checklist",
+  "summary": "When you open a Linear ticket, drafts a two line status comment you can paste.",
+  "kind": "aiAnswer",
+  "cooldownSeconds": 900,
+  "composioApps": [],
+  "match": {
+    "apps": ["Safari", "Chrome", "Arc", "Linear"],
+    "windowTitle": "\\b[A-Z]{2,6}-\\d{1,5}\\b",
+    "windowTitleNot": ["Inbox", "My Issues", "Triage"]
+  },
+  "key": "{windowTitle}",
+  "title": "Summarize {windowTitle}",
+  "goal": "The user has a Linear ticket open.\n\nWhat Holmes saw on screen:\n{scene}\n\nWrite a status comment of at most two sentences: what the ticket is about and the single most useful next step. Return ONLY the comment text.",
+  "target": "clipboard"
+}

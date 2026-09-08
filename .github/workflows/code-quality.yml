@@ -2,88 +2,58 @@ name: Code Quality
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main ]
+
+# Cheap, advisory checks. The real gate is the build in build.yml.
 
 jobs:
-  swift-format:
-    name: Swift Format Check
-    runs-on: macos-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install SwiftFormat
-      run: brew install swiftformat
-    
-    - name: Check Formatting
-      run: |
-        swiftformat --lint Grain/ GrainAI/ --config .swiftformat 2>/dev/null || echo "No .swiftformat config found, using defaults"
-        swiftformat --lint Grain/ GrainAI/ 2>/dev/null || echo "Some formatting issues detected"
+  secrets-scan:
+    name: No credentials in source
+    runs-on: ubuntu-latest
 
-  complexity-check:
-    name: Code Complexity Analysis
-    runs-on: macos-latest
-    
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Lizard
-      run: brew install lizard
-    
-    - name: Run Complexity Analysis
-      run: |
-        lizard Grain/ GrainAI/ -l swift --CCN 15 -w || true
-      continue-on-error: true
+      - uses: actions/checkout@v4
 
-  security-scan:
-    name: Security vulnerabilities check
-    runs-on: macos-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Run Security scan
-      run: |
-        echo "Checking for hardcoded secrets and sensitive data..."
-        if grep -rEi "(api[_-]?key|secret|password|token)" --include="*.swift" Grain/ GrainAI/ | grep -v "//" | grep -v "\.example"; then
-          echo "WARNING: Potential secrets found in code"
-          exit 1
-        else
-          echo "No obvious secrets detected"
-        fi
-      continue-on-error: true
+      - name: Scan for committed keys
+        run: |
+          echo "Checking for hardcoded credentials..."
+          # Holmes Local has no model API key. The only credentials that could
+          # ever appear are an ElevenLabs key or a Composio key, and both belong
+          # in ~/.holmes, never in the repo.
+          if grep -rEn "(sk_[A-Za-z0-9]{20,}|xi-api-key: *['\"][A-Za-z0-9]{10,}|ck_[A-Za-z0-9]{20,})" \
+               --include='*.swift' --include='*.json' --include='*.md' --include='*.sh' --include='*.js' \
+               holmes/ README.md 2>/dev/null | grep -v 'YOUR_'; then
+            echo "ERROR: something that looks like a real credential is committed"
+            exit 1
+          fi
+          echo "No credentials detected"
 
-  documentation-check:
-    name: Documentation Coverage
-    runs-on: macos-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Check Documentation
-      run: |
-        echo "Checking for README and documentation..."
-        if [ ! -f "README.md" ]; then
-          echo "ERROR: README.md not found"
-          exit 1
-        fi
-        echo "Documentation check passed"
+  docs-check:
+    name: Required files present
+    runs-on: ubuntu-latest
 
-  dependency-check:
-    name: Dependency Vulnerability Scan
-    runs-on: macos-latest
-    
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Check SPM Dependencies
-      run: |
-        if [ -f "Package.swift" ]; then
-          echo "Checking Package.swift dependencies..."
-          swift package resolve
-          echo "Dependencies resolved successfully"
-        else
-          echo "No Package.swift found (using Xcode project)"
-        fi
+      - uses: actions/checkout@v4
+
+      - name: Check README, LICENSE, notices
+        run: |
+          for f in README.md LICENSE THIRD_PARTY_NOTICES.md CONTRIBUTING.md holmes/MCP-SETUP.md; do
+            if [ ! -f "$f" ]; then echo "ERROR: $f not found"; exit 1; fi
+          done
+          echo "Documentation check passed"
+
+  complexity:
+    name: Complexity report (advisory)
+    runs-on: macos-15
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lizard
+        run: brew install lizard
+
+      - name: Run Lizard
+        run: lizard holmes/holmes -l swift --CCN 15 -w || true

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "id": "docs-page-brief",
+  "name": "Docs Page Brief",
+  "icon": "doc.text.magnifyingglass",
+  "summary": "When you open a page in your team wiki, pulls related pages through your MCP server and drafts a short brief.",
+  "kind": "aiAnswer",
+  "cooldownSeconds": 1200,
+  "mcpServers": ["mywiki"],
+  "persona": "You write for a busy engineer who has thirty seconds. Lead with what this page decides or defines, then list at most three related pages by title with one clause each on why they matter. Plain sentences, no headings, no bullet symbols.",
+  "match": {
+    "apps": ["Safari", "Chrome", "Arc", "Firefox"],
+    "windowTitle": "(Confluence|Notion|Wiki)\\s*$",
+    "windowTitleNot": ["Home", "Search", "Recent"]
+  },
+  "key": "{windowTitle}",
+  "title": "Brief: {windowTitle}",
+  "goal": "The user has a wiki page open.\n\nWhat Holmes saw on screen:\n{scene}\n\nIf a search or fetch tool from the wiki server is available, use at most two calls to find pages related to this one. Then write the brief.",
+  "target": "clipboard"
+}

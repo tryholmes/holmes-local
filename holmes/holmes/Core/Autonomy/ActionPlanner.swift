@@ -4,9 +4,9 @@ import Foundation
 // Turns a detected context + playbook goal into a concrete, ordered ActionPlan.
 //
 // This is the PLANNING half of Holmes's autonomy loop — it never executes
-// anything. It asks claude-opus-5 (via AnthropicClient.complete) for a short
-// list of steps, each tagged with the backend that should carry it out and an
-// honest reversibility bit. Execution, the global "Autonomous actions" master
+// anything. It asks the local model (via OllamaClient.complete, grammar-
+// constrained to the plan schema) for a short list of steps, each tagged with
+// the backend that should carry it out and an honest reversibility bit. Execution, the global "Autonomous actions" master
 // switch, the per-playbook level picker, and the irreversible-confirm gate
 // (ComputerUseEngine.isIrreversible) all live downstream — a plan is inert data
 // until something dispatches it.
@@ -82,10 +82,10 @@ enum ActionPlanner {
     /// so one giant page can't crowd out the goal/instructions.
     private static let screenTextCap = 4000
 
-    /// Asks claude-opus-5 to produce an ordered plan for accomplishing the
+    /// Asks the local model to produce an ordered plan for accomplishing the
     /// playbook's goal given the current context + recent memory. Returns nil
-    /// on any failure (not configured, transport, refusal, unparseable or
-    /// empty plan) — callers treat nil as "don't act".
+    /// on any failure (Ollama not ready, transport, unparseable or empty plan)
+    /// — callers treat nil as "don't act".
     ///
     /// This does NOT execute — it only plans.
     static func plan(playbookId: String, goal: String, context: PlaybookContext) async -> ActionPlan? {
@@ -107,14 +107,20 @@ enum ActionPlanner {
 
         let raw: String
         do {
-            raw = try await AnthropicClient.shared.complete(
+            // Grammar-constrained JSON (Ollama `format`), with the schema's field
+            // descriptions restated in the prompt by the client. A plan is the
+            // start of a user-visible automation, so it takes the .agent lane
+            // rather than being dropped as .busy behind other background work.
+            raw = try await OllamaClient.shared.complete(
                 system: systemPrompt,
                 user: userPrompt(playbookId: playbookId, goal: goal, context: context, memoryDigest: memoryDigest),
                 maxTokens: 2048,
-                asJSON: true
+                asJSON: true,
+                schema: planSchema,
+                priority: .agent
             )
         } catch {
-            print("[Holmes] ActionPlanner: plan request failed — \(error)")
+            print("[Holmes] ActionPlanner: plan request failed — \(error.localizedDescription)")
             return nil
         }
 
@@ -133,11 +139,39 @@ enum ActionPlanner {
 
     // MARK: - Prompts
 
+    /// The JSON schema Ollama's grammar enforces on the reply. It mirrors the
+    /// prose shape in `systemPrompt` exactly. Ollama needs a CONCRETE schema, so
+    /// a step's `input` — a backend-specific object with dynamic keys no schema
+    /// can enumerate — is declared as a free-form `{"type":"object"}`; the
+    /// defensive parser below still handles a stringified or bare-string input
+    /// in case the grammar is bypassed (older server, `format` unsupported).
+    private static let planSchema: [String: Any] = OllamaClient.objectSchema([
+        "steps": [
+            "type": "array",
+            "description": "The ordered plan, 2-6 steps (never more than 12).",
+            "items": OllamaClient.objectSchema([
+                "action": ["type": "string",
+                           "description": "The machine verb for the backend (open_app, move_file, ax_press, left_click, GMAIL_SEND_EMAIL, …)."],
+                "input": ["type": "object",
+                          "description": "The verb's arguments as a JSON object; {} when it needs none. NEVER a coordinate."],
+                "backend": ["type": "string",
+                            "enum": ["computer", "nsworkspace", "file", "eventkit", "app", "composio"],
+                            "description": "Which actuator runs the step."],
+                "reversible": ["type": "boolean",
+                               "description": "false for anything that sends, deletes, buys, posts, publishes, submits, saves over a file, or moves the user's files."],
+                "summary": ["type": "string",
+                            "description": "One human-readable line for the confirmation card."]
+            ])
+        ],
+        "rationale": ["type": "string",
+                      "description": "One short paragraph explaining the route chosen."]
+    ])
+
     /// Frozen planner instructions. Keep this byte-stable — the volatile parts
     /// (goal, context, memory) all live in the user turn. The JSON shape is
-    /// described in prose (not a strict schema) because a step's `input` is a
-    /// backend-specific object with dynamic keys that a strict schema can't
-    /// enumerate; the parser below is defensive about the reply.
+    /// ALSO described in prose here (with the same keys as `planSchema`) because
+    /// a small local model follows an example far better than a grammar alone;
+    /// the parser below is defensive about the reply regardless.
     private static let systemPrompt = """
     You are the action planner for Holmes, an autonomous macOS agent.
 

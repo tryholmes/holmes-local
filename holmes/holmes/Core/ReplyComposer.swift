@@ -128,15 +128,18 @@ final class ReplyComposer {
     ///     replied to.
     ///   - styleExemplars: things the user has actually written, used as voice
     ///     samples. Auto-filled from the iMessage thread when left empty.
-    /// - Returns: nil when there is nothing to reply to, no API key, or the
+    ///   - priority: `.background` for autopilot drafts (dropped with `.busy`
+    ///     while an agent session owns the GPU); `.agent` when the user asked.
+    /// - Returns: nil when there is nothing to reply to, the local model is not ready, or the
     ///   model's answer can't be trusted — never a placeholder draft.
     func draftReply(to msg: IncomingMessage,
                     context: LiveContext?,
-                    styleExemplars: [String] = []) async -> DraftedReply? {
+                    styleExemplars: [String] = [],
+                    priority: OllamaClient.Priority = .background) async -> DraftedReply? {
         let incoming = msg.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !incoming.isEmpty else { return nil }
 
-        // 1. TOPIC RECALL — runs FIRST, ahead of even the API-key check.
+        // 1. TOPIC RECALL — runs FIRST, ahead of even the local-model readiness check.
         //    Extracting the subject and pulling the rows about it is entirely
         //    local (deterministic rules + SQLite), so the dashboard's REFERENCED
         //    NOW section lights up the moment the message lands, whether or not
@@ -145,8 +148,8 @@ final class ReplyComposer {
         let hits = recall.hits
         let topics = recall.topics
 
-        guard AnthropicConfig.isConfigured else {
-            print("[Holmes] ReplyComposer: no Anthropic key — cannot draft a reply")
+        guard OllamaConfig.isConfigured else {
+            print("[Holmes] ReplyComposer: local model not ready — cannot draft a reply (\(OllamaConfig.lastProblem ?? "Ollama isn't ready"))")
             return nil
         }
 
@@ -155,9 +158,19 @@ final class ReplyComposer {
         // 2. The thread itself. Only iMessage needs a live read here: the web
         //    and email surfaces arrive with their transcript already captured
         //    in LiveContext.bodyText by the browser extension / AX pass.
-        let thread = (surface == Self.surfaceIMessage)
-            ? MessagesReader.shared.readFrontmostThread()
-            : nil
+        // The frontmost chat window is not necessarily the thread the message
+        // came from (the user may have clicked elsewhere; the Holmes panel may
+        // be frontmost). Only use it when its contact matches the sender.
+        let thread: MessagesReader.Thread? = {
+            guard surface == Self.surfaceIMessage,
+                  let t = MessagesReader.shared.readFrontmostThread() else { return nil }
+            let sender = msg.sender.lowercased().trimmingCharacters(in: .whitespaces)
+            let contact = t.contact.lowercased().trimmingCharacters(in: .whitespaces)
+            guard !sender.isEmpty, !contact.isEmpty else { return nil }
+            let senderFirst = sender.split(separator: " ").first.map(String.init) ?? sender
+            let contactFirst = contact.split(separator: " ").first.map(String.init) ?? contact
+            return (contact.contains(sender) || sender.contains(contact) || senderFirst == contactFirst) ? t : nil
+        }()
 
         // 3. Voice. The single most effective anti-"AI voice" measure is
         //    showing the model what this person's own sent messages look like.
@@ -217,9 +230,12 @@ final class ReplyComposer {
 
         let raw: String
         do {
-            raw = try await AnthropicClient.shared.complete(
+            raw = try await OllamaClient.shared.complete(
                 system: system, user: user, maxTokens: Self.maxTokens,
-                asJSON: true, schema: Self.draftSchema)
+                asJSON: true, schema: Self.draftSchema, priority: priority)
+        } catch OllamaClient.AgentError.busy {
+            print("[Holmes] ReplyComposer: the local model is busy with an agent session — draft skipped")
+            return nil
         } catch {
             print("[Holmes] ReplyComposer: draft failed — \(error.localizedDescription)")
             return nil
@@ -288,7 +304,7 @@ final class ReplyComposer {
     /// Public and separate from drafting on purpose. The message watcher calls
     /// this the instant a message arrives — recall is local and costs
     /// milliseconds, so REFERENCED NOW fills in immediately, and it stays filled
-    /// in even if drafting is impossible (no API key) or never asked for. That
+    /// in even if drafting is impossible (local model not ready) or never asked for. That
     /// is the user-visible "see when your memory is re-accessed" requirement:
     /// re-access is the recall itself, not the draft that may follow it.
     ///
@@ -584,11 +600,11 @@ final class ReplyComposer {
 
     /// Tolerant JSON extraction: the model is asked for a bare object, but a
     /// stray code fence or a leading sentence must not cost the user a draft.
-    /// The reply's shape, enforced by the API through output_config.format
+    /// The reply's shape, enforced by Ollama's schema-constrained `format`
     /// rather than by asking the model to "return JSON". `uncertain` is part of
     /// the contract precisely because the model must have a way to say the
     /// context didn't answer the question — see draftConfidence.
-    private static let draftSchema: [String: Any] = AnthropicClient.objectSchema([
+    private static let draftSchema: [String: Any] = OllamaClient.objectSchema([
         "reply": [
             "type": "string",
             "description": "The reply body, ready to paste. No greeting boilerplate, no signature, no quotes around it."

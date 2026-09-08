@@ -2,6 +2,7 @@ import SwiftUI
 
 struct GrainOverlay: View {
     @State private var phase: CGFloat = 0
+    @State private var grainTimer: Timer?
     let opacity: CGFloat
     let animated: Bool
     
@@ -28,11 +29,15 @@ struct GrainOverlay: View {
         .allowsHitTesting(false)
         .id(animated ? phase : 0)
         .onAppear {
-            if animated {
-                Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            if animated, grainTimer == nil {
+                grainTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
                     phase = CGFloat.random(in: 0...1000)
                 }
             }
+        }
+        .onDisappear {
+            grainTimer?.invalidate()
+            grainTimer = nil
         }
     }
 }

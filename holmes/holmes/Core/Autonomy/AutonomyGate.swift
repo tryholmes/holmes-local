@@ -146,8 +146,15 @@ enum AutonomyGate {
                 return !isTriviallyUndoable(step)
             }
 
-            // Backend ground truth beats a reversible:true claim.
-            if isComputerBackend(step.backend) {
+            // AppleScript source can do anything ("do shell script", keystroke
+            // return) and no token classifier can read it — always confirm.
+            if step.action.lowercased() == "applescript" { return true }
+
+            // Backend ground truth beats a reversible:true claim. BackendRouter
+            // sends every backend string it does not recognise to the pixel
+            // lane, so the gate must classify the same way: anything that is not
+            // a known structured/API backend is treated as a computer step.
+            if isComputerBackend(step.backend) || !isStructuredBackend(step.backend) {
                 // Exact reuse of the shipping pixel-path classifier: commit key
                 // chords (return/⌘S/⌘W/⌘Q/⌘⌫), AX send-verb labels under the
                 // click point, and the nameless-control fail-closed rule in
@@ -175,6 +182,15 @@ enum AutonomyGate {
         "triple_click", "left_mouse_down", "left_mouse_up", "left_click_drag",
         "scroll", "key", "hold_key", "type"
     ]
+
+    /// Mirror of BackendRouter.lane(for:)'s app + composio cases. Keep in sync.
+    private static let structuredBackends: Set<String> = [
+        "app", "nsworkspace", "workspace", "file", "files", "fs", "finder", "filesystem",
+        "applescript", "eventkit", "calendar", "ax", "composio", "mcp", "api"
+    ]
+    private static func isStructuredBackend(_ backend: String) -> Bool {
+        structuredBackends.contains(backend.lowercased())
+    }
 
     private static func isComputerBackend(_ backend: String) -> Bool {
         computerBackends.contains(backend.lowercased())

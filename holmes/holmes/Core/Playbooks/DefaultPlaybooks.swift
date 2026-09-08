@@ -23,12 +23,12 @@ enum DefaultPlaybooks {
 
     // The safety sentence every draft goal carries. Enforcement is in the tool
     // filter (ComposioCatalog); this keeps the model's intent aligned.
-    private static let safetyRule =
+    static let safetyRule =
         "You may use read/fetch/search tools to gather context. You must NEVER send, post, or publish anything."
 
     // MARK: - Scene builder (what Holmes saw)
 
-    private static func scene(_ ctx: PlaybookContext, maxChars: Int = 1500) -> String {
+    static func scene(_ ctx: PlaybookContext, maxChars: Int = 1500) -> String {
         var lines: [String] = []
         lines.append("Active app: \(ctx.appName)")
         if !ctx.windowTitle.isEmpty { lines.append("Window title: \(ctx.windowTitle)") }

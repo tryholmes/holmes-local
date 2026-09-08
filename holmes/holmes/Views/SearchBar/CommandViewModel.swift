@@ -143,7 +143,7 @@ final class CommandViewModel {
         let trigger = command?.trigger ?? "/ask"
 
         // ── Instant commands: no model at all ─────────────────────────────────
-        // Pure local logic (calendar + AX reads), so they work with no API key.
+        // Pure local logic (calendar + AX reads), so they work even when Ollama is down.
         let argL = argument.lowercased()
 
         // A reply to a real conversation, grounded in the actual thread and in
@@ -175,16 +175,17 @@ final class CommandViewModel {
             }
         }
 
-        // Every model path from here needs the API key. There is no local
-        // fallback: a degraded answer the user can't tell apart from a real one
-        // is worse than an honest error, so say exactly what's missing.
-        guard AnthropicConfig.isConfigured else {
-            appendLog("No Anthropic API key set. Add one in Holmes ▸ Settings (or drop it in ~/Library/Application Support/Holmes/anthropic_key) to enable \(trigger).", kind: .error)
+        // Every model path from here needs the local model (Ollama running and
+        // the chosen model pulled). There is no fallback: a degraded answer the
+        // user can't tell apart from a real one is worse than an honest error,
+        // so say exactly what's missing.
+        guard OllamaConfig.isConfigured else {
+            appendLog("\(OllamaConfig.notReadyMessage) \(trigger) needs the local model.", kind: .error)
             state = .error
             return
         }
 
-        // Agentic action path: /run runs the Claude + MCP tool-use loop, which can
+        // Agentic action path: /run runs the local model + MCP tool-use loop, which can
         // take real, multi-step actions. Everything else is a single completion.
         if trigger == "/run" {
             await runAgentic(argument: argument)
@@ -202,12 +203,27 @@ final class CommandViewModel {
         appendLog("Thinking…", kind: .step)
         let fullResponse: String
         do {
-            fullResponse = try await AnthropicClient.shared.complete(
+            fullResponse = try await OllamaClient.shared.complete(
                 system: "You are Holmes, a direct AI assistant running on the user's Mac. Answer exactly what is asked, with no preamble.",
                 user: prompt,
-                maxTokens: 1024)
+                maxTokens: 1024,
+                priority: .agent)
+        } catch OllamaClient.AgentError.serverUnreachable {
+            appendLog("Ollama isn't running — start it in Holmes ▸ Settings ▸ Local Model and try again.", kind: .error)
+            state = .error
+            Task { await OllamaServer.shared.refreshAfterFailure() }
+            return
+        } catch OllamaClient.AgentError.modelMissing(let model) {
+            appendLog("The local model \(model) isn't downloaded — download it in Holmes ▸ Settings ▸ Local Model.", kind: .error)
+            state = .error
+            Task { await OllamaServer.shared.refreshAfterFailure() }
+            return
+        } catch OllamaClient.AgentError.busy {
+            appendLog("The local model is busy — try again in a moment.", kind: .error)
+            state = .error
+            return
         } catch {
-            appendLog("Claude request failed — \(error.localizedDescription)", kind: .error)
+            appendLog("Local model request failed — \(error.localizedDescription)", kind: .error)
             state = .error
             return
         }
@@ -223,7 +239,7 @@ final class CommandViewModel {
             appendLog(line, kind: .info)
         }
         if lines.isEmpty {
-            appendLog("Claude returned an empty response.", kind: .error)
+            appendLog("The local model returned an empty response.", kind: .error)
             state = .error
             return
         }
@@ -253,7 +269,7 @@ final class CommandViewModel {
         log.append(LogLine(text: text, kind: kind))
     }
 
-    // MARK: - Agentic /run (Claude + MCP tools)
+    // MARK: - Agentic /run (local model + MCP tools)
 
     private func runAgentic(argument: String) async {
         let goal = argument.isEmpty ? "Help me with what's on my screen right now." : argument
@@ -262,7 +278,7 @@ final class CommandViewModel {
         }
         switch result {
         case .notConfigured:
-            appendLog("No Anthropic API key set. Add one in Holmes ▸ Settings to enable agentic actions.", kind: .error)
+            appendLog("\(OllamaConfig.notReadyMessage) Agentic actions need the local model.", kind: .error)
             state = .error
         case .text(let final):
             if log.isEmpty { appendLog(final, kind: .success) }
@@ -277,7 +293,7 @@ final class CommandViewModel {
     /// there is no readable thread — the caller then falls back to the canned
     /// availability line rather than inventing a recipient.
     private func draftGroundedReply(appName: String) async -> Bool {
-        guard AnthropicConfig.isConfigured else { return false }
+        guard OllamaConfig.isConfigured else { return false }
         guard MessagesReader.shared.isMessagesFrontmost(),
               let thread = MessagesReader.shared.readFrontmostThread(),
               let incoming = thread.messages.last(where: { !$0.isFromMe })
@@ -293,10 +309,12 @@ final class CommandViewModel {
             threadID: thread.contact,
             app: target)
 
+        // The user typed this command: it jumps the GPU queue instead of being
+        // dropped as `.busy` behind a running playbook.
         guard let draft = await ReplyComposer.shared.draftReply(
-            to: message, context: HolmesAgent.shared.live)
+            to: message, context: HolmesAgent.shared.live, priority: .agent)
         else {
-            appendLog("Couldn't draft a grounded reply — falling back.", kind: .error)
+            appendLog("Couldn't draft a grounded reply (see the console for why) — falling back.", kind: .error)
             return false
         }
 

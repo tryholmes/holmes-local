@@ -44,6 +44,26 @@ final class ScreenGlowController {
 
     // MARK: Public API
 
+    /// Who asked for the glow. Context-triggered work (playbooks fired from
+    /// what's on screen, autonomy runs) only glows when the user opted in;
+    /// things the user explicitly asked for (Clicky, the command bar) always do.
+    enum Origin { case user, context }
+    static let contextGlowDefaultsKey = "com.grain.holmes.glow.contextEnabled"
+    static var contextGlowEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: contextGlowDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: contextGlowDefaultsKey) }
+    }
+
+    func set(state newState: GlowState, origin: Origin) {
+        if origin == .context && !Self.contextGlowEnabled { return }
+        set(state: newState)
+    }
+
+    func ding(origin: Origin) {
+        if origin == .context && !Self.contextGlowEnabled { return }
+        ding()
+    }
+
     func set(state newState: GlowState) {
         // Any new state cancels the pending auto-off.
         offTimer?.invalidate()

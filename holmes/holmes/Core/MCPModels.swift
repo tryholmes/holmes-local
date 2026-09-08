@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - MCP models + config
 // Holmes acts as an MCP *host*: it launches/connects MCP servers and exposes their
-// tools to the Claude action loop. Config uses the same shape as Claude Desktop so
+// tools to the local model's action loop. Config uses the same shape as Claude Desktop so
 // users can paste an existing `mcpServers` block. Two transports are supported:
 //   • stdio  — a local subprocess (e.g. `npx <gmail server>`). Auth is the server's job.
 //   • http   — a remote Streamable-HTTP endpoint (e.g. a hosted Gmail MCP), with
@@ -39,7 +39,7 @@ struct MCPTool {
     /// run without user approval.
     let readOnly: Bool
 
-    /// Tool name exposed to Claude: "<server>__<tool>". Must match ^[a-zA-Z0-9_-]{1,64}$.
+    /// Tool name exposed to the model: "<server>__<tool>". Kept to ^[a-zA-Z0-9_-]{1,64}$ so names stay stable and safe for any backend.
     var namespacedName: String {
         let raw = "\(serverName)__\(name)"
         let mapped = raw.map { ch -> Character in
@@ -49,8 +49,8 @@ struct MCPTool {
         return s.count <= 64 ? s : String(s.prefix(64))
     }
 
-    var anthropicTool: AnthropicClient.ToolDef {
-        AnthropicClient.ToolDef(
+    var toolDef: OllamaClient.ToolDef {
+        OllamaClient.ToolDef(
             name: namespacedName,
             description: description.isEmpty ? "\(name) (via \(serverName) MCP server)" : description,
             inputSchema: inputSchema.isEmpty ? ["type": "object", "properties": [:]] : inputSchema
@@ -82,7 +82,7 @@ enum MCPProtocol {
     }
 
     /// Extracts a `tools/call` result dict into a flat text ToolResult.
-    static func toolResult(from result: [String: Any]) -> AnthropicClient.ToolResult {
+    static func toolResult(from result: [String: Any]) -> OllamaClient.ToolResult {
         let isError = result["isError"] as? Bool ?? false
         let content = result["content"] as? [[String: Any]] ?? []
         let text = content.compactMap { block -> String? in
@@ -96,7 +96,7 @@ enum MCPProtocol {
                 return nil
             }
         }.joined(separator: "\n")
-        return AnthropicClient.ToolResult(text.isEmpty ? "(no output)" : text, isError: isError)
+        return OllamaClient.ToolResult(text.isEmpty ? "(no output)" : text, isError: isError)
     }
 }
 

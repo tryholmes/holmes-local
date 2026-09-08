@@ -3,8 +3,16 @@ import SwiftUI
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var onboardingWindow: NSWindow?
+    /// The model is preloaded once, the first time Ollama reports ready, so the
+    /// first real request doesn't pay the 20-40 s cold load.
+    private var warmedUpModel: String? = nil
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A write into the stdin pipe of an MCP server that has already exited
+        // raises SIGPIPE, which terminates the process silently. Ignore it;
+        // FileHandle.write then throws EPIPE, which MCPClient already handles.
+        signal(SIGPIPE, SIG_IGN)
+
         setupApp()
     }
 
@@ -24,6 +32,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupHotkeys()
 
         Task { @MainActor in
+            // Local model: readiness = "Ollama answers AND the chosen model is
+            // pulled". Every flip re-labels the backend in the main panel; the
+            // first .ready also preloads the model. Wire the hook BEFORE the
+            // monitor starts so the first probe can't slip past it.
+            startLocalModel()
+
             // Clicky loop: wire push-to-talk transcripts into the router and warm
             // up mic/speech permission once, so the first hold doesn't silently
             // no-op on a not-yet-determined grant.
@@ -32,15 +46,35 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Probe Ollama, auto-start it if allowed, and keep monitoring (every 30 s
+    /// and after any settings change). Runs from the very start of launch so
+    /// the server is usually up by the time onboarding or the first request
+    /// needs it.
     @MainActor
-    private func handleAuthAndLaunch() async {
-        // Auth removed — show the sign-in screen; any button just proceeds.
-        LoginWindowController.shared.show { [weak self] in
-            self?.launchAfterAuth()
+    private func startLocalModel() {
+        OllamaConfig.onStatusChanged = { [weak self] in
+            Task { @MainActor in
+                HolmesBrain.shared.updateBackendLabel()
+                // Warm + prime once PER MODEL: a switch in Settings must not
+                // leave the new model cold with the old prefix primed.
+                let model = OllamaConfig.model
+                guard let self, OllamaConfig.isConfigured, self.warmedUpModel != model else { return }
+                self.warmedUpModel = model
+                await OllamaServer.shared.warmUp()
+                await HolmesBrain.shared.primeLocalModel()
+            }
         }
+        OllamaServer.shared.start()
     }
 
-    private func launchAfterAuth() {
+    @MainActor
+    private func handleAuthAndLaunch() async {
+        // There is no account in Holmes Local: nothing to sign in to, so launch
+        // goes straight to onboarding (first run) or the main app.
+        launch()
+    }
+
+    private func launch() {
         let hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         if hasCompletedOnboarding {
             startMainApp()
@@ -106,9 +140,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func showOnboarding() {
         let onboardingView = OnboardingFlow {
             DispatchQueue.main.async { [weak self] in
-                self?.onboardingWindow?.close()
-                self?.onboardingWindow = nil
-                self?.startMainApp()
+                self?.finishOnboarding()
             }
         }
 
@@ -124,12 +156,45 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.isMovableByWindowBackground = true
         window.isOpaque = false
         window.backgroundColor = .clear
+        // A programmatically created NSWindow defaults to releasing ITSELF on
+        // close(). We also hold it in `onboardingWindow`, so close() followed by
+        // `= nil` released it twice — a main-thread EXC_BAD_ACCESS in
+        // objc_release. Own it explicitly instead.
+        window.isReleasedWhenClosed = false
         window.center()
         window.contentView = NSHostingView(rootView: onboardingView)
         window.makeKeyAndOrderFront(nil)
 
         self.onboardingWindow = window
+        // The red traffic light is a second way out of onboarding. Without this
+        // the window vanished and nothing started the main app — a menu-bar app
+        // with no menu bar item. Treat it like "finish": the flag stays unset,
+        // so onboarding simply shows again next launch.
+        onboardingCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.finishOnboarding() }
+        }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private var onboardingCloseObserver: NSObjectProtocol?
+    private var mainAppStarted = false
+
+    /// Idempotent: reached from the Ready screen's button AND from the window's
+    /// own close button.
+    private func finishOnboarding() {
+        if let obs = onboardingCloseObserver {
+            NotificationCenter.default.removeObserver(obs)
+            onboardingCloseObserver = nil
+        }
+        if let window = onboardingWindow {
+            onboardingWindow = nil
+            if window.isVisible { window.close() }
+        }
+        guard !mainAppStarted else { return }
+        mainAppStarted = true
+        startMainApp()
     }
 
     private func startMainApp() {

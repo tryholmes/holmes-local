@@ -11,9 +11,27 @@ final class ActionExecutor {
 
     // MARK: - Type text into the focused element of the frontmost app
 
+    /// True when the app's focused AX element accepts text (a text area/field
+    /// whose value is settable). Used to decide whether a ⌘N is needed first.
+    func hasEditableFocus(in app: NSRunningApplication) -> Bool {
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+              let focused = focusedRef, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
+        let element = focused as! AXUIElement
+        var roleRef: CFTypeRef?
+        let role = (AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success ? roleRef as? String : nil) ?? ""
+        if role == kAXTextAreaRole as String || role == kAXTextFieldRole as String || role == "AXWebArea" { return true }
+        var settable: DarwinBoolean = false
+        AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable)
+        return settable.boolValue
+    }
+
     @discardableResult
     func typeIntoFocusedField(in app: NSRunningApplication, text: String) -> Bool {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
 
         // Find focused UI element
         var focusedRef: CFTypeRef?
@@ -47,6 +65,7 @@ final class ActionExecutor {
     @discardableResult
     func clickButton(label: String, in app: NSRunningApplication) -> Bool {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
         if let button = findElement(in: axApp, role: kAXButtonRole, label: label) {
             AXUIElementPerformAction(button, kAXPressAction as CFString)
             return true
@@ -59,6 +78,7 @@ final class ActionExecutor {
     @discardableResult
     func focusAndType(in app: NSRunningApplication, fieldHint: String? = nil, text: String) -> Bool {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
 
         // Try to find a text area / text field
         let roles = [kAXTextAreaRole, kAXTextFieldRole]
@@ -193,6 +213,7 @@ end tell
 
         // 3. Try to AX-focus the text input area
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
         if let textArea = findTextAreaDeep(in: axApp) {
             AXUIElementSetAttributeValue(textArea, kAXFocusedAttribute as CFString, true as CFTypeRef)
             Thread.sleep(forTimeInterval: 0.15)

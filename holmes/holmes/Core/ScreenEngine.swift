@@ -104,7 +104,7 @@ struct ScreenReading {
 // MARK: - VisionEncoder
 
 /// Screenshot → base64 JPEG, for the rare tick where text falls short and the
-/// pixels have to go to Claude (Opus 5 is a vision model). Non-isolated on
+/// pixels have to go to the local vision model. Non-isolated on
 /// purpose: the downscale + encode is tens of milliseconds and must run off the
 /// main actor, so callers hop to a background queue and call this there.
 enum VisionEncoder {
@@ -378,6 +378,7 @@ final class ScreenEngine {
         let frontName = app.localizedName?.lowercased() ?? ""
         guard !frontName.contains("holmes") else { return nil }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
 
         var focusedRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
@@ -499,6 +500,7 @@ final class ScreenEngine {
         guard !appName.lowercased().contains("holmes") else { return nil }
         let bundleID = app.bundleIdentifier ?? ""
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
 
         // Two cheap targeted reads shared by every family.
         let window = axElement(axApp, kAXFocusedWindowAttribute as String)
@@ -938,9 +940,10 @@ final class ScreenEngine {
 
         if let app = targetApp {
             let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
             var winRef: CFTypeRef?
             if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
-               let win = winRef {
+               let win = winRef, CFGetTypeID(win) == AXUIElementGetTypeID() {
                 var titleRef: CFTypeRef?
                 if AXUIElementCopyAttributeValue(win as! AXUIElement, kAXTitleAttribute as CFString, &titleRef) == .success,
                    let title = titleRef as? String, !title.isEmpty {

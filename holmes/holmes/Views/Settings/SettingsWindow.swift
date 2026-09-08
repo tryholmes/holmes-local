@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// The SwiftUI `Settings { … }` scene is unreliable for accessory apps —
 /// `showSettingsWindow:` often no-ops or opens the panel behind everything.
-/// This controller mirrors the LoginWindowController / MainPanelWindowController
+/// This controller mirrors the MainPanelWindowController
 /// idiom: a plain titled NSWindow hosting the existing `SettingsView`, brought
 /// front deterministically with `NSApp.activate(ignoringOtherApps:)`.
 final class SettingsWindowController: NSObject {
@@ -33,18 +33,19 @@ final class SettingsWindowController: NSObject {
     }
 
     private func createWindow() {
-        // SettingsView pins itself to 540×460; match it. Transparent titlebar +
-        // full-size content so the glass background runs edge to edge like the
-        // Holmes login/panel windows.
+        // SettingsView pins itself to 640×520 (room for the seven tabs and the
+        // Local Model pane); match it. Transparent titlebar + full-size content
+        // so the glass background runs edge to edge like the Holmes login/panel
+        // windows.
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
             styleMask: [.titled, .closable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         w.titlebarAppearsTransparent = true
         w.titleVisibility = .hidden
-        w.title = "Holmes Settings"
+        w.title = "Holmes Local Settings"
         w.isMovableByWindowBackground = true
         w.isOpaque = false
         w.backgroundColor = .clear

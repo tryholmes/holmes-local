@@ -6,7 +6,7 @@ import Foundation
 protocol MCPTransport: AnyObject {
     var serverName: String { get }
     func start() async throws -> [MCPTool]
-    func callTool(_ name: String, arguments: [String: Any]) async throws -> AnthropicClient.ToolResult
+    func callTool(_ name: String, arguments: [String: Any]) async throws -> OllamaClient.ToolResult
     func stop()
 }
 
@@ -66,6 +66,8 @@ final class MCPConnection: MCPTransport {
     func start() async throws -> [MCPTool] {
         startReading()
         process.terminationHandler = { [weak self] proc in
+            self?.outPipe.fileHandleForReading.readabilityHandler = nil
+            self?.errPipe.fileHandleForReading.readabilityHandler = nil
             self?.failAllPending(MCPError.serverError("server exited (status \(proc.terminationStatus))"))
         }
         do { try process.run() }
@@ -99,7 +101,7 @@ final class MCPConnection: MCPTransport {
 
     // MARK: Tool call
 
-    func callTool(_ name: String, arguments: [String: Any]) async throws -> AnthropicClient.ToolResult {
+    func callTool(_ name: String, arguments: [String: Any]) async throws -> OllamaClient.ToolResult {
         let result = try await send("tools/call",
                                     params: ["name": name, "arguments": arguments],
                                     timeout: 120)
@@ -144,7 +146,9 @@ final class MCPConnection: MCPTransport {
     private func startReading() {
         outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return } // EOF
+            // EOF: the dispatch source keeps firing until the handler is
+            // removed — leaving it would spin a thread at 100% for the app's life.
+            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
             self?.ingest(data)
         }
         // Surface server diagnostics (auth prompts, crashes) instead of silently dropping them.
@@ -250,7 +254,7 @@ final class MCPHTTPConnection: MCPTransport {
         return tools
     }
 
-    func callTool(_ name: String, arguments: [String: Any]) async throws -> AnthropicClient.ToolResult {
+    func callTool(_ name: String, arguments: [String: Any]) async throws -> OllamaClient.ToolResult {
         let result = try await rpc("tools/call", params: ["name": name, "arguments": arguments])
         return MCPProtocol.toolResult(from: result)
     }
@@ -333,7 +337,7 @@ final class MCPHTTPConnection: MCPTransport {
 
 // MARK: - MCPClient
 // Host-side registry: connects every configured server (stdio or http) and aggregates
-// their tools into one namespaced set the Claude loop can call.
+// their tools into one namespaced set the local model's tool loop can call.
 
 @MainActor
 final class MCPClient {
@@ -375,6 +379,7 @@ final class MCPClient {
                 print("[MCP] \(config.name): \(serverTools.count) tools")
             } catch {
                 print("[MCP] \(config.name) failed: \(error.localizedDescription)")
+                transport.stop() // do not orphan a launched child process
             }
         }
         status = transports.isEmpty
@@ -383,21 +388,28 @@ final class MCPClient {
         print("[MCP] \(status)")
     }
 
-    func anthropicTools() -> [AnthropicClient.ToolDef] { tools.map { $0.anthropicTool } }
+    func toolDefs() -> [OllamaClient.ToolDef] { tools.map { $0.toolDef } }
 
     func tool(forNamespacedName name: String) -> MCPTool? {
         tools.first { $0.namespacedName == name }
     }
 
-    func call(namespacedName: String, arguments: [String: Any]) async -> AnthropicClient.ToolResult {
+    func call(namespacedName: String, arguments: [String: Any]) async -> OllamaClient.ToolResult {
         guard let entry = index[namespacedName] else {
-            return AnthropicClient.ToolResult("Unknown tool: \(namespacedName)", isError: true)
+            return OllamaClient.ToolResult("Unknown tool: \(namespacedName)", isError: true)
         }
         do {
             return try await entry.transport.callTool(entry.toolName, arguments: arguments)
         } catch {
-            return AnthropicClient.ToolResult("Tool call failed: \(error.localizedDescription)", isError: true)
+            return OllamaClient.ToolResult("Tool call failed: \(error.localizedDescription)", isError: true)
         }
+    }
+
+    /// Tear down every transport and reconnect from the current mcp.json —
+    /// what onboarding/Settings call after writing a new server entry.
+    func restart() async {
+        stopAll()
+        await startAll()
     }
 
     func stopAll() {

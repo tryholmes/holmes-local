@@ -567,7 +567,7 @@ final class BrowserBridge {
     private func frontmostBrowserName() -> String? {
         let name = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
         let lower = name.lowercased()
-        if Self.knownBrowsers.contains(where: { lower.contains($0) }) {
+        if Self.isBrowserName(lower) {
             lastBrowserApp = name
             return name
         }
@@ -577,9 +577,17 @@ final class BrowserBridge {
         return nil
     }
 
-    private static let knownBrowsers = ["comet", "safari", "chrome", "firefox", "arc",
-                                        "brave", "edge", "opera", "vivaldi", "orion",
-                                        "dia", "zen"]
+    private static let knownBrowsers: Set<String> = ["comet", "safari", "chrome", "chromium", "firefox", "arc",
+                                                     "brave", "edge", "opera", "vivaldi", "orion",
+                                                     "dia", "zen"]
+
+    /// Whole-word match on the app name. A substring test relabelled Obsi-dia-n,
+    /// Zen-desk and Arc-hive Utility as browsers and published a background
+    /// tab's DOM as the user's exact context.
+    nonisolated static func isBrowserName(_ lowercasedName: String) -> Bool {
+        let words = lowercasedName.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+        return words.contains(where: { knownBrowsers.contains($0) })
+    }
 }
 
 // MARK: - BridgeToken
@@ -1077,7 +1085,7 @@ private final class BridgeServer: @unchecked Sendable {
         }
 
         let contentLength = Int(headers["content-length"] ?? "") ?? 0
-        guard contentLength <= maxBodyBytes else {
+        guard contentLength >= 0, contentLength <= maxBodyBytes else {
             writeJSON(fd, status: "413 Payload Too Large", origin: headers["origin"],
                       object: ["error": "Body exceeds \(maxBodyBytes) bytes"])
             return nil

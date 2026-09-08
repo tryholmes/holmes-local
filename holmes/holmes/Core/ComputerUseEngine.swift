@@ -40,7 +40,7 @@ struct ComputerActionOutcome {
 }
 
 // MARK: - ComputerUseEngine
-// The gated orchestrator between Claude's `computer` tool and the raw input/capture
+// The gated orchestrator between the model's `computer` tool and the raw input/capture
 // primitives. It reimplements OpenClicky's `OpenClickyNativeComputerUseController`
 // semantics (OpenClickyComputerUseRuntime.swift:20-127) in Holmes' idiom: a single
 // persisted master switch checked in every MUTATING primitive, a session kill flag
@@ -249,8 +249,12 @@ final class ComputerUseEngine {
         }
         lastCapture = capture
         Self.diag("action=screenshot OK \(capture.screenshotWidthInPixels)×\(capture.screenshotHeightInPixels)px (declared \(WindowCapture.declaredWidth)×\(WindowCapture.declaredHeight)) displayFrame=\(NSStringFromRect(capture.displayFrame))")
+        // Restate the coordinate space on EVERY frame: a small local model
+        // forgets the system prompt's numbers after a few turns of images.
+        let space = WindowCapture.coordinateSpaceDescription(
+            width: capture.screenshotWidthInPixels, height: capture.screenshotHeightInPixels)
         return .ok(
-            "Screenshot captured at \(capture.screenshotWidthInPixels)×\(capture.screenshotHeightInPixels) px (coordinates you return are interpreted in this pixel space, top-left origin).",
+            "Screenshot captured at \(capture.screenshotWidthInPixels)×\(capture.screenshotHeightInPixels) px, origin top-left. \(space) \(OllamaConfig.coordinateSpace == .normalized1000 ? "Coordinates you return must be on the 0-1000 grid described above" : "Coordinates you return must be in these pixels"), as coordinate:[x,y].",
             image: capture.jpegBase64
         )
     }
@@ -264,7 +268,8 @@ final class ComputerUseEngine {
             return .ok("Cursor is at global point (\(Int(global.x)), \(Int(global.y))). Take a screenshot first to get a coordinate in the model's pixel space.")
         }
         let pixel = globalAppKitToModelPixel(global, in: capture)
-        return .ok("Cursor is at (\(Int(pixel.x)), \(Int(pixel.y))) in the current screenshot's pixel space.")
+        let unit = OllamaConfig.coordinateSpace == .normalized1000 ? "0-1000 grid" : "pixel space"
+        return .ok("Cursor is at (\(Int(pixel.x)), \(Int(pixel.y))) in the current screenshot's \(unit) (top-left origin).")
     }
 
     // MARK: - Clicky on-screen pointer flash
@@ -317,8 +322,8 @@ final class ComputerUseEngine {
     private enum ClickKind { case left, right, middle, double, triple }
 
     /// Modifiers to HOLD during a pointing action, from the click's `text` field
-    /// (Anthropic's computer-use convention: e.g. text:"shift" or "cmd+shift"
-    /// alongside a left_click). Reuses the chord parser and keeps only modifier
+    /// (the computer-use convention the tool schema documents: e.g. text:"shift"
+    /// or "cmd+shift" alongside a left_click). Reuses the chord parser and keeps only modifier
     /// tokens — a stray non-modifier key in a click's text is ignored, never typed.
     private func clickModifiers(_ input: [String: Any]) -> [String] {
         guard let text = input["text"] as? String, !text.isEmpty else { return [] }
@@ -432,7 +437,7 @@ final class ComputerUseEngine {
         guard let global = resolveGlobalPoint(from: input) else {
             return .error("Missing or unmappable 'coordinate' for scroll. Take a screenshot first, then pass coordinate:[x,y].")
         }
-        // Anthropic's scroll carries a direction + an amount in "clicks"; convert
+        // The `scroll` action carries a direction + an amount in "clicks"; convert
         // to pixel deltas. wheel1 (dy) is vertical, wheel2 (dx) horizontal:
         // up/left are positive, down/right negative, matching content that moves
         // opposite the wheel.
@@ -666,8 +671,11 @@ final class ComputerUseEngine {
             }
             return false
         case "type":
-            // Typing text is reversible, EXCEPT when the focused control itself is a
-            // commit affordance (rare, but e.g. a focused "Send" button).
+            // A newline inside typed text IS a Return keystroke to Cocoa text
+            // views (insertNewline: → send in chat compose fields).
+            if let text = input["text"] as? String, text.contains(where: { $0 == "\n" || $0 == "\r" }) { return true }
+            // Otherwise typing is reversible, EXCEPT when the focused control itself
+            // is a commit affordance (rare, but e.g. a focused "Send" button).
             return matchesSendVerb(axFocusedElementLabel())
         default:
             // mouse_move, scroll, wait, open_app, screenshot, cursor_position →
@@ -685,6 +693,9 @@ final class ComputerUseEngine {
         guard hasCmd else { return false }
         if tokens.contains("s") || tokens.contains("w") || tokens.contains("q") { return true }
         if tokens.contains("delete") || tokens.contains("backspace") { return true }
+        // ⌘⇧D is Send in Mail (and Outlook layouts); ⌘D is "Don't Save" in
+        // save sheets. Both commit.
+        if tokens.contains("d") { return true }
         return false
     }
 
@@ -752,10 +763,46 @@ final class ComputerUseEngine {
         return WindowCapture.modelPointToGlobalAppKit(point, in: capture)
     }
 
+    /// Lenient coordinate parse — small local models are inconsistent about the
+    /// shape even when the schema says `[x, y]`. Accepted:
+    ///   • `[412, 88]` (numbers or numeric strings),
+    ///   • `{"x": 412, "y": 88}`,
+    ///   • `"412, 88"`, `"(412,88)"`, `"[412,88]"`.
+    /// Whatever the shape, the result must be EXACTLY two numbers or the
+    /// coordinate is rejected — never guessed. (OllamaClient.coerceArguments
+    /// already normalizes most of these at the loop level; this is the engine's
+    /// own guarantee so it stays correct for any caller.)
     private func coordinate(from input: [String: Any], key: String = "coordinate") -> CGPoint? {
-        guard let array = input[key] as? [Any], array.count == 2,
-              let x = doubleValue(array[0]), let y = doubleValue(array[1]) else { return nil }
-        return CGPoint(x: x, y: y)
+        guard let raw = input[key], let pair = Self.numberPair(raw), pair.count == 2 else { return nil }
+        return CGPoint(x: pair[0], y: pair[1])
+    }
+
+    private static func numberPair(_ raw: Any) -> [CGFloat]? {
+        if let array = raw as? [Any] {
+            let numbers = array.compactMap { looseNumber($0) }
+            // Every element must be numeric — `[412, "left"]` is not a point.
+            return numbers.count == array.count ? numbers : nil
+        }
+        if let dict = raw as? [String: Any] {
+            guard let x = dict["x"].flatMap({ looseNumber($0) }),
+                  let y = dict["y"].flatMap({ looseNumber($0) }) else { return nil }
+            return [x, y]
+        }
+        if let string = raw as? String {
+            return string
+                .split(whereSeparator: { !"0123456789.-".contains($0) })
+                .compactMap { Double($0) }
+                .map { CGFloat($0) }
+        }
+        return nil
+    }
+
+    private static func looseNumber(_ value: Any) -> CGFloat? {
+        if let d = value as? Double { return CGFloat(d) }
+        if let i = value as? Int { return CGFloat(i) }
+        if let n = value as? NSNumber { return CGFloat(n.doubleValue) }
+        if let s = value as? String, let d = Double(s.trimmingCharacters(in: .whitespaces)) { return CGFloat(d) }
+        return nil
     }
 
     /// "(640, 360)" for the card/result text — echoes the model's own pixel coords.
@@ -765,15 +812,18 @@ final class ComputerUseEngine {
     }
 
     /// Inverse of `WindowCapture.modelPointToGlobalAppKit` for the primary display:
-    /// global AppKit point (bottom-left) → model pixel space (top-left). Used only
-    /// by `cursor_position`, which is informational.
+    /// global AppKit point (bottom-left) → model coordinate space (top-left; pixels,
+    /// or the 0-1000 grid when OllamaConfig.coordinateSpace says so). Used only by
+    /// `cursor_position`, which is informational.
     private func globalAppKitToModelPixel(_ point: CGPoint, in capture: ComputerUseCapture) -> CGPoint {
         let localX = point.x - capture.displayFrame.origin.x
         let localYFromBottom = point.y - capture.displayFrame.origin.y
         let localYFromTop = CGFloat(capture.displayHeightInPoints) - localYFromBottom
         let px = localX * CGFloat(capture.screenshotWidthInPixels) / CGFloat(max(1, capture.displayWidthInPoints))
         let py = localYFromTop * CGFloat(capture.screenshotHeightInPixels) / CGFloat(max(1, capture.displayHeightInPoints))
-        return CGPoint(x: px, y: py)
+        return WindowCapture.screenshotPixelsToModelPoint(
+            CGPoint(x: px, y: py),
+            width: capture.screenshotWidthInPixels, height: capture.screenshotHeightInPixels)
     }
 
     // MARK: - Accessibility target resolution
@@ -885,8 +935,8 @@ final class ComputerUseEngine {
 
     // MARK: - Key-chord parsing
 
-    /// The raw chord string from the model — Anthropic's `key` action puts it in
-    /// `text` (e.g. "cmd+s", "Return"); tolerate `key`/`keys` variants too.
+    /// The raw chord string from the model — the `key` action puts it in `text`
+    /// (e.g. "cmd+s", "Return"); tolerate `key`/`keys` variants too.
     private func keyChordString(_ input: [String: Any]) -> String {
         if let text = input["text"] as? String, !text.isEmpty { return text }
         if let key = input["key"] as? String, !key.isEmpty { return key }

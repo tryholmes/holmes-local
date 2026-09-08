@@ -1,0 +1,561 @@
+#!/usr/bin/env python3
+"""holmes-sdk: scaffold, validate, install, and lint Holmes SDK additions.
+
+Playbooks (JSON manifests Holmes compiles into draft only automations):
+  holmes-sdk playbook new <id> [--install] [--dir DIR]
+  holmes-sdk playbook validate <file> [<file> ...]
+  holmes-sdk playbook install <file> [<file> ...]
+  holmes-sdk playbook list
+
+MCP servers (separate processes that give Holmes read only tools):
+  holmes-sdk mcp new <name> [--lang ts|py] [--dir DIR]
+  holmes-sdk mcp add <name> -- <command> [args ...]
+  holmes-sdk mcp add <name> --url URL [--bearer TOKEN]
+  holmes-sdk mcp lint <name> | --command <cmd> [args ...]
+  holmes-sdk mcp list
+
+  holmes-sdk doctor
+
+No dependencies beyond Python 3.9. The validation and filter rules mirror the
+Swift implementation in holmes/holmes/Core/Playbooks (PlaybookManifest.swift
+and ComposioCatalog in PlaybookModels.swift). Keep them in sync.
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SDK = HERE.parent
+APP_SUPPORT = Path.home() / "Library" / "Application Support" / "Holmes"
+PLAYBOOKS_DIR = APP_SUPPORT / "playbooks"
+MCP_CONFIG_CANDIDATES = [APP_SUPPORT / "mcp.json", Path.home() / ".holmes" / "mcp.json"]
+
+# --------------------------------------------------------------------------
+# Rules mirrored from Swift
+# --------------------------------------------------------------------------
+
+SUPPORTED_VERSION = 1
+BUILTIN_IDS = {"meeting-join", "terminal-command-failed", "github-brief", "chat-reply", "finder-downloads-sort"}
+ALLOWED_KINDS = {"aiAnswer", "chatReply", "repoBrief", "meetingPrep", "linkedInPost", "promptSuggestion"}
+ENTITY_KEYS = {"sender", "subject", "recipient", "contact", "promptText", "repoOwner", "repoName", "platform", "eventTitle", "eventId"}
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,47}$")
+SERVER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+SEND_BLOCKLIST = {
+    "SEND", "DELETE", "REMOVE", "DESTROY", "UPDATE", "PATCH", "PUBLISH", "UPLOAD", "EXECUTE", "CREATE",
+    "POST", "WRITE", "ARCHIVE", "TRASH", "MOVE", "MARK", "REPLY", "FORWARD", "ADD", "INSERT", "APPEND",
+    "MERGE", "SAVE", "SHARE", "SUBMIT", "ACCEPT", "STAR", "UNSTAR", "PIN", "UNPIN", "ENABLE", "DISABLE",
+    "SET", "MODIFY", "ASSIGN", "CLOSE", "LOCK", "UNLOCK", "CANCEL", "TRIGGER", "RUN", "DISPATCH", "SYNC",
+    "REVOKE", "GRANT", "RENAME", "IMPORT", "EXPORT", "RESTORE", "EDIT", "CHANGE", "APPLY", "TOGGLE",
+    "RESET", "CLEAR", "PURGE", "COPY", "CLONE", "FORK", "TRANSFER", "INVITE", "JOIN", "LEAVE", "MUTE",
+    "UNMUTE", "SNOOZE", "SUBSCRIBE", "UNSUBSCRIBE", "APPROVE", "REJECT", "DECLINE", "DISMISS", "REOPEN",
+    "START", "STOP", "PAUSE", "RESUME",
+}
+READ_ALLOWLIST = {"GET", "LIST", "FETCH", "SEARCH", "FIND", "READ", "RETRIEVE", "LOOKUP", "QUERY", "HISTORY", "PROFILE"}
+COMPOUND = {"AND", "OR"}
+META_TOOLS = {
+    "COMPOSIO_SEARCH_TOOLS", "COMPOSIO_GET_TOOL_SCHEMAS", "COMPOSIO_WAIT_FOR_CONNECTIONS",
+    "COMPOSIO_MULTI_EXECUTE_TOOL", "COMPOSIO_REMOTE_BASH_TOOL", "COMPOSIO_REMOTE_WORKBENCH",
+    "COMPOSIO_MANAGE_CONNECTIONS",
+}
+
+
+def tokens(name: str):
+    return set(t for t in re.split(r"[^A-Za-z0-9]+", name.upper()) if t)
+
+
+def tool_verdict(name: str, read_only: bool):
+    """Mirror of HolmesBrain.runPlaybook's filter for SDK (mcpServers) tools."""
+    t = tokens(name)
+    if not read_only:
+        return False, "no annotations.readOnlyHint (required)"
+    if name.upper() in META_TOOLS:
+        return False, "Composio meta tool name is reserved"
+    if ("DRAFT" in t or "DRAFTS" in t) and "CREATE" in t and "SEND" not in t:
+        return False, "draft create tools are not offered from SDK servers"
+    hit = sorted(t & SEND_BLOCKLIST)
+    if hit:
+        return False, f"blocked token {hit[0]}"
+    if t & COMPOUND:
+        return False, "compound name (AND/OR)"
+    if t & READ_ALLOWLIST:
+        return True, "read token " + sorted(t & READ_ALLOWLIST)[0]
+    if re.search(r"[a-z][A-Z]", name):
+        return False, "no read token; camelCase is NOT split, use snake_case (get_item, not getItem)"
+    return False, "no read token (GET/LIST/FETCH/SEARCH/FIND/READ/RETRIEVE/LOOKUP/QUERY/HISTORY/PROFILE)"
+
+
+# --------------------------------------------------------------------------
+# Playbook validation (mirror of PlaybookManifest.compile)
+# --------------------------------------------------------------------------
+
+def validate_manifest(doc) -> list:
+    errs = []
+    if not isinstance(doc, dict):
+        return ["top level must be an object"]
+
+    def req(k, typ, label=None):
+        if k not in doc:
+            errs.append(f'missing required field "{label or k}"')
+            return None
+        if not isinstance(doc[k], typ):
+            errs.append(f'wrong type at "{label or k}"')
+            return None
+        return doc[k]
+
+    v = req("version", int)
+    if v is not None and v > SUPPORTED_VERSION:
+        errs.append(f"manifest version {v} is newer than this build supports ({SUPPORTED_VERSION})")
+    pid = req("id", str)
+    if pid is not None:
+        if not ID_RE.match(pid):
+            errs.append(f'id "{pid}" must be 3-48 chars of a-z, 0-9 and "-"')
+        elif pid in BUILTIN_IDS:
+            errs.append(f'id "{pid}" is already used by a built in playbook')
+    nm = req("name", str)
+    if nm is not None and not nm.strip():
+        errs.append("name must not be empty")
+    req("summary", str)
+    # Optional scalars/arrays: Swift's JSONDecoder skips the file on a wrong type.
+    for k, typ in (("icon", str), ("key", str), ("title", str), ("persona", str), ("autoTriggers", bool), ("usesDing", bool)):
+        if k in doc and doc[k] is not None and not isinstance(doc[k], typ):
+            errs.append(f'wrong type at "{k}"')
+    for k in ("composioApps", "mcpServers"):
+        if k in doc and doc[k] is not None and (not isinstance(doc[k], list) or any(not isinstance(x, str) for x in doc[k])):
+            errs.append(f'wrong type at "{k}"')
+    kind = doc.get("kind")
+    if kind is not None and kind not in ALLOWED_KINDS:
+        errs.append(f'kind "{kind}" is not one of {", ".join(sorted(ALLOWED_KINDS))}')
+    cd = doc.get("cooldownSeconds", 600)
+    if not isinstance(cd, (int, float)):
+        errs.append('wrong type at "cooldownSeconds"')
+    elif cd < 60:
+        errs.append(f"cooldownSeconds {int(cd)} is below the 60 s minimum")
+    goal = req("goal", str)
+    if goal is not None and not goal.strip():
+        errs.append("goal must not be empty")
+    target = doc.get("target", "clipboard")
+    if str(target).lower() not in {"clipboard", "typeintoapp"}:
+        errs.append(f'target "{target}" must be "clipboard" or "typeIntoApp"')
+    persona = doc.get("persona")
+    if isinstance(persona, str) and len(persona.strip()) > 1500:
+        errs.append(f"persona is {len(persona.strip())} chars; the limit is 1500")
+    servers = doc.get("mcpServers") if isinstance(doc.get("mcpServers"), list) else []
+    for s in servers:
+        if not isinstance(s, str) or not s:
+            continue  # Swift filters empties silently
+        if not SERVER_RE.match(s.lower()):
+            errs.append(f'mcpServers entry "{s}" must be 1-64 chars of a-z, 0-9, "_" and "-"')
+        elif s.lower() == "composio":
+            errs.append('mcpServers may not name "composio" (use composioApps for Composio)')
+
+    match = req("match", dict)
+    if match is not None:
+        for k in ("contextTypes", "windowTitleNot", "requiredEntities", "screenTextAny", "screenTextAll"):
+            if k in match and match[k] is not None and (not isinstance(match[k], list) or any(not isinstance(x, str) for x in match[k])):
+                errs.append(f'wrong type at "match.{k}"')
+        if "windowTitle" in match and match["windowTitle"] is not None and not isinstance(match["windowTitle"], str):
+            errs.append('wrong type at "match.windowTitle"')
+        apps = match.get("apps")
+        if not isinstance(apps, list) or not [a for a in apps if isinstance(a, str) and a.strip()]:
+            errs.append("match.apps must name at least one app")
+        wt = match.get("windowTitle")
+        if isinstance(wt, str) and wt:
+            try:
+                re.compile(wt)  # Python re; Holmes uses ICU. Agree for everyday syntax.
+            except re.error as e:
+                errs.append(f'match.windowTitle regex "{wt}" is invalid: {e}')
+        for ent in (match.get("requiredEntities") or []) if isinstance(match.get("requiredEntities"), list) else []:
+            if isinstance(ent, str) and ent not in ENTITY_KEYS:
+                errs.append(f'warning: match.requiredEntities "{ent}" is not a known entity key and will never match')
+        if (match.get("screenTextAny") or match.get("screenTextAll")) and not (wt or match.get("requiredEntities") or match.get("contextTypes")):
+            errs.append("warning: match relies only on screen text; add windowTitle, contextTypes, or requiredEntities for precision")
+    return errs
+
+
+def load_json(path: Path):
+    try:
+        return json.loads(path.read_text()), None
+    except json.JSONDecodeError as e:
+        return None, f"not valid JSON: {e.msg} (line {e.lineno})"
+    except OSError as e:
+        return None, str(e)
+
+
+def cmd_playbook_validate(args) -> int:
+    bad = 0
+    for f in args.files:
+        p = Path(f)
+        doc, err = load_json(p)
+        errs = [err] if err else validate_manifest(doc)
+        hard = [e for e in errs if not e.startswith("warning:")]
+        soft = [e for e in errs if e.startswith("warning:")]
+        status = "FAIL" if hard else ("WARN" if soft else "OK")
+        print(f"{status:4} {p}")
+        for e in errs:
+            print(f"      {e}")
+        bad += 1 if hard else 0
+    return 1 if bad else 0
+
+
+PLAYBOOK_TEMPLATE = {
+    "$schema": "../playbook.schema.json",
+    "version": 1,
+    "id": "__ID__",
+    "name": "__NAME__",
+    "icon": "sparkles",
+    "summary": "When you are looking at ..., drafts ...",
+    "kind": "aiAnswer",
+    "cooldownSeconds": 600,
+    "match": {
+        "apps": ["Safari", "Chrome"],
+        "windowTitle": "CHANGE ME: a regex the window title must match",
+        "windowTitleNot": []
+    },
+    "key": "{windowTitle}",
+    "title": "__NAME__",
+    "goal": "The user is looking at ...\n\nWhat Holmes saw on screen:\n{scene}\n\nWrite ... Return ONLY the text.",
+    "target": "clipboard"
+}
+
+
+def cmd_playbook_new(args) -> int:
+    if not ID_RE.match(args.id) or args.id in BUILTIN_IDS:
+        print(f'id "{args.id}" is invalid or reserved', file=sys.stderr)
+        return 2
+    doc = json.loads(json.dumps(PLAYBOOK_TEMPLATE))
+    nice = " ".join(w.capitalize() for w in args.id.split("-"))
+    text = json.dumps(doc, indent=2).replace("__ID__", args.id).replace("__NAME__", nice) + "\n"
+    out_dir = PLAYBOOKS_DIR if args.install else Path(args.dir or ".")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{args.id}.json"
+    if out.exists() and not args.force:
+        print(f"{out} exists (use --force to overwrite)", file=sys.stderr)
+        return 1
+    out.write_text(text)
+    print(f"wrote {out}")
+    if args.install:
+        print("Holmes reloads the folder automatically; fix the CHANGE ME regex before it can match anything.")
+    return 0
+
+
+def cmd_playbook_install(args) -> int:
+    rc = 0
+    PLAYBOOKS_DIR.mkdir(parents=True, exist_ok=True)
+    for f in args.files:
+        p = Path(f)
+        doc, err = load_json(p)
+        errs = [err] if err else [e for e in validate_manifest(doc) if not e.startswith("warning:")]
+        if errs:
+            print(f"SKIP {p}: " + "; ".join(errs))
+            rc = 1
+            continue
+        dest = PLAYBOOKS_DIR / f"{doc['id']}.json"
+        if dest.exists() and not args.force:
+            print(f"SKIP {p}: {dest} exists (use --force)")
+            rc = 1
+            continue
+        shutil.copyfile(p, dest)
+        print(f"installed {dest}")
+    return rc
+
+
+def cmd_playbook_list(args) -> int:
+    print(f"{PLAYBOOKS_DIR}")
+    files = sorted(PLAYBOOKS_DIR.glob("*.json")) if PLAYBOOKS_DIR.exists() else []
+    if not files:
+        print("  (empty)")
+        return 0
+    for p in files:
+        doc, err = load_json(p)
+        errs = [err] if err else [e for e in validate_manifest(doc) if not e.startswith("warning:")]
+        tag = "FAIL" if errs else "OK  "
+        name = doc.get("name", "?") if isinstance(doc, dict) else "?"
+        print(f"  {tag} {p.name:40} {name}")
+        for e in errs:
+            print(f"        {e}")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# MCP
+# --------------------------------------------------------------------------
+
+def mcp_config_path() -> Path:
+    """First existing candidate wins (same order Holmes uses); default to App Support."""
+    for c in MCP_CONFIG_CANDIDATES:
+        if c.exists():
+            return c
+    return MCP_CONFIG_CANDIDATES[0]
+
+
+def read_mcp_config():
+    p = mcp_config_path()
+    if not p.exists():
+        return {"mcpServers": {}}, p
+    doc, err = load_json(p)
+    if err:
+        print(f"{p}: {err}", file=sys.stderr)
+        sys.exit(1)
+    doc.setdefault("mcpServers", {})
+    return doc, p
+
+
+def cmd_mcp_new(args) -> int:
+    name = args.name.lower()
+    if not SERVER_RE.match(name) or name == "composio":
+        print(f'name "{args.name}" must match {SERVER_RE.pattern} and not be "composio"', file=sys.stderr)
+        return 2
+    src = SDK / "mcp" / ("template-ts" if args.lang == "ts" else "template-py")
+    dest = Path(args.dir or ".") / name
+    if dest.exists():
+        print(f"{dest} exists", file=sys.stderr)
+        return 1
+    shutil.copytree(src, dest)
+    for p in dest.rglob("*"):
+        if p.is_file():
+            try:
+                p.write_text(p.read_text().replace("__NAME__", name))
+            except UnicodeDecodeError:
+                pass
+    print(f"created {dest} ({args.lang})")
+    nxt = "npm install && npm run build" if args.lang == "ts" else "pip install mcp"
+    run = f"node {dest.resolve()}/dist/index.js" if args.lang == "ts" else f"python3 {dest.resolve()}/server.py"
+    print(f"next: cd {dest} && {nxt}")
+    print(f"then: holmes-sdk mcp add {name} -- {run}")
+    return 0
+
+
+def cmd_mcp_add(args) -> int:
+    name = args.name.lower()
+    if not SERVER_RE.match(name):
+        print(f'name "{args.name}" must match {SERVER_RE.pattern}', file=sys.stderr)
+        return 2
+    doc, path = read_mcp_config()
+    if name in doc["mcpServers"] and not args.force:
+        print(f'"{name}" already exists in {path} (use --force to replace)', file=sys.stderr)
+        return 1
+    if args.url:
+        if args.command:
+            print("give either --url or a command after --, not both", file=sys.stderr)
+            return 2
+        entry = {"url": args.url}
+        if args.bearer:
+            entry["bearerToken"] = args.bearer
+    else:
+        if not args.command:
+            print("give a command after -- or use --url", file=sys.stderr)
+            return 2
+        # Holmes launches servers with cwd "/", so relative paths that work
+        # from this shell would not work there. Resolve anything path-like.
+        def absolutize(a):
+            if a.startswith("-") or "/" not in a:
+                return a
+            p = Path(a).expanduser()
+            return str(p.resolve()) if p.exists() else a
+        cmd = [args.command[0]] + [absolutize(a) for a in args.command[1:]]
+        if "/" in cmd[0] and Path(cmd[0]).expanduser().exists():
+            cmd[0] = str(Path(cmd[0]).expanduser().resolve())
+        entry = {"command": cmd[0], "args": cmd[1:]}
+    doc["mcpServers"][name] = entry
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc, indent=2) + "\n")
+    print(f'added "{name}" to {path}')
+    print("Holmes picks it up on next launch. Reference it from a manifest with \"mcpServers\": [\"%s\"]." % name)
+    return 0
+
+
+def cmd_mcp_list(args) -> int:
+    doc, path = read_mcp_config()
+    print(path if path.exists() else f"{path} (not created yet)")
+    for name, entry in doc["mcpServers"].items():
+        how = entry.get("url") or " ".join([entry.get("command", "")] + entry.get("args", []))
+        print(f"  {name:20} {how}")
+    return 0
+
+
+def mcp_list_tools_stdio(command, env=None, timeout=20):
+    """Speak just enough MCP over stdio to get tools/list.
+
+    Reads the raw pipe fd (no Python buffering) so a response that arrives in
+    the same chunk as a log notification is never stranded behind select().
+    """
+    import select
+    import time
+
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            env={**os.environ, **(env or {})})
+    out_fd = proc.stdout.fileno()
+    buf = b""
+
+    def send(obj):
+        proc.stdin.write((json.dumps(obj) + "\n").encode())
+        proc.stdin.flush()
+
+    def recv(want_id):
+        nonlocal buf
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(msg, dict) and msg.get("id") == want_id:
+                    if "error" in msg:
+                        raise RuntimeError(msg["error"].get("message", "error"))
+                    return msg.get("result", {})
+            r, _, _ = select.select([out_fd], [], [], 0.5)
+            if not r:
+                if proc.poll() is not None:
+                    raise RuntimeError("server exited before answering")
+                continue
+            chunk = os.read(out_fd, 65536)
+            if not chunk:
+                raise RuntimeError("server closed stdout")
+            buf += chunk
+        raise RuntimeError("timed out waiting for the server")
+
+    try:
+        send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "holmes-sdk", "version": "1.0"}}})
+        recv(1)
+        send({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        return recv(2).get("tools", [])
+    finally:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def mcp_list_tools_http(url, headers=None, timeout=20):
+    import urllib.request
+    h = {"content-type": "application/json", "accept": "application/json, text/event-stream", **(headers or {})}
+
+    def call(obj):
+        req = urllib.request.Request(url, data=json.dumps(obj).encode(), headers=h, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            sid = resp.headers.get("Mcp-Session-Id")
+            body = resp.read().decode()
+        if sid:
+            h["Mcp-Session-Id"] = sid
+        for line in body.splitlines():
+            line = line.strip()
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if line.startswith("{"):
+                msg = json.loads(line)
+                if "error" in msg:
+                    raise RuntimeError(msg["error"].get("message", "error"))
+                if "result" in msg:
+                    return msg["result"]
+        return {}
+
+    call({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "holmes-sdk", "version": "1.0"}}})
+    return call({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}).get("tools", [])
+
+
+def cmd_mcp_lint(args) -> int:
+    if args.command:
+        tools = mcp_list_tools_stdio(args.command)
+        label = " ".join(args.command)
+    else:
+        doc, _ = read_mcp_config()
+        entry = doc["mcpServers"].get(args.name or "")
+        if not entry:
+            print(f'"{args.name}" is not in mcp.json (holmes-sdk mcp list)', file=sys.stderr)
+            return 2
+        label = args.name
+        try:
+            if "url" in entry:
+                headers = dict(entry.get("headers") or {})
+                bearer = entry.get("bearerToken") or entry.get("token")
+                if bearer:
+                    headers["Authorization"] = "Bearer " + bearer
+                tools = mcp_list_tools_http(entry["url"], headers)
+            else:
+                tools = mcp_list_tools_stdio([entry["command"]] + entry.get("args", []), entry.get("env"))
+        except Exception as e:
+            print(f"could not list tools from {label}: {e}", file=sys.stderr)
+            return 1
+    if not tools:
+        print(f"{label}: no tools")
+        return 0
+    offered = 0
+    print(f"{label}: {len(tools)} tool(s)")
+    for t in tools:
+        name = t.get("name", "?")
+        ro = bool((t.get("annotations") or {}).get("readOnlyHint"))
+        ok, why = tool_verdict(name, ro)
+        offered += 1 if ok else 0
+        print(f"  {'OFFER' if ok else 'deny '} {name:40} {why}")
+    print(f"{offered} of {len(tools)} would be offered to a playbook that lists this server in mcpServers.")
+    return 0
+
+
+def cmd_doctor(args) -> int:
+    print(f"playbooks dir : {PLAYBOOKS_DIR} ({'exists' if PLAYBOOKS_DIR.exists() else 'missing, Holmes creates it'})")
+    _, cfg = read_mcp_config()
+    print(f"mcp.json      : {cfg} ({'exists' if cfg.exists() else 'not created yet'})")
+    for b in ("ollama", "node", "npx", "python3", "uvx"):
+        print(f"  {'✓' if shutil.which(b) else '✗'} {b}")
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=2) as r:
+            print(f"ollama server : answering ({json.load(r).get('version')})")
+    except Exception:
+        print("ollama server : not answering on 127.0.0.1:11434")
+    try:
+        import urllib.request
+        req = urllib.request.Request("http://127.0.0.1:5767/mcp", data=b'{"jsonrpc":"2.0","id":1,"method":"ping"}',
+                                     headers={"content-type": "application/json"})
+        urllib.request.urlopen(req, timeout=2)
+        print("holmes mcp    : screen context endpoint is on (127.0.0.1:5767)")
+    except Exception:
+        print("holmes mcp    : off (Settings ▸ Share screen context with local MCP clients)")
+    return 0
+
+
+# --------------------------------------------------------------------------
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="holmes-sdk", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sp = ap.add_subparsers(dest="group", required=True)
+
+    pb = sp.add_parser("playbook").add_subparsers(dest="cmd", required=True)
+    p = pb.add_parser("new"); p.add_argument("id"); p.add_argument("--install", action="store_true"); p.add_argument("--dir"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_playbook_new)
+    p = pb.add_parser("validate"); p.add_argument("files", nargs="+"); p.set_defaults(fn=cmd_playbook_validate)
+    p = pb.add_parser("install"); p.add_argument("files", nargs="+"); p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_playbook_install)
+    p = pb.add_parser("list"); p.set_defaults(fn=cmd_playbook_list)
+
+    mc = sp.add_parser("mcp").add_subparsers(dest="cmd", required=True)
+    p = mc.add_parser("new"); p.add_argument("name"); p.add_argument("--lang", choices=["ts", "py"], default="ts"); p.add_argument("--dir"); p.set_defaults(fn=cmd_mcp_new)
+    p = mc.add_parser("add"); p.add_argument("name"); p.add_argument("--url"); p.add_argument("--bearer"); p.add_argument("--force", action="store_true"); p.add_argument("command", nargs="*"); p.set_defaults(fn=cmd_mcp_add)
+    p = mc.add_parser("lint"); p.add_argument("name", nargs="?"); p.add_argument("--command", nargs=argparse.REMAINDER); p.set_defaults(fn=cmd_mcp_lint)
+    p = mc.add_parser("list"); p.set_defaults(fn=cmd_mcp_list)
+
+    p = sp.add_parser("doctor"); p.set_defaults(fn=cmd_doctor)
+
+    args = ap.parse_args(argv)
+    if getattr(args, "command", None) and args.command and args.command[0] == "--":
+        args.command = args.command[1:]
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

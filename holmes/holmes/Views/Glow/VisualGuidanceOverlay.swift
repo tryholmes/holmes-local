@@ -14,7 +14,8 @@ import SwiftUI
 /// One thing to draw on the user's screen to point the way. Coordinates in
 /// `point` (and every point in `path`) are in the model's DECLARED
 /// SCREENSHOT-PIXEL space, TOP-LEFT origin — exactly what
-/// `WindowCapture.captureForModel()` declared to Claude and what Claude returns.
+/// `WindowCapture.captureForModel()` declared to the local model and what it returns
+/// (interpreted per OllamaConfig.coordinateSpace by modelPointToGlobalAppKit).
 /// `VisualGuidanceOverlay.show(_:mappedFrom:)` maps them onto the physical screen.
 ///
 /// Per-kind meaning of `point` / `size`:

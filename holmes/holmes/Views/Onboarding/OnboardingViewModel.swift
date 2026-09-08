@@ -7,7 +7,14 @@ enum OnboardingStep: Int, CaseIterable {
     case welcome = 0
     case howItWorks = 1
     case permissions = 2
-    case ready = 3
+    /// "Your local model": get Ollama running and the default model pulled,
+    /// so a first-run user leaves onboarding with a working local brain.
+    case localModel = 3
+    /// Install + pair the bundled browser extension (exact page reads).
+    case browser = 4
+    /// Optional Composio connection for the read-only playbook tools.
+    case integrations = 5
+    case ready = 6
 }
 
 class OnboardingViewModel: ObservableObject {

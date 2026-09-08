@@ -1,11 +1,14 @@
 # Connecting Holmes to MCP servers (Gmail, Google Workspace, …)
 
 Holmes is an **MCP host**: it connects to Model Context Protocol servers and lets the
-Claude action loop call their tools. That's how Holmes does *real* things — send a Gmail,
-create a calendar event, edit a Doc — instead of just pasting text.
+local model's action loop call their tools. That's how Holmes does *real* things — draft a
+Gmail, create a calendar event, edit a Doc — instead of just pasting text.
 
-Two requirements:
-1. An **Anthropic API key** (the action loop runs on Claude). Put it in `~/.holmes/anthropic_key`.
+**MCP is optional.** Holmes Local's five playbooks read the screen and act through native
+macOS lanes without any server listed here; MCP adds reach (GitHub data for the repo brief,
+Gmail/Calendar for `/run` goals). Two requirements when you do want it:
+1. The **local model is ready** — Ollama is running and the chosen model is pulled
+   (Holmes ▸ Settings ▸ Local Model shows the status). There is no API key.
 2. One or more **MCP servers** listed in `~/.holmes/mcp.json`.
 
 Holmes reads config from (first found wins):
@@ -56,7 +59,8 @@ Because you authenticated in step (b), the server Holmes launches reads the cach
 does **not** block — important, since Holmes spawns it in the background.
 
 Try: `/run reply to the latest email from <name> saying I'll send the deck tomorrow` →
-Claude reads context, drafts via Gmail, and the approval card pops before anything is sent.
+the local model reads context, drafts via Gmail, and the approval card pops before anything is sent.
+(A small local model takes a few seconds per tool call; the glow shows it's working.)
 
 ---
 
@@ -205,8 +209,8 @@ prefix. If your endpoint expects `Authorization: Bearer …` instead, use `"bear
 arbitrary `"headers"` work too.
 
 **c. Restart Holmes and verify.** On launch the log prints `[MCP] composio: N tools`, and
-the status label shows **`Claude · MCP: N tools`**. Try:
-`/run list my 5 most recent emails`.
+the status label shows **`Local model (qwen3-vl:4b-instruct) · MCP: N tools`** (with whatever
+model you picked). Try: `/run list my 5 most recent emails`.
 
 **Alternative — Rube (one URL, zero dashboard):** Composio's consumer endpoint
 `https://rube.app/mcp` puts all 500+ apps behind a single Streamable-HTTP URL with
@@ -223,19 +227,17 @@ npx -y mcp-remote https://rube.app/mcp   # complete the browser sign-in, then Ct
 
 ### What Holmes does with it automatically
 
-Once `composio` is connected, Holmes's proactive playbooks light up. Each one watches your
-screen, does its research through Composio's read-only tools, and leaves a **draft** for you
-to review — the screen edge glows while it thinks and dings when a draft is ready:
+Holmes Local ships five playbooks (see the README). They all run without MCP; connecting
+`composio` upgrades the one that benefits from real data. Each one watches your screen and
+leaves a **draft** for you to review — the screen edge glows while the model works:
 
-| Playbook | Trigger | What you get |
-|---|---|---|
-| **Email reply** | You're reading an email | A reply drafted **straight into your Gmail Drafts** — open, edit, send it yourself |
-| **Prompt coach** | You're writing a prompt to ChatGPT/Claude/Gemini | A sharpened rewrite of your prompt |
-| **GitHub brief** | You're looking at a repo or PR | A briefing: recent commits, open issues, activity |
-| **Meeting prep** | A calendar meeting is coming up | Prep notes on the attendees and agenda |
-| **LinkedIn post** | You're composing on LinkedIn | A polished post draft |
-| **Chat reply** | A Discord / iMessage conversation is on screen | A suggested reply, staged into the input field |
-| **AI research** | You're digging into a question | An answer cross-checked via other AIs (Perplexity search) |
+| Playbook | Trigger | Uses Composio? | What you get |
+|---|---|---|---|
+| **GitHub Brief** | A specific `owner/repo` is open | yes — `GITHUB_*` read-only tools (falls back to the screen text without them) | A 5-line brief: what it is, open PRs, open issues, next actions |
+| **Chat Reply** | A Messages / Discord / Slack conversation with a real contact is on screen | no | A suggested reply, staged into the input field, never sent |
+| **Terminal Command Help** | A command just failed in your terminal | no | A short spoken explanation and the fix |
+| **Meeting Join** | A Zoom / Meet / Teams meeting is starting | no | The join link opened for you |
+| **Downloads Sorter** | Finder shows a Downloads folder full of loose files | no | Files sorted into type subfolders, every move undoable |
 
 **Proactive mode is draft-only — guaranteed.** In playbook runs, send/delete/post/update
 tools are **filtered out at the code level** before the model ever sees them: only read

@@ -139,7 +139,9 @@ final class CalendarEngine {
 
             let meetingURL = extractMeetingURL(from: event)
             let meeting = UpcomingMeeting(
-                id: event.eventIdentifier ?? UUID().uuidString,
+                // A stable fallback: a fresh UUID per scan would defeat
+                // firedMeetingIDs and re-fire the join every minute.
+                id: event.eventIdentifier ?? "\(event.title ?? "")|\(startDate.timeIntervalSince1970)",
                 title: event.title ?? "Untitled",
                 startDate: startDate,
                 minutesUntil: minutesUntil,
@@ -155,13 +157,18 @@ final class CalendarEngine {
         let sorted = meetings.sorted { $0.startDate < $1.startDate }
         // Only publish on real change — the unconditional 60s reassign was
         // invalidating MainPanelView every minute even when nothing moved.
+        // minutesUntil is recomputed from `now` every scan, so comparing it
+        // made this always true; identity + start time is the real change signal.
         if sorted.map(\.id) != upcomingMeetings.map(\.id)
-            || sorted.map(\.minutesUntil) != upcomingMeetings.map(\.minutesUntil) {
+            || sorted.map(\.startDate) != upcomingMeetings.map(\.startDate)
+            || sorted.map(\.meetingURL) != upcomingMeetings.map(\.meetingURL)
+            || sorted.map { Int($0.minutesUntil) } != upcomingMeetings.map { Int($0.minutesUntil) } {
             upcomingMeetings = sorted
         }
 
-        // Auto-join trigger: ≤ 2 min away
-        for meeting in upcomingMeetings where meeting.minutesUntil <= 2 {
+        // Auto-join trigger: ≤ 2 min away. Iterate the FRESH list: the
+        // published one may hold last scan's minute counts.
+        for meeting in sorted where meeting.minutesUntil <= 2 {
             guard !firedMeetingIDs.contains(meeting.id) else { continue }
             firedMeetingIDs.insert(meeting.id)
             print("[CalendarEngine] 🔔 Firing join for: \(meeting.title)")

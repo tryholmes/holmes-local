@@ -154,6 +154,7 @@ final class MessagesReader {
     func readFrontmostThread() -> Thread? {
         guard let (app, appName) = frontmostChatApp() else { return nil }
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
 
         guard let window = frontWindow(of: axApp),
               let windowFrame = frame(of: window),

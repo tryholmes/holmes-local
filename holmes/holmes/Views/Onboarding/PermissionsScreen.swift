@@ -87,23 +87,25 @@ struct PermissionCard: View {
             HStack(spacing: 14) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(isGranted ? NoirColors.deepTeal : NoirColors.midBlue.opacity(0.5))
+                        .fill(isGranted ? Color.black.opacity(0.85) : Color.black.opacity(0.10))
                         .frame(width: 44, height: 44)
                         .pixelBevel(cornerRadius: 6)
 
                     Image(systemName: isGranted ? "checkmark" : icon)
                         .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(isGranted ? NoirColors.orangeAccent : NoirColors.creamWhite)
+                        .foregroundColor(isGranted ? NoirColors.success : Color.black.opacity(0.75))
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
+                    // The card below is near-white: dark ink, not the palette's
+                    // white-on-glass aliases (charcoalDark/deepTeal both resolve to white).
                     Text(title)
                         .font(NoirFonts.title())
-                        .foregroundColor(NoirColors.charcoalDark)
+                        .foregroundColor(Color.black.opacity(0.88))
 
                     Text(description)
                         .font(NoirFonts.caption())
-                        .foregroundColor(NoirColors.deepTeal)
+                        .foregroundColor(Color.black.opacity(0.62))
                         .lineLimit(2)
                 }
 
@@ -112,7 +114,7 @@ struct PermissionCard: View {
                 if !isGranted {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(NoirColors.deepTeal)
+                        .foregroundColor(Color.black.opacity(0.45))
                 }
             }
             .padding(14)

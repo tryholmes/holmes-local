@@ -22,7 +22,7 @@ struct PendingAction: Identifiable {
         case openURL        // Open a URL
         case runScript      // Shell script
         case openMeeting    // Join a video call
-        case agentToolCall  // A tool the Claude action loop wants to run (approval-gated)
+        case agentToolCall  // A tool the local model's action loop wants to run (approval-gated)
 
         var primaryButtonTitle: String {
             switch self {
@@ -360,6 +360,12 @@ struct ConfirmationView: View {
         .shadow(color: Color(hex: "B8881C").opacity(0.15), radius: 20, x: 0, y: 4)
         .onAppear {
             editedText = action.preview
+        }
+        // propose() can REPLACE pendingAction while this card is showing; the
+        // view identity does not change, so onAppear will not re-run and the
+        // previous action's text would be sent under the new title.
+        .onChange(of: action.preview) { _, newPreview in
+            editedText = newPreview
         }
     }
 

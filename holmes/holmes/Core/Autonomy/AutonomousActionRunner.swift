@@ -163,7 +163,7 @@ final class AutonomousActionRunner {
 
         // Composio steps need the MCP host up before the router can resolve
         // tools (an unresolvable tool classifies as needs-confirm, fail closed).
-        let composioApps = DefaultPlaybooks.all.first(where: { $0.id == playbookId })?.composioApps ?? []
+        let composioApps = PlaybookRegistry.all.first(where: { $0.id == playbookId })?.composioApps ?? []
         if plan.steps.contains(where: { $0.backend.lowercased() == "composio" }) {
             await MCPClient.shared.startAll() // no-op if already started
         }
@@ -175,7 +175,7 @@ final class AutonomousActionRunner {
         // Fresh actuator session: clears a stale ⌘⌥Esc flag and the stale
         // screenshot so nothing maps coordinates against an old frame.
         ComputerUseEngine.shared.beginRun()
-        ScreenGlowController.shared.set(state: .thinking)
+        ScreenGlowController.shared.set(state: .thinking, origin: PlaybookEngine.shared.glowOrigin)
 
         // Speak the opening intent — "On it — <goal>." — so the run announces
         // itself before the first action lands.
@@ -247,6 +247,18 @@ final class AutonomousActionRunner {
                 // clears on a second try — so retry ONCE, and if it still fails, log
                 // it and move on to the next step rather than aborting the run. The
                 // end-of-run summary reports how many steps were skipped.
+                // Never retry a step that may already have taken effect: anything
+                // the gate classifies as needing confirmation (a send that timed
+                // out client-side has usually been sent), typed text (characters
+                // already posted), or AppleScript (partially executed).
+                let retrySafe = !BackendRouter.requiresConfirmation(step, composioApps: composioApps)
+                    && step.action != "type" && step.action != "applescript" && step.action != "ax_type"
+                if !result.ok, !retrySafe {
+                    failedStepCount += 1
+                    await logExecutedStep(step, playbookId: playbookId, level: level, via: "router",
+                                          ok: false, confirmed: confirmed, note: result.text)
+                    continue
+                }
                 if !result.ok {
                     let retry = await BackendRouter.run(step, composioApps: composioApps, userConfirmed: confirmed)
                     if retry.ok {
@@ -462,18 +474,30 @@ final class AutonomousActionRunner {
         }
         switch result {
         case .notConfigured:
-            return "no Anthropic API key configured"
+            return OllamaConfig.notReadyMessage
         case .text(let text):
             statusLine = shorten(text, max: 160)
-            // Honest accounting: an API failure or an explicit model-reported
-            // inability used to come back as "success" (the run then notified
-            // "completed" over work that never happened).
-            if text.hasPrefix("Claude API error") || text.hasPrefix("Holmes declined:") {
+            // Honest accounting: a local-model failure (Ollama down, model not
+            // pulled, busy GPU, HTTP error, truncation) or an explicit
+            // model-reported inability used to come back as "success" (the run
+            // then notified "completed" over work that never happened). These
+            // prefixes are exactly the ones HolmesBrain.run produces.
+            if Self.modelFailurePrefixes.contains(where: { text.hasPrefix($0) }) {
                 return shorten(text, max: 160)
             }
             return nil
         }
     }
+
+    /// Leading text of every failure string HolmesBrain.run(goal:) can return in
+    /// place of a result. Keep in sync with its catch arms.
+    private static let modelFailurePrefixes: [String] = [
+        "Local model error",      // .http / .unsupported / .truncated
+        "Holmes declined:",       // .refused
+        "Ollama isn't running",   // .serverUnreachable
+        "The local model",        // .modelMissing / .busy
+        "Action failed:"          // transport and any other thrown error
+    ]
 
     // MARK: - Preflight
 
@@ -542,7 +566,7 @@ final class AutonomousActionRunner {
                 : "Accessibility permission is missing — System Settings ▸ Privacy & Security ▸ Accessibility"
         }
         if hasModelSegment {
-            guard AnthropicConfig.isConfigured else { return "no Anthropic API key is configured" }
+            guard OllamaConfig.isConfigured else { return OllamaConfig.notReadyMessage }
             if await WindowCapture.captureForModel() == nil {
                 return "screen capture isn't working — Screen Recording permission is missing or stale (relaunch Holmes after granting)"
             }
@@ -674,7 +698,7 @@ final class AutonomousActionRunner {
                     : "Holmes stopped: \(shorten(plan.goal, max: 50))",
                 body: notifyBody)
         }
-        ScreenGlowController.shared.set(state: succeeded ? .ready : .off)
+        ScreenGlowController.shared.set(state: succeeded ? .ready : .off, origin: PlaybookEngine.shared.glowOrigin)
         // Close out the notch HUD with a result banner (auto-returns to idle).
         NotchWindowController.shared.endTask(success: succeeded, summary: shorten(plan.goal, max: 70))
         // Speak the closing result. Quiet on a user decline (they just said no).

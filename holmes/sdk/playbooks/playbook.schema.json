@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "holmes/sdk/playbooks/playbook.schema.json",
+  "title": "Holmes playbook manifest",
+  "description": "A declarative Holmes playbook. Describes when to fire and what to prepare. Runs on the draft only path behind the same tool filter as the built in playbooks.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["version", "id", "name", "summary", "match", "goal"],
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{2,47}$",
+      "description": "Stable identifier. Lowercase letters, digits and hyphens. Must not collide with a built in playbook."
+    },
+    "name": { "type": "string", "minLength": 1 },
+    "icon": { "type": "string", "description": "SF Symbol name. Defaults to sparkles." },
+    "summary": { "type": "string", "description": "One line shown in Settings." },
+    "kind": {
+      "type": "string",
+      "enum": ["aiAnswer", "chatReply", "repoBrief", "meetingPrep", "linkedInPost", "promptSuggestion"],
+      "description": "Which draft only persona writes the result. Defaults to aiAnswer."
+    },
+    "autoTriggers": { "type": "boolean", "default": true },
+    "cooldownSeconds": { "type": "number", "minimum": 60, "default": 600 },
+    "composioApps": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Composio app slugs whose read only tools should be offered, for example GITHUB. Send, delete and post tools are filtered out regardless."
+    },
+    "usesDing": { "type": "boolean", "default": false },
+    "match": {
+      "type": "object",
+      "required": ["apps"],
+      "properties": {
+        "apps": {
+          "type": "array", "minItems": 1, "items": { "type": "string" },
+          "description": "Case insensitive substrings of the active app name. Any one matches."
+        },
+        "contextTypes": { "type": "array", "items": { "type": "string" } },
+        "windowTitle": { "type": "string", "description": "Regular expression the window title must match, case insensitive." },
+        "windowTitleNot": { "type": "array", "items": { "type": "string" }, "description": "Substrings that veto the match." },
+        "requiredEntities": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["sender", "subject", "recipient", "contact", "promptText", "repoOwner", "repoName", "platform", "eventTitle", "eventId"] }
+        },
+        "screenTextAny": { "type": "array", "items": { "type": "string" } },
+        "screenTextAll": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "key": { "type": "string", "description": "Cooldown key template. Defaults to {windowTitle}." },
+    "goal": { "type": "string", "minLength": 1, "description": "Prompt template. The draft never send rule is appended automatically." },
+    "title": { "type": "string", "description": "Review card title template. Defaults to name." },
+    "target": { "type": "string", "enum": ["clipboard", "typeIntoApp"], "default": "clipboard" },
+    "persona": {
+      "type": "string", "maxLength": 1500,
+      "description": "Optional voice and shape guidance for the model. Holmes wraps it in a fixed draft only preamble, so it can narrow the output but never widen what the model may do."
+    },
+    "mcpServers": {
+      "type": "array", "items": { "type": "string", "pattern": "^(?!composio$)[a-z0-9][a-z0-9_-]{0,63}$" },
+      "description": "Server names from mcp.json whose read only tools may be offered to this playbook. Each tool still needs readOnlyHint and a read shaped name."
+    }
+  }
+}

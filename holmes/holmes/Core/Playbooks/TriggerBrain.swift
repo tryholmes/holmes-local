@@ -18,7 +18,7 @@ import Foundation
 // cost of that mistake is a fabricated draft addressed to a person who doesn't
 // exist (exactly how a Ghostty window once produced a "Reply to Ada").
 //
-// Claude is consulted for ONE thing: an AMBIGUOUS screen — a candidate surface
+// The local model is consulted for ONE thing: an AMBIGUOUS screen — a candidate surface
 // whose keying entity is missing, or a context Holmes could only read coarsely.
 // Even then the model can only choose among the four fireable opportunities or
 // answer "none"; it never invents entities and never widens the candidate set.
@@ -26,7 +26,7 @@ import Foundation
 // Discipline:
 //   • deterministic fires: only when the context signature changed
 //   • model confirmations: at most one every 20 seconds, single-flight, only
-//     with an API key, only when there is real text to reason about
+//     when the local model is ready, only when there is real text to reason about
 //   • never on an .inferred (OCR) context — a guess must not stage a draft
 //   • fires only at confidence >= 0.7, only for enabled playbooks
 
@@ -106,7 +106,7 @@ final class TriggerBrain {
         }
 
         // ── Tier 2: no usable structured reading of this screen ──────────────
-        // Everything Holmes has here is coarse text. Ask Claude ONLY whether one
+        // Everything Holmes has here is coarse text. Ask the model ONLY whether one
         // of the four opportunities applies, and hold it to the confidence bars.
         confirm(candidate: nil, extraEntities: [:], live: nil, ctx: ctx, signature: signature)
     }
@@ -138,11 +138,11 @@ final class TriggerBrain {
 
         switch surface {
         case .emailRead, .emailCompose:
-            let hasWho = !(entities["sender"] ?? "").isEmpty
-            let hasWhat = !(entities["subject"] ?? "").isEmpty
-            return (hasWho || hasWhat)
-                ? .fire(opportunity: "email_reply", entities: entities)
-                : .ambiguous(candidate: "email_reply", entities: entities)
+            // email_reply has no playbook since the 154→5 purge. Returning it
+            // here dead-ended at the map lookup AND, when ambiguous, spent a
+            // rate-limited local-model confirm on a hypothesis that could never
+            // fire. Email screens fall through to Tier 2 instead.
+            return nil
 
         case .emailInbox:
             // An inbox listing is not a message. Nothing to reply to yet.
@@ -232,7 +232,7 @@ final class TriggerBrain {
 
     // MARK: - Model confirmation (ambiguous screens only)
 
-    /// One short Claude call that may only answer with one of the four
+    /// One short local-model call that may only answer with one of the four
     /// opportunities or "none". Structured output, so the reply is a valid JSON
     /// object by construction rather than by pleading.
     private func confirm(candidate: String?,
@@ -240,7 +240,7 @@ final class TriggerBrain {
                          live: LiveContext?,
                          ctx: PlaybookContext,
                          signature: Int) {
-        guard AnthropicConfig.isConfigured else { return }
+        guard OllamaConfig.isConfigured, OllamaConfig.backgroundModelEnabled else { return }
         let screenText = ctx.screenText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard screenText.count >= Self.minScreenTextChars else { return }
         // Rate limit. The signature is NOT recorded on a rate-limited skip, so a
@@ -256,12 +256,19 @@ final class TriggerBrain {
 
             let raw: String
             do {
-                raw = try await AnthropicClient.shared.complete(
+                raw = try await OllamaClient.shared.complete(
                     system: Self.systemPrompt,
                     user: Self.prompt(for: ctx, candidate: candidate, live: live),
                     maxTokens: 200,
                     asJSON: true,
                     schema: Self.verdictSchema)
+            } catch OllamaClient.AgentError.busy {
+                // The GPU is busy with an agent session (the common case for
+                // the whole length of a /run or playbook draft). Forget the
+                // signature so THIS screen gets another look once the rate
+                // window opens, not only the next different one.
+                lastSignature = nil
+                return
             } catch {
                 print("[Holmes] TriggerBrain: confirmation failed — \(error.localizedDescription)")
                 return
@@ -294,7 +301,7 @@ final class TriggerBrain {
             }
 
             fire(opportunity: verdict.opportunity, extraEntities: extraEntities, ctx: ctx,
-                 because: "Claude confirmation (\(verdict.confidence))")
+                 because: "local model confirmation (\(verdict.confidence))")
         }
     }
 
@@ -345,7 +352,7 @@ final class TriggerBrain {
 
     /// Strict output shape. `entities` is deliberately absent: entities come from
     /// structured extraction only, never from a model's reading of screen text.
-    private static let verdictSchema: [String: Any] = AnthropicClient.objectSchema([
+    private static let verdictSchema: [String: Any] = OllamaClient.objectSchema([
         "opportunity": [
             "type": "string",
             "enum": ["email_reply", "github_brief", "linkedin_post", "chat_reply", "none"],

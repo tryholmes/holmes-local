@@ -109,7 +109,7 @@ struct KeyCap: View {
     var body: some View {
         Text(text)
             .font(.system(size: 12, weight: .bold, design: .monospaced))
-            .foregroundColor(NoirColors.creamWhite)
+            .foregroundColor(Color.black.opacity(0.85))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(NoirColors.deepTeal)

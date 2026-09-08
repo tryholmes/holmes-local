@@ -14,10 +14,13 @@ struct holmesApp: App {
 struct SettingsView: View {
     @State private var launchAtLogin = false
     @State private var showNotchAnimation = true
-    @State private var selectedTab: SettingsTab = .automations
+    // Land on the Local Model tab until Ollama + the model are ready — every
+    // "Holmes can't act right now" message points the user here.
+    @State private var selectedTab: SettingsTab = OllamaConfig.isConfigured ? .automations : .localModel
 
     enum SettingsTab: String, CaseIterable {
         case general = "General"
+        case localModel = "Local Model"
         case voice = "Voice"
         case automations = "Automations"
         case hotkeys = "Hotkeys"
@@ -27,6 +30,7 @@ struct SettingsView: View {
         var icon: String {
             switch self {
             case .general: return "gearshape"
+            case .localModel: return "cpu"
             case .voice: return "waveform"
             case .automations: return "wand.and.stars"
             case .hotkeys: return "keyboard"
@@ -81,13 +85,15 @@ struct SettingsView: View {
                     .padding(.top, 6)
             }
         }
-        .frame(width: 540, height: 460)
+        .frame(width: 640, height: 520)
     }
 
     @ViewBuilder private var content: some View {
         switch selectedTab {
         case .general:
             GeneralSettingsView(launchAtLogin: $launchAtLogin, showNotchAnimation: $showNotchAnimation)
+        case .localModel:
+            LocalModelSettingsView()
         case .voice:
             VoiceSettingsView()
         case .automations:
@@ -126,6 +132,7 @@ struct SettingsView: View {
 struct AutomationsSettingsView: View {
     // Local mirror so the Toggle re-renders; writes straight through to the
     // single source of truth (AutonomyPolicy.shared, default OFF).
+    @State private var registryGeneration = 0
     @State private var masterEnabled: Bool
 
     @MainActor init() {
@@ -156,13 +163,39 @@ struct AutomationsSettingsView: View {
 
             ScrollView {
                 VStack(spacing: 2) {
-                    ForEach(DefaultPlaybooks.all) { playbook in
+                    ForEach(playbooks) { playbook in
                         PlaybookToggleRow(playbook: playbook)
-                        if playbook.id != DefaultPlaybooks.all.last?.id {
+                        if playbook.id != playbooks.last?.id {
                             Divider()
                         }
                     }
                 }
+            }
+
+            // Community playbooks (the Holmes SDK): JSON manifests in
+            // ~/Library/Application Support/Holmes/playbooks, compiled into the
+            // same draft-only path as the built-ins.
+            HStack(spacing: 8) {
+                Text(communityStatusText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Spacer()
+                Button("Open Folder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([PlaybookRegistry.directory])
+                }
+                .controlSize(.small)
+                Button("Reload") {
+                    PlaybookRegistry.reload()
+                    registryGeneration += 1
+                }
+                .controlSize(.small)
+            }
+            .padding(.top, 6)
+            ForEach(PlaybookRegistry.loadErrors) { error in
+                Text("\(error.file): \(error.message)")
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+                    .lineLimit(2)
             }
 
             Divider()
@@ -178,6 +211,22 @@ struct AutomationsSettingsView: View {
             }
         }
         .padding()
+        .onReceive(NotificationCenter.default.publisher(for: PlaybookRegistry.didReload)) { _ in
+            registryGeneration += 1
+        }
+    }
+
+    private var playbooks: [Playbook] {
+        _ = registryGeneration
+        return PlaybookRegistry.all
+    }
+
+    private var communityStatusText: String {
+        _ = registryGeneration
+        let n = PlaybookRegistry.communityCount
+        return n == 0
+            ? "No community playbooks. Drop a manifest JSON in the folder to add one."
+            : "\(n) community playbook\(n == 1 ? "" : "s") loaded."
     }
 
     @MainActor private var mcpStatusText: String {
@@ -201,7 +250,14 @@ struct PlaybookToggleRow: View {
 
     @MainActor init(playbook: Playbook) {
         self.playbook = playbook
-        _level = State(initialValue: AutonomyPolicy.shared.level(for: playbook.id))
+        // Community (manifest) playbooks never act: clamp a stored higher level.
+        let stored = AutonomyPolicy.shared.level(for: playbook.id)
+        _level = State(initialValue: playbook.source == nil ? stored : min(stored, .draft))
+    }
+
+    /// Community playbooks only offer Observe / Draft; the engine clamps too.
+    private var availableLevels: [AutonomyLevel] {
+        playbook.source == nil ? AutonomyLevel.allCases : AutonomyLevel.allCases.filter { $0 <= .draft }
     }
 
     var body: some View {
@@ -215,6 +271,16 @@ struct PlaybookToggleRow: View {
                 HStack(spacing: 6) {
                     Text(playbook.name)
                         .font(.system(size: 12, weight: .semibold))
+                    if playbook.source != nil {
+                        Text("COMMUNITY")
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .foregroundColor(.accentColor)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: 3))
+                            .help(playbook.source ?? "")
+                    }
                     if !playbook.autoTriggers {
                         Text("MANUAL")
                             .font(.system(size: 8, weight: .bold, design: .monospaced))
@@ -243,7 +309,7 @@ struct PlaybookToggleRow: View {
             }
 
             Picker("", selection: $level) {
-                ForEach(AutonomyLevel.allCases, id: \.self) { lvl in
+                ForEach(availableLevels, id: \.self) { lvl in
                     Text(lvl.displayName).tag(lvl)
                 }
             }
@@ -365,7 +431,15 @@ struct VoiceSettingsView: View {
 
             Divider()
 
-            SecureField("ElevenLabs API key", text: $elevenLabsKey)
+            // The one cloud service Holmes ITSELF calls. Off until a key is
+            // entered; with a key, only the short lines Holmes speaks go out.
+            // (An MCP server or a remote Ollama host the user connects is theirs,
+            // not Holmes's — the README's Privacy section covers those.)
+            Text("Optional natural voice. ElevenLabs is the only cloud service Holmes itself calls, and it stays off until you enter a key. With a key, only the short lines Holmes speaks are sent to ElevenLabs to be voiced — never your screen. Anything you connect yourself (an MCP server such as Composio, or an Ollama host on another machine) receives what the README's Privacy section describes.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            SecureField("ElevenLabs API key (optional)", text: $elevenLabsKey)
                 .textFieldStyle(.roundedBorder)
                 .focused($focused, equals: .key)
                 .onSubmit { commitKey() }
@@ -380,7 +454,7 @@ struct VoiceSettingsView: View {
                     .foregroundColor(isConfigured ? .green : .secondary)
                 Text(isConfigured
                      ? "Natural voice (ElevenLabs)."
-                     : "System voice — add an ElevenLabs key for a natural voice.")
+                     : "System voice (on-device) — add an ElevenLabs key for a natural voice.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
@@ -691,6 +765,20 @@ struct PrivacySettingsView: View {
                         bridge.beginPairing()
                     }
                 }
+                Menu("Install extension in…") {
+                    let browsers = ExtensionInstaller.installedBrowsers()
+                    if browsers.isEmpty {
+                        Text("No Chromium browser found")
+                    }
+                    ForEach(browsers) { b in
+                        Button(b.name) { try? ExtensionInstaller.beginGuidedInstall(in: b) }
+                    }
+                    Divider()
+                    Button("Show extension folder") { ExtensionInstaller.revealInstalledFolder() }
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Copies the bundled extension to a folder, opens the browser's Extensions page for Load unpacked, and opens the pairing window.")
                 Button(copiedToken ? "Copied" : "Copy token") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(BrowserBridge.shared.token, forType: .string)
@@ -706,9 +794,12 @@ struct PrivacySettingsView: View {
 
             Divider()
 
-            Text("Screen context stays on this Mac. Text you act on — a command you run, a reply Holmes drafts, the goal behind the current screen — is sent to Anthropic's API (claude-opus-5) to produce that result, and only then.")
+            // Holmes Local's privacy story in one place: the model is on this
+            // Mac, so there is no "sent to produce that result" clause any more.
+            Text("Everything runs on this Mac by default. Screen context, the goal behind it, the replies Holmes drafts, and the commands it runs are all produced by the local model through Ollama on this machine. ElevenLabs is the only cloud service Holmes itself calls, and it stays off until you enter a key under Voice. Anything you connect yourself (an MCP server such as Composio, or an Ollama host on another machine) receives what the README's Privacy section describes.")
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .scrollContentBackground(.hidden)
         .padding()
@@ -820,18 +911,36 @@ struct AboutSettingsView: View {
                 .foregroundStyle(NoirColors.textPrimary)
                 .tracking(4)
 
-            Text("Zero Prompt AI for macOS")
-                .font(.system(size: 13, weight: .regular, design: .monospaced))
+            Text("Holmes Local (beta)")
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
                 .foregroundStyle(NoirColors.textSecondary)
 
-            Text("Version 1.0.0")
+            Text("Zero Prompt AI for macOS")
+                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .foregroundStyle(NoirColors.textSecondary)
+
+            Text("Version \(Self.versionString)")
                 .font(.system(size: 11, weight: .regular, design: .monospaced))
                 .foregroundStyle(NoirColors.textTertiary)
+
+            Text("Runs entirely on this Mac through Ollama — no account, no API key, nothing leaves the machine.")
+                .font(.caption)
+                .foregroundStyle(NoirColors.textTertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
 
             Spacer()
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// "0.1.0 (1)" from Info.plist, so the About tab can never drift from the bundle.
+    private static var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "0.1.0"
+        let build = info?["CFBundleVersion"] as? String
+        return build.map { "\(short) (\($0))" } ?? short
     }
 }
 

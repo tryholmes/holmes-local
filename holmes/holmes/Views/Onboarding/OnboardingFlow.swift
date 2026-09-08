@@ -8,7 +8,6 @@ struct OnboardingFlow: View {
         ZStack {
             VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
                 .ignoresSafeArea()
-            
             VStack(spacing: 0) {
                 HStack {
                     Spacer()
@@ -33,6 +32,12 @@ struct OnboardingFlow: View {
                         HowItWorksScreen(viewModel: viewModel)
                     case .permissions:
                         PermissionsScreen(viewModel: viewModel)
+                    case .localModel:
+                        LocalModelScreen(viewModel: viewModel)
+                    case .browser:
+                        BrowserExtensionScreen(viewModel: viewModel)
+                    case .integrations:
+                        IntegrationsScreen(viewModel: viewModel)
                     case .ready:
                         ReadyScreen(viewModel: viewModel, onComplete: onComplete)
                     }
@@ -44,6 +49,76 @@ struct OnboardingFlow: View {
             }
         }
         .frame(minWidth: 600, minHeight: 700)
+        // The whole palette is white-on-glass; pin the window to the dark
+        // appearance so the .hudWindow material stays dark under a light
+        // system appearance / light wallpaper instead of washing the text out.
+        .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: - "Your local model" step
+// Sits between Permissions and Ready. Embeds the compact Local Model pane
+// (status + the one model Holmes will use, with download progress) so the user
+// ends onboarding with Ollama running and the default model pulled. Continue
+// is offered once everything is ready; "Set up later" always lets them through —
+// Settings ▸ Local Model shows the same controls, and every "can't act" message
+// points there.
+@MainActor
+struct LocalModelScreen: View {
+    @ObservedObject var viewModel: OnboardingViewModel
+    @State private var contentOpacity: CGFloat = 0
+
+    private var isReady: Bool { OllamaServer.shared.status.isReady }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer()
+
+            VStack(spacing: 22) {
+                VStack(spacing: 10) {
+                    Text("Your Local Model")
+                        .font(NoirFonts.headline())
+                        .foregroundColor(NoirColors.textPrimary)
+
+                    Text("Holmes thinks with an open model that runs on this Mac\nthrough Ollama. Nothing you do is sent to a server.")
+                        .font(NoirFonts.caption())
+                        .foregroundColor(NoirColors.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(3)
+                }
+
+                LocalModelSettingsView(compact: true)
+            }
+            .opacity(contentOpacity)
+
+            Spacer()
+
+            HStack(spacing: 16) {
+                NoirButton("Back", style: .ghost) {
+                    viewModel.previousStep()
+                }
+
+                if isReady {
+                    NoirButton("Continue", icon: "arrow.right") {
+                        viewModel.nextStep()
+                    }
+                } else {
+                    NoirButton("Set up later", icon: "arrow.right", style: .secondary) {
+                        viewModel.nextStep()
+                    }
+                }
+            }
+            .padding(.bottom, 60)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.5).delay(0.1)) {
+                contentOpacity = 1.0
+            }
+            // The launch-time monitor is already probing; nudge it so the card
+            // reflects "now" (and spawns the server if it's down and allowed).
+            Task { await OllamaServer.shared.ensureRunning() }
+        }
     }
 }
 
@@ -55,7 +130,7 @@ struct StepIndicator: View {
         HStack(spacing: 8) {
             ForEach(0..<totalSteps, id: \.self) { index in
                 Capsule()
-                    .fill(index <= currentStep ? NoirColors.deepTeal : NoirColors.midBlue.opacity(0.4))
+                    .fill(index <= currentStep ? NoirColors.accent : NoirColors.glassStroke)
                     .frame(width: index == currentStep ? 24 : 8, height: 8)
                     .animation(NoirAnimations.smooth, value: currentStep)
             }

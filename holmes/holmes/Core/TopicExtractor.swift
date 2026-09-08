@@ -251,7 +251,7 @@ enum TopicExtractor {
 
     // MARK: - Public API — model fallback
 
-    /// Last resort: ask Opus to name the subject when the rules found none.
+    /// Last resort: ask the local model to name the subject when the rules found none.
     ///
     /// The prompt's whole job is to keep this from becoming an invention step —
     /// the model may only return words that appear in the message, and must
@@ -261,7 +261,7 @@ enum TopicExtractor {
     static func extractWithModel(from text: String, limit: Int = 3) async -> [Topic] {
         let source = String(text.prefix(maxScanLength))
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !source.isEmpty, AnthropicConfig.isConfigured else { return [] }
+        guard !source.isEmpty, OllamaConfig.isConfigured else { return [] }
 
         let system = """
         You extract the SUBJECT of a message so a memory database can be searched for it.
@@ -282,7 +282,7 @@ enum TopicExtractor {
 
         let raw: String
         do {
-            raw = try await AnthropicClient.shared.complete(
+            raw = try await OllamaClient.shared.complete(
                 system: system, user: user, maxTokens: 300,
                 asJSON: true, schema: Self.topicSchema)
         } catch {
@@ -312,7 +312,7 @@ enum TopicExtractor {
         return rank(topics, limit: limit)
     }
 
-    private static let topicSchema: [String: Any] = AnthropicClient.objectSchema([
+    private static let topicSchema: [String: Any] = OllamaClient.objectSchema([
         "topics": [
             "type": "array",
             "items": ["type": "string"],

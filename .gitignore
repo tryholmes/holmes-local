@@ -9,7 +9,9 @@ xcuserdata/
 # Build output
 build/
 DerivedData/
+xcodebuild.log
 
-# Local secrets / config (never commit)
+# Local config (never commit). There is no model API key in Holmes Local;
+# ~/.holmes holds mcp.json and the optional ElevenLabs key.
 .holmes/
-*anthropic_key*
+dist/
