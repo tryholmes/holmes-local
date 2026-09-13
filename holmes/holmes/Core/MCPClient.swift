@@ -395,7 +395,7 @@ final class MCPHTTPConnection: MCPTransport {
         }
 
         let ctype = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
-        if ctype.contains("text/event-stream") {
+if ctype.lowercased().contains("text/event-stream") {
             return try await Self.firstResponse(matching: id, in: bytes)
         }
         let data = try await Self.collect(bytes)
