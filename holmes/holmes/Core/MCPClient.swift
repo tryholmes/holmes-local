@@ -368,7 +368,7 @@ final class MCPHTTPConnection: MCPTransport {
         let ctype = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
         let obj: [String: Any]
         if ctype.contains("text/event-stream") {
-            obj = try await Self.firstResponse(in: bytes)
+            obj = try await Self.firstResponse(matching: id, in: bytes)
         } else {
             let data = try await Self.collect(bytes)
             guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -389,19 +389,33 @@ final class MCPHTTPConnection: MCPTransport {
         return data
     }
 
-    /// Walks an SSE stream event by event and returns the first JSON-RPC response
-    /// (an object carrying `result` or `error`) the moment it is complete.
-    private static func firstResponse(in bytes: URLSession.AsyncBytes) async throws -> [String: Any] {
+    /// Walks an SSE stream event by event and returns the JSON-RPC response to request
+    /// `id` the moment it is complete. Anything else the server puts on the stream
+    /// first (notifications, its own requests, keepalive comments) is skipped.
+    private static func firstResponse(matching id: Int, in bytes: URLSession.AsyncBytes) async throws -> [String: Any] {
         var parser = MCPSSEParser()
         for try await byte in bytes {
             guard let payload = parser.feed(byte),
                   let data = payload.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  obj["result"] != nil || obj["error"] != nil
+                  isResponse(obj, to: id)
             else { continue }
             return obj
         }
         throw MCPError.badResponse("SSE stream ended before a JSON-RPC response arrived")
+    }
+
+    /// A response carries `result` or `error` and echoes our id. An error with a null
+    /// id (the server could not read the request) is also ours: nothing else is pending
+    /// on this POST.
+    private static func isResponse(_ obj: [String: Any], to id: Int) -> Bool {
+        guard obj["result"] != nil || obj["error"] != nil else { return false }
+        switch obj["id"] {
+        case let n as NSNumber: return n.intValue == id
+        case let s as String:   return s == String(id)
+        case nil, is NSNull:    return obj["error"] != nil
+        default:                return false
+        }
     }
 
     private func notify(_ method: String) async throws {
