@@ -169,6 +169,7 @@ struct MCPHTTPTransportTests {
         try await streamedReplyOnOpenConnection()
         try await eventsSplitAcrossChunksWithCRLF()
         try await otherMessagesOnTheStreamAreSkipped()
+        try await jsonReplyAndSessionHeader()
         print("Passed \(checks) MCP HTTP transport regression checks")
     }
 
@@ -214,5 +215,26 @@ struct MCPHTTPTransportTests {
         ]))
         let result = try await connection().callTool("echo", arguments: [:])
         expect(result.text == "mine", "Only the response echoing our id completes the call")
+    }
+
+    // TEST: jsonReplyAndSessionHeader
+    /// Plain JSON replies still work and the session id is carried on later requests.
+    static func jsonReplyAndSessionHeader() async throws {
+        ScriptedMCPServer.reset()
+        let json = "{\"jsonrpc\":\"2.0\",\"id\":{{id}},\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"plain\"}],\"isError\":true}}"
+        ScriptedMCPServer.script("tools/call", .init(
+            headers: ["Content-Type": "application/json", "Mcp-Session-Id": "sess-1"],
+            steps: [.chunk(json), .finish]))
+        ScriptedMCPServer.script("tools/call", .init(
+            headers: ["Content-Type": "application/json"], steps: [.chunk(json), .finish]))
+        let c = connection()
+        let first = try await c.callTool("echo", arguments: [:])
+        expect(first.text == "plain" && first.isError, "JSON body is parsed with its isError flag")
+        _ = try await c.callTool("echo", arguments: [:])
+        let requests = ScriptedMCPServer.requests
+        expect(requests.count == 2 && requests[0].headers["Mcp-Session-Id"] == nil, "First request has no session yet")
+        expect(requests[1].headers["Mcp-Session-Id"] == "sess-1", "Session id from the reply is sent on the next request")
+        expect(requests[1].headers["Accept"] == "application/json, text/event-stream", "Both reply types are advertised")
+        expect(requests[1].headers["X-Test"] == "1", "Configured headers are sent")
     }
 }
