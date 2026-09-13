@@ -452,10 +452,16 @@ final class MCPHTTPConnection: MCPTransport {
         }
     }
 
+    /// A notification has no reply (the server answers 202 with an empty body), so only
+    /// the headers are awaited. A server that streams here anyway cannot stall start().
     private func notify(_ method: String) async throws {
         let payload: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": [:]]
         let body = try JSONSerialization.data(withJSONObject: payload)
-        _ = try await URLSession.shared.data(for: buildRequest(body: body))
+        let request = buildRequest(body: body)
+        try await withDeadline {
+            let (bytes, _) = try await URLSession.shared.bytes(for: request)
+            bytes.task.cancel()
+        }
     }
 }
 
