@@ -24,8 +24,8 @@ final class ConfirmationWindowController: NSObject {
         // the receipts are the point — they must not be the thing that clips.
         let isReply = ConfirmationBus.shared.isShowingReply
         let isDraft = ConfirmationBus.shared.pendingDraft != nil
-        let w: CGFloat = (isReply || isDraft) ? 380 : 360
-        let h: CGFloat = isReply ? 520 : (isDraft ? 440 : 280)
+        let w: CGFloat = min(420, screen.visibleFrame.width - 40)
+        let h: CGFloat = min(isReply ? 540 : (isDraft ? 520 : 410), screen.visibleFrame.height - 40)
         let margin: CGFloat = 20
         let x = screen.visibleFrame.maxX - w - margin
         let y = screen.visibleFrame.minY + margin
@@ -50,9 +50,11 @@ final class ConfirmationWindowController: NSObject {
         } completionHandler: { [weak self] in
             // Only the most recent hide() may tear the window down; a show()
             // that raced in during the fade keeps it.
-            guard let self, generation == self.hideGeneration, self.window === window else { return }
-            window.orderOut(nil)
-            self.window = nil
+            Task { @MainActor in
+                guard let self, generation == self.hideGeneration, self.window === window else { return }
+                window.orderOut(nil)
+                self.window = nil
+            }
         }
     }
 
@@ -69,7 +71,9 @@ final class ConfirmationWindowController: NSObject {
         w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         w.isMovableByWindowBackground = true
         w.hasShadow = true
-        w.contentView = NSHostingView(rootView: ConfirmationView())
+        w.contentView = NSHostingView(rootView: ScrollView {
+            ConfirmationView()
+        }.preferredColorScheme(.dark))
         self.window = w
     }
 }

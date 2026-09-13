@@ -78,6 +78,7 @@ struct ReplyReadyCard: View {
         .background(
             ZStack {
                 VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+                NoirColors.panelBackground.opacity(0.94)
                 NoirColors.glassSurface
             }
         )
@@ -100,14 +101,14 @@ struct ReplyReadyCard: View {
                 .foregroundColor(NoirColors.accent.opacity(0.8))
 
             Text("REPLY READY")
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                 .foregroundColor(NoirColors.textTertiary)
                 .tracking(2)
 
             Spacer(minLength: 8)
 
             Text(recipientLabel)
-                .font(.system(size: 9, weight: .regular, design: .monospaced))
+                .font(NoirFonts.font(size: 9, weight: .regular, design: .monospaced))
                 .foregroundColor(NoirColors.textTertiary)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -139,7 +140,7 @@ struct ReplyReadyCard: View {
     /// Dim and italic: it is the thing being answered, not the thing being sent.
     private var quotedMessage: some View {
         Text("\u{201C}\(incoming.text)\u{201D}")
-            .font(.system(size: 11, weight: .regular, design: .default))
+            .font(NoirFonts.font(size: 11, weight: .regular, design: .default))
             .italic()
             .foregroundColor(NoirColors.textTertiary)
             .lineSpacing(2)
@@ -154,7 +155,7 @@ struct ReplyReadyCard: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 Text("DRAFT — EDITABLE")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textTertiary)
                     .tracking(1.5)
                 Spacer(minLength: 6)
@@ -164,7 +165,7 @@ struct ReplyReadyCard: View {
             // TextEditor, not Text: the user edits before anything leaves this
             // card, and `editedBody` is the only string the buttons ever use.
             TextEditor(text: $editedBody)
-                .font(.system(size: 12, weight: .regular, design: .default))
+                .font(NoirFonts.font(size: 12, weight: .regular, design: .default))
                 .foregroundColor(NoirColors.textPrimary)
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
@@ -189,7 +190,7 @@ struct ReplyReadyCard: View {
                 .fill(draft.confidence.replyDotColor)
                 .frame(width: 5, height: 5)
             Text(draft.confidence.replyLabel)
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                 .foregroundColor(NoirColors.textTertiary)
                 .tracking(1)
         }
@@ -205,7 +206,7 @@ struct ReplyReadyCard: View {
                     .font(.system(size: 11, weight: .bold))
                     .foregroundColor(result.hasPrefix("\u{2713}") ? NoirColors.success : NoirColors.error)
                 Text(result)
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .font(NoirFonts.font(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundColor(result.hasPrefix("\u{2713}") ? NoirColors.success : NoirColors.error)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -215,7 +216,7 @@ struct ReplyReadyCard: View {
             HStack(spacing: 8) {
                 ProgressView().scaleEffect(0.55).tint(NoirColors.accent)
                 Text("Staging in \(targetApp)...")
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(NoirFonts.font(size: 10, design: .monospaced))
                     .foregroundColor(NoirColors.textTertiary)
                 Spacer(minLength: 0)
             }
@@ -243,7 +244,7 @@ struct ReplyReadyCard: View {
             Text(targetApp.isEmpty
                  ? "Holmes never sends. Copy it and send it yourself."
                  : "Holmes never sends — Insert types it into \(targetApp) and stops. You press Send.")
-                .font(.system(size: 8, weight: .regular, design: .monospaced))
+                .font(NoirFonts.font(size: 8, weight: .regular, design: .monospaced))
                 .foregroundColor(NoirColors.textPlaceholder)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -252,38 +253,11 @@ struct ReplyReadyCard: View {
     }
 
     private func primaryButton(title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 10, weight: .bold))
-                Text(title)
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-            }
-            .foregroundColor(NoirColors.ctaForeground)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
-            .background(NoirColors.ctaBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 7))
-            .glassBorder(cornerRadius: 7)
-        }
-        .buttonStyle(.plain)
+        NoirButton(title, icon: icon, action: action)
     }
 
     private func secondaryButton(title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .foregroundColor(NoirColors.textSecondary)
-                .padding(.horizontal, 13)
-                .padding(.vertical, 8)
-                .background(NoirColors.glassElevated)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7)
-                        .stroke(NoirColors.glassDivider, lineWidth: 0.75)
-                )
-        }
-        .buttonStyle(.plain)
+        NoirButton(title, style: .secondary, action: action)
     }
 
     // MARK: Actions
@@ -447,7 +421,7 @@ struct GroundedInStrip: View {
                 rows(visibleRows)
                 if isExpanded, events.count > Self.expandedRowCount {
                     Text("+ \(events.count - Self.expandedRowCount) more in memory")
-                        .font(.system(size: 8, weight: .regular, design: .monospaced))
+                        .font(NoirFonts.font(size: 8, weight: .regular, design: .monospaced))
                         .foregroundColor(NoirColors.textPlaceholder)
                         .padding(.leading, 12)
                 }
@@ -470,15 +444,15 @@ struct GroundedInStrip: View {
         }) {
             HStack(spacing: 6) {
                 Text("\u{25C8}")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.accent.opacity(0.7))
                 Text(countLabel)
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textTertiary)
                     .tracking(1.5)
                 Spacer(minLength: 6)
                 Text(isExpanded ? "hide \u{25B4}" : "show \u{25BE}")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textSecondary)
             }
             .contentShape(Rectangle())
@@ -510,14 +484,14 @@ struct GroundedInStrip: View {
                 Text(primaryTopic.isEmpty
                      ? "BACKGROUND \u{2014} NOT MATCHED TO THEIR MESSAGE"
                      : "BACKGROUND \u{2014} NOT ABOUT \u{201C}\(primaryTopic)\u{201D}")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textPlaceholder)
                     .tracking(1.5)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 6)
                 Text(isExpanded ? "hide \u{25B4}" : "show \u{25BE}")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textSecondary)
             }
             .contentShape(Rectangle())
@@ -555,7 +529,7 @@ struct GroundedInStrip: View {
             Text(primaryTopic.isEmpty
                  ? "No memories matched — this draft is unsourced."
                  : "No memories about \u{201C}\(primaryTopic)\u{201D} — this draft is unsourced.")
-                .font(.system(size: 10, weight: .semibold, design: .default))
+                .font(NoirFonts.font(size: 10, weight: .semibold, design: .default))
                 .foregroundColor(replyWarning)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -604,19 +578,19 @@ private struct GroundedMemoryRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 6) {
             Text("\u{00B7}")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 10, weight: .bold, design: .monospaced))
                 .foregroundColor(NoirColors.textPlaceholder)
                 .padding(.top, 1)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(event.summary)
-                    .font(.system(size: 10, weight: .semibold, design: .default))
+                    .font(NoirFonts.font(size: 10, weight: .semibold, design: .default))
                     .foregroundColor(isHovered ? NoirColors.textPrimary : NoirColors.textSecondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Text(subline)
-                    .font(.system(size: 8, weight: .regular, design: .monospaced))
+                    .font(NoirFonts.font(size: 8, weight: .regular, design: .monospaced))
                     .foregroundColor(RecallReason.isWeak(matchedOn) ? replyWarning.opacity(0.85)
                                                                     : NoirColors.textPlaceholder)
                     .lineLimit(1)
