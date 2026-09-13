@@ -3,11 +3,12 @@
 
 # ➤ Holmes
 
-Autonomous desktop agent for macOS. Runs entirely on your Mac, no cloud, no account.
+Your personal macOS AI agent that works for you.
 
-> **Beta.** This is Holmes Local, the open source build. It uses an open weights vision model served by [Ollama](https://ollama.com). The hosted version lives in a separate, private repo.
+> **Beta.** This is Holmes, the open-source build. It uses an open-weights vision model served by [Ollama](https://ollama.com).
 
-Holmes watches your screen, understands what you're doing, and prepares things before you ask: a drafted reply, a repo summary, a fix for a failed command, a sorted Downloads folder. You never open a chat box. When it has something ready, the screen glows, your trackpad buzzes, and a draft appears for you to approve. It never sends, posts, or deletes on its own, that's enforced in code.
+Holmes lives on your Mac and works when you call it; press a key, and it walks you through what you're doing or handles it for you.
+It's an agentic assistant for your Mac that handles tasks autonomously and works whenever you need it to!
 
 **[Download Holmes.dmg](https://github.com/tryholmes/holmes-local/releases/latest/download/Holmes.dmg)** · [Install guide](INSTALL.md)
 
