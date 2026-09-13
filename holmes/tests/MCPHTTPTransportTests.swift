@@ -172,6 +172,7 @@ struct MCPHTTPTransportTests {
         try await jsonReplyAndSessionHeader()
         try await errorsSurfaceInsteadOfHanging()
         try await httpStatusErrorCarriesBody()
+        try await largeErrorBodyIsTruncatedNotDropped()
         try await deadlineOnSilentStream()
         try await startHandshakeOverMixedReplies()
         parserUnitChecks()
@@ -278,6 +279,22 @@ struct MCPHTTPTransportTests {
             fatalError("A 401 must throw")
         } catch MCPHTTPConnection.MCPError.http(let status, let body) {
             expect(status == 401 && body == "unauthorized", "Status and body are reported")
+        }
+    }
+
+    // TEST: largeErrorBodyIsTruncatedNotDropped
+    /// The error body read stops at 16 KB, which can land inside a multibyte character.
+    static func largeErrorBodyIsTruncatedNotDropped() async throws {
+        ScriptedMCPServer.reset()
+        let page = "<html>x" + String(repeating: "\u{00E9}", count: 20_000) // byte 16384 splits an e acute
+        ScriptedMCPServer.script("tools/call", .init(
+            status: 502, headers: ["Content-Type": "text/html; charset=utf-8"], steps: [.chunk(page), .finish]))
+        do {
+            _ = try await connection().callTool("echo", arguments: [:])
+            fatalError("A 502 must throw")
+        } catch MCPHTTPConnection.MCPError.http(let status, let body) {
+            expect(status == 502 && body.hasPrefix("<html>x\u{00E9}\u{00E9}"), "The start of a large error page survives the cut")
+            expect(body.utf8.count <= 16_384 + 3, "The read stays capped (\(body.utf8.count) bytes)")
         }
     }
 
