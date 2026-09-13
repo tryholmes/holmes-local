@@ -171,6 +171,7 @@ struct MCPHTTPTransportTests {
         try await otherMessagesOnTheStreamAreSkipped()
         try await jsonReplyAndSessionHeader()
         try await errorsSurfaceInsteadOfHanging()
+        try await httpStatusErrorCarriesBody()
         print("Passed \(checks) MCP HTTP transport regression checks")
     }
 
@@ -261,6 +262,19 @@ struct MCPHTTPTransportTests {
             fatalError("A stream that ends without a response must throw")
         } catch MCPHTTPConnection.MCPError.badResponse {
             expect(Date().timeIntervalSince(started) < 10, "Early close fails right away, not at the deadline")
+        }
+    }
+
+    // TEST: httpStatusErrorCarriesBody
+    static func httpStatusErrorCarriesBody() async throws {
+        ScriptedMCPServer.reset()
+        ScriptedMCPServer.script("tools/call", .init(
+            status: 401, headers: ["Content-Type": "text/plain"], steps: [.chunk("unauthorized"), .finish]))
+        do {
+            _ = try await connection().callTool("echo", arguments: [:])
+            fatalError("A 401 must throw")
+        } catch MCPHTTPConnection.MCPError.http(let status, let body) {
+            expect(status == 401 && body == "unauthorized", "Status and body are reported")
         }
     }
 }
