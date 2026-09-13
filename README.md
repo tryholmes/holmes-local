@@ -1,4 +1,7 @@
-# Holmes
+<!-- ⚠️ This README has been generated from the file(s) "blueprint.md" ⚠️-->
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#holmes)
+
+# ➤ Holmes
 
 Autonomous desktop agent for macOS. Runs entirely on your Mac, no cloud, no account.
 
@@ -10,7 +13,10 @@ Holmes watches your screen, understands what you're doing, and prepares things b
 
 ---
 
-## Quick start
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#quick-start)
+
+## ➤ Quick start
 
 ```bash
 brew install ollama
@@ -19,13 +25,19 @@ ollama pull qwen3-vl:4b-instruct
 
 Then open Holmes.dmg, drag it to Applications, and launch it. Grant the permissions it asks for (Screen Recording, Accessibility, Calendar, Notifications), then quit and relaunch once.
 
-## How it works
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#how-it-works)
+
+## ➤ How it works
 
 Holmes reads your screen every few seconds through a browser extension or macOS Accessibility, and turns that into one plain, factual sentence describing what's happening. No model writes that sentence, so it never guesses. A rules based check decides if anything's worth acting on. If so, the local model builds a draft using that context and, optionally, your connected tools.
 
 You always approve before anything goes out. The only unsupervised write Holmes can make is creating a Gmail draft, and only to people already in the conversation.
 
-## What it does
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#what-it-does)
+
+## ➤ What it does
 
 | Automation | Trigger | Result |
 |---|---|---|
@@ -37,7 +49,10 @@ You always approve before anything goes out. The only unsupervised write Holmes 
 
 Plus: push to talk (hold Fn), a command bar (`Ctrl+Space`), custom playbooks via the Holmes SDK, and an optional local MCP server for other agents to read your screen context.
 
-## Safety: drafts, never sends
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#safety-drafts-never-sends)
+
+## ➤ Safety: drafts, never sends
 
 - Every mutating tool (send, delete, post, publish, move, etc.) is filtered out of the model's reach before it ever sees the tool list.
 - The one exception is Gmail drafts, allow listed by exact name.
@@ -47,7 +62,10 @@ Plus: push to talk (hold Fn), a command bar (`Ctrl+Space`), custom playbooks via
 
 Tested against ~57 adversarial prompts designed to bypass this. All blocked.
 
-## Requirements
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#requirements)
+
+## ➤ Requirements
 
 - Apple Silicon Mac, macOS 14+
 - 16 GB RAM recommended (8 GB minimum, smaller model auto selected)
@@ -56,7 +74,10 @@ Tested against ~57 adversarial prompts designed to bypass this. All blocked.
 
 No API key. Without Ollama running, Holmes still shows what's on screen but won't draft anything.
 
-## Models
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#models)
+
+## ➤ Models
 
 One model handles everything: it needs both vision and tool calling.
 
@@ -71,7 +92,10 @@ One model handles everything: it needs both vision and tool calling.
 
 Holmes picks one automatically based on your Mac's memory. Change it anytime in Settings → Local Model.
 
-## Privacy
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#privacy)
+
+## ➤ Privacy
 
 Everything stays on your Mac by default. No telemetry, no analytics, no account.
 
@@ -81,7 +105,10 @@ Everything stays on your Mac by default. No telemetry, no analytics, no account.
 - Tool calls: sent to connected services only if you set up Composio/MCP
 - History: local SQLite file. Only stored credential is an optional ElevenLabs key, in Keychain.
 
-## Connecting tools (optional)
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#connecting-tools-optional)
+
+## ➤ Connecting tools (optional)
 
 For GitHub Brief to pull real data, or for Gmail/Calendar/GitHub actions via `/run`, connect [Composio](https://composio.dev) in `~/.holmes/mcp.json`:
 
@@ -98,14 +125,20 @@ For GitHub Brief to pull real data, or for Gmail/Calendar/GitHub actions via `/r
 
 Full walkthrough: [`holmes/MCP-SETUP.md`](holmes/MCP-SETUP.md).
 
-## Known limitations
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#known-limitations)
+
+## ➤ Known limitations
 
 - Local models misclick more than hosted ones on busy screens
 - Each action takes 3 to 15 seconds
 - First launch pays a 20 to 40 second model load
 - Older Ollama versions may not support newer models, run `brew upgrade ollama`
 
-## Build from source
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#build-from-source)
+
+## ➤ Build from source
 
 ```bash
 git clone <this repository>
@@ -116,10 +149,16 @@ xcodebuild -project holmes.xcodeproj -scheme holmes -configuration Debug build \
 
 Set your own Development Team in Xcode if building repeatedly, ad hoc signing resets macOS permissions on every rebuild.
 
-## Contributing
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#contributing)
+
+## ➤ Contributing
 
 Issue first, one change per branch, explain what changed and how you tested it. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## License
+
+[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#license)
+
+## ➤ License
 
 GPL-3.0. See [`LICENSE`](LICENSE). Required because the notch UI ports [boring.notch](https://github.com/TheBoredTeam/boring.notch) (GPL-3.0); other MIT licensed components are noted in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
