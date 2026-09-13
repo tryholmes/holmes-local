@@ -18,8 +18,9 @@ final class ActionExecutor {
         AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
         var focusedRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
-              let focused = focusedRef, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
-        let element = focused as! AXUIElement
+              let focused = focusedRef,
+              CFGetTypeID(focused) == AXUIElementGetTypeID(),
+              let element = focused as? AXUIElement else { return false }
         var roleRef: CFTypeRef?
         let role = (AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success ? roleRef as? String : nil) ?? ""
         if role == kAXTextAreaRole as String || role == kAXTextFieldRole as String || role == "AXWebArea" { return true }
@@ -42,7 +43,10 @@ final class ActionExecutor {
             return typeViaKeyboard(text: text)
         }
 
-        let element = focused as! AXUIElement
+        guard CFGetTypeID(focused) == AXUIElementGetTypeID(),
+              let element = focused as? AXUIElement else {
+            return typeViaKeyboard(text: text)
+        }
 
         // Check if it's settable
         var settable: DarwinBoolean = false
@@ -155,11 +159,11 @@ final class ActionExecutor {
         }
 
         // Electron apps (Discord, Slack, Teams) — clipboard + AppleScript
-        let safe = message.replacingOccurrences(of: "\\", with: "\\\\")
-                          .replacingOccurrences(of: "\"", with: "\\\"")
+        let safe = escapeAppleScriptString(message)
+        let safeAppName = escapeAppleScriptString(appName)
         let simpleScript = """
 set the clipboard to "\(safe)"
-tell application "\(appName)" to activate
+tell application "\(safeAppName)" to activate
 delay 0.5
 tell application "System Events"
     keystroke "a" using command down
@@ -185,11 +189,11 @@ end tell
             return pasteIntoMessagesApp(app, message: text, replaceExisting: false)
         }
 
-        let safe = text.replacingOccurrences(of: "\\", with: "\\\\")
-                       .replacingOccurrences(of: "\"", with: "\\\"")
+        let safe = escapeAppleScriptString(text)
+        let safeAppName = escapeAppleScriptString(appName)
         let script = """
 set the clipboard to "\(safe)"
-tell application "\(appName)" to activate
+tell application "\(safeAppName)" to activate
 delay 0.5
 tell application "System Events"
     keystroke "v" using command down
@@ -257,6 +261,11 @@ end tell
             return true
         }
         return false
+    }
+
+    private func escapeAppleScriptString(_ raw: String) -> String {
+        raw.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     // MARK: - Helpers
