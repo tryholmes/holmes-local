@@ -4,10 +4,10 @@ Thanks for helping. Holmes Local is a beta, and the bar for what gets merged is 
 
 ## Workflow
 
-1. **Issue first.** Every contribution starts with an issue before a PR opens: a bug report for reproducible bugs, a feature request for features, a maintenance or chore issue for exploration and cleanup. One issue may back several small PRs.
+1. **Issue first.** Every contribution starts with an issue before a PR opens, using the templates under `.github/ISSUE_TEMPLATE`: a bug report for reproducible bugs, a feature request for features, a maintenance or chore issue for exploration and cleanup. One issue may back several small PRs.
 2. **One focused branch per change.** Branch from `main`, keep the diff about one thing.
 3. **PRs go into `main`.** The PR body explains **what** changed, **why** it changed, and **how it was tested** (which playbook you ran, which model, which Ollama version, what you saw). Link the backing issue.
-4. **Review.** A maintainer who did not author the change approves before merge. Don't merge your own PRs.
+4. **Review.** GitHub requests reviews automatically from the owners in `.github/CODEOWNERS`. A code owner who did not author the change approves before merge. Don't merge your own PRs.
 5. **Build before you push.** From the repo root:
 
    ```bash

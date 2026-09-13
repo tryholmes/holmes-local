@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup and MCP questions
+    url: https://github.com/tryholmes/holmes-local/blob/main/holmes/MCP-SETUP.md
+    about: How to connect local and remote MCP servers, and how to expose Holmes as one
+  - name: Contribution workflow
+    url: https://github.com/tryholmes/holmes-local/blob/main/CONTRIBUTING.md
+    about: Issue first, one focused branch per change, review by a code owner

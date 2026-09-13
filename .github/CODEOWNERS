@@ -1,0 +1,34 @@
+# Code owners for Holmes Local
+#
+# GitHub requests a review from the owners listed here whenever a pull request
+# touches a matching path, and a code owner who did not author the change
+# approves before merge (see CONTRIBUTING.md). Owners must have write access.
+# The last matching pattern wins, so the catch all rule stays first and more
+# specific areas follow it. Narrow an area to fewer owners here as the team grows.
+
+# Default: every file is owned by the core maintainers.
+*                               @Rouler4wd @nandanp1
+
+# CI, release pipeline and repository automation
+/.github/                       @Rouler4wd @nandanp1
+
+# The macOS app, its Xcode project and regression tests
+/holmes/holmes/                 @Rouler4wd @nandanp1
+/holmes/holmes.xcodeproj/       @Rouler4wd @nandanp1
+/holmes/tests/                  @Rouler4wd @nandanp1
+
+# Browser extension
+/holmes/holmes-extension/       @Rouler4wd @nandanp1
+
+# Playbook SDK, MCP integration and release scripts
+/holmes/sdk/                    @Rouler4wd @nandanp1
+/holmes/scripts/                @Rouler4wd @nandanp1
+/holmes/MCP-SETUP.md            @Rouler4wd @nandanp1
+
+# Project documentation and licensing
+/README.md                      @Rouler4wd @nandanp1
+/CONTRIBUTING.md                @Rouler4wd @nandanp1
+/INSTALL.md                     @Rouler4wd @nandanp1
+/blueprint.md                   @Rouler4wd @nandanp1
+/LICENSE                        @Rouler4wd @nandanp1
+/THIRD_PARTY_NOTICES.md         @Rouler4wd @nandanp1

@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a new capability or an improvement to an existing one
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Holmes Local runs every automation on a small local model, so proposals that state a deterministic trigger and a clear user outcome move fastest. See CONTRIBUTING.md for the rules that do not bend.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you cannot do today, or what is harder than it should be.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What Holmes should do instead, from the user's point of view.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - macOS app
+        - Playbooks and SDK
+        - MCP integration
+        - Browser extension
+        - Voice and notch UI
+        - Installer and release
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: doctrine
+    attributes:
+      label: Fit with the project rules
+      options:
+        - label: The change keeps the confirmation gates and the draft only rule intact
+        - label: Any new automatic trigger keys off structural signals, not loose text

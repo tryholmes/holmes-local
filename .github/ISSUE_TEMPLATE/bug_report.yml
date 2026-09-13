@@ -1,0 +1,59 @@
+name: Bug report
+description: Something in Holmes Local does not work the way it should
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A reproducible bug report is the first step of every fix; a pull request follows once the issue is understood.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What went wrong, and where in Holmes it happened.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact steps, in order. Include the playbook or request you used.
+      placeholder: |
+        1. Open Holmes and ...
+        2. Ask it to ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include any error text from the app or from the console.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Holmes Local version
+      placeholder: e.g. 0.1.1 or a commit hash
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: macOS version, Ollama version and model
+      placeholder: e.g. macOS 15.3, Ollama 0.6.2, qwen2.5:7b
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Remove anything private before pasting.
