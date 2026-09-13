@@ -73,6 +73,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func renderFixtures() async throws {
+        if ProcessInfo.processInfo.environment["HOLMES_UI_PREVIEW_WORK_ONLY"] == "1" {
+            await verifyAutonomyOwnership()
+            await verifyPerceptionLifecycle()
+            try await verifyConfirmationAndTypingCancellation()
+            try await renderEmailAndWorkFixtures()
+            return
+        }
         if ProcessInfo.processInfo.environment["HOLMES_UI_PREVIEW_DEMO_ONLY"] == "1" {
             try await renderDemoFixtures()
             return
@@ -138,6 +145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try await render("review-draft", size: CGSize(width: 420, height: 520),
                          view: ScrollView { ConfirmationView() })
         bus.pendingDraft = nil
+        try await renderEmailAndWorkFixtures()
 
         let incoming = ReplyComposer.IncomingMessage(surface: ReplyComposer.surfaceIMessage,
             sender: "Alex", text: "hey, what is holmes?", threadID: "preview-only", app: "Messages")
@@ -168,8 +176,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vm.contextLine = "Reviewing the holmes design and checking the next implementation steps"
         vm.contextSymbol = "doc.text"
         vm.taskActive = true
+        vm.taskName = "Checking the layout"
+        vm.taskPhase = .working
         vm.taskStep = "Checking that the text and controls stay below the camera housing"
         vm.taskProgress = 0.6
+        vm.taskIsIndeterminate = false
         vm.open()
         try await render("notch-expanded", size: geometry.windowSize, view: NotchView(vm: vm))
         vm.close()
@@ -177,6 +188,283 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vm.taskActive = false
         vm.sneakPeek = NotchSneakPeek(show: true, title: "Reading a document", subtitle: vm.contextLine, symbol: "doc.text")
         try await render("notch-context", size: geometry.windowSize, view: NotchView(vm: vm))
+    }
+
+    /// Review and activity fixtures use literal sample data. No coordinator,
+    /// browser, model, microphone, or insertion method is invoked.
+    private func renderEmailAndWorkFixtures() async throws {
+        let bus = ConfirmationBus.shared
+        let compose = EmailComposeSnapshot(
+            source: .browser, identity: "preview:gmail-compose", provider: "gmail", app: "Google Chrome",
+            recipients: ["boss@gmail.com"], cc: [], bcc: [], subject: "Im gonna be late", body: "",
+            bodyReadable: true, bodyIsEmpty: true, capturedAt: Date())
+        bus.pendingAction = nil
+        bus.pendingDraft = ProactiveDraft(
+            playbookId: "email-compose", kind: .emailCompose, title: "Draft: Im gonna be late",
+            body: "Hi,\n\nI'm running late. I apologize for the delay.",
+            contextSummary: "To: boss@gmail.com\nSubject: Im gonna be late\nPrepared from your email and request. Review before inserting.",
+            target: .emailCompose(compose))
+        try await render("email-review-insert", size: CGSize(width: 420, height: 600),
+                         view: ScrollView { ConfirmationView() })
+        let replacement = EmailComposeSnapshot(
+            source: .accessibility, identity: "preview:mail-compose", provider: "mail", app: "Mail",
+            recipients: ["alex@example.com"], cc: [], bcc: [], subject: "Project update", body: "Quick update:",
+            bodyReadable: true, bodyIsEmpty: false, capturedAt: Date())
+        bus.pendingDraft = ProactiveDraft(
+            playbookId: "email-compose", kind: .emailCompose, title: "Draft: Project update",
+            body: "Hi Alex,\n\nHere's a quick update on the project. I'll share the next steps once the review is complete.",
+            contextSummary: "To: alex@example.com\nSubject: Project update\nReview your changes before replacing the existing body.",
+            target: .emailCompose(replacement))
+        try await render("email-review-replace", size: CGSize(width: 420, height: 600),
+                         view: ScrollView { ConfirmationView() })
+        bus.pendingDraft = nil
+        if glassMode { return }
+
+        let geometry = NotchGeometry.layout(
+            screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            visibleFrame: CGRect(x: 0, y: 40, width: 1512, height: 910),
+            safeAreaTop: 32, leftAreaWidth: 660, rightAreaWidth: 660)
+        let center = WorkActivityCenter()
+        let vm = NotchViewModel(geometry: geometry)
+        vm.contextLine = "Writing an email in Gmail — Im gonna be late"
+        vm.contextSymbol = "envelope"
+        let background = center.begin(title: "Reading screen context", origin: .background)
+        center.update(background, phase: .working, detail: "Understanding the current screen")
+        let email = center.begin(title: "Drafting your email")
+        center.update(email, phase: .queued, detail: "Your request is in line")
+        vm.synchronize(with: center)
+        try await render("notch-email-queued", size: geometry.windowSize, view: NotchView(vm: vm))
+        center.cancel(background)
+        center.update(email, phase: .working, detail: "Writing the email body")
+        vm.synchronize(with: center)
+        try await render("notch-email-working", size: geometry.windowSize, view: NotchView(vm: vm))
+        vm.open()
+        try await render("notch-email-working-expanded", size: geometry.windowSize, view: NotchView(vm: vm))
+        vm.close()
+        center.finish(email, outcome: .failure, summary: "Ollama isn't running. Open Settings → Local Model.")
+        vm.synchronize(with: center)
+        try await render("notch-email-error", size: geometry.windowSize, view: NotchView(vm: vm))
+        let cancelled = center.begin(title: "Drafting your email")
+        center.cancel(cancelled, summary: "Email drafting stopped.")
+        vm.synchronize(with: center)
+        try await render("notch-email-cancelled", size: geometry.windowSize, view: NotchView(vm: vm))
+        let ready = center.begin(title: "Drafting your email")
+        center.finish(ready, outcome: .success, summary: "Your email draft is ready to review.")
+        vm.synchronize(with: center)
+        try await render("notch-email-ready", size: geometry.windowSize, view: NotchView(vm: vm))
+        vm.hideSneakPeek()
+    }
+
+    /// Exercise the production runner's early exit/cancellation seams while
+    /// autonomy is disabled. Every plan is inert; no permission or tool runs.
+    private func verifyAutonomyOwnership() async {
+        precondition(!AutonomyPolicy.shared.masterEnabled)
+        let center = WorkActivityCenter.shared
+        let runner = AutonomousActionRunner.shared
+        let empty = ActionPlan(goal: "Preview empty plan", steps: [], knownAddresses: [], rationale: "")
+        let inert = ActionPlan(goal: "Preview only — never execute",
+                               steps: [.init(action: "preview_only", input: [:], backend: "app",
+                                             reversible: true, summary: "Inert preview step")],
+                               knownAddresses: [], rationale: "")
+        let emptyResult = await runner.run(empty, playbookId: "preview", level: .auto)
+        precondition(!emptyResult.succeeded && center.activeCount == 0 && center.completion?.outcome == .failure)
+        let draftResult = await runner.run(inert, playbookId: "preview", level: .draft)
+        precondition(!draftResult.succeeded && center.activeCount == 0 && !runner.isRunning)
+        let disabled = await runner.run(inert, playbookId: "preview", level: .auto)
+        precondition(!disabled.succeeded && center.activeCount == 0)
+        let parent = center.begin(title: "A parent preparing a playbook")
+        let inherited = await WorkActivityScope.$id.withValue(parent) {
+            await runner.run(inert, playbookId: "preview", level: .draft)
+        }
+        precondition(!inherited.succeeded && center.isActive(parent) && center.activeCount == 1)
+        center.cancel(parent)
+        let cancelled = Task { @MainActor in await runner.run(inert, playbookId: "preview", level: .draft) }
+        cancelled.cancel()
+        let stopped = await cancelled.value
+        precondition(stopped == .cancelled && center.activeCount == 0 && !runner.isRunning)
+        center.invalidateAll()
+        print("Passed 5 production autonomous-runner ownership, refusal and cancellation checks")
+    }
+
+    /// Calls production cancellation paths in this isolated, nonactivating
+    /// process. No decision is approved, and typing stops inside its focus delay.
+    private func verifyConfirmationAndTypingCancellation() async throws {
+        precondition(NSApp.activationPolicy() == .prohibited)
+        let currentApp = NSRunningApplication.current
+        precondition(currentApp.processIdentifier == ProcessInfo.processInfo.processIdentifier)
+        precondition(currentApp.bundleIdentifier?.hasPrefix("com.zeroprompt.holmes.ui-preview.") == true)
+        var checks = 0
+        func check(_ condition: Bool, _ message: String) {
+            precondition(condition, message)
+            checks += 1
+        }
+
+        let bus = ConfirmationBus.shared
+        precondition(bus.pendingAction == nil && bus.pendingDraft == nil && !bus.isShowing)
+        let heldAction = PendingAction(title: "Preview cancellation fixture", preview: "No action will run.",
+                                       appName: "Isolated preview", actionType: .agentToolCall)
+        let cancelledAction = PendingAction(title: "Already stopped preview", preview: "Never show this decision.",
+                                            appName: "Isolated preview", actionType: .agentToolCall)
+        var heldDecisionResolved = false
+        let heldDecision = Task { @MainActor in
+            let decision = await bus.decide(heldAction)
+            heldDecisionResolved = true
+            return decision
+        }
+        for _ in 0..<100 {
+            if bus.pendingAction?.id == heldAction.id { break }
+            await Task.yield()
+        }
+        check(bus.pendingAction?.id == heldAction.id && bus.isShowing && !heldDecisionResolved,
+              "The first real approval decision must remain suspended")
+        // decide() uses the actual controller; keep its fixture panel offscreen
+        // and noninteractive while inspecting the production bus ownership.
+        for window in NSApp.windows {
+            window.ignoresMouseEvents = true
+            window.orderOut(nil)
+        }
+        let alreadyCancelledDecision = Task { @MainActor in await bus.decide(cancelledAction) }
+        alreadyCancelledDecision.cancel()
+        if case .dismissed = await alreadyCancelledDecision.value { checks += 1 }
+        else { preconditionFailure("An already cancelled decision must be dismissed") }
+        check(bus.pendingAction?.id == heldAction.id && bus.isShowing && !heldDecisionResolved,
+              "An already cancelled second decision must not dismiss or steal the first")
+        bus.dismiss()
+        if case .dismissed = await heldDecision.value { checks += 1 }
+        else { preconditionFailure("The fixture must dismiss its held decision without approval") }
+        check(bus.pendingAction == nil && !bus.isShowing && heldDecisionResolved,
+              "Both decision awaiters must finish with no approval left behind")
+
+        let brain = HolmesBrain.shared
+        let alreadyCancelledTyping = Task { @MainActor in
+            await brain.typeIntoApp(currentApp, text: "Preview fixture: this text must never be typed.")
+        }
+        alreadyCancelledTyping.cancel()
+        check(await alreadyCancelledTyping.value == false,
+              "Already cancelled typing must return false before activation or insertion")
+
+        var typingStartedAt: TimeInterval?
+        let delayedTyping = Task { @MainActor in
+            typingStartedAt = ProcessInfo.processInfo.systemUptime
+            return await brain.typeIntoApp(currentApp, text: "Preview fixture: stop during the focus delay.")
+        }
+        for _ in 0..<100 {
+            if typingStartedAt != nil { break }
+            await Task.yield()
+        }
+        guard let startedAt = typingStartedAt else {
+            delayedTyping.cancel()
+            preconditionFailure("The production typing call never entered its focus delay")
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        delayedTyping.cancel()
+        let typed = await delayedTyping.value
+        let elapsed = ProcessInfo.processInfo.systemUptime - startedAt
+        check(!typed && elapsed < 0.45,
+              "Typing cancelled after 50 ms must return false before its 450 ms focus delay completes")
+        check(NSApp.activationPolicy() == .prohibited && bus.pendingAction == nil && !bus.isShowing,
+              "Cancellation checks must leave the isolated preview nonactivating and the approval bus idle")
+        print("Passed \(checks) production confirmation and typing cancellation checks (focus-delay cancellation: \(Int(elapsed * 1000)) ms)")
+    }
+
+    /// Hold the actual agent's OCR and model boundaries past stop/restart. The
+    /// continuations deliberately ignore cancellation, as Vision can do, so the
+    /// generation guards must prevent stale publication and queue cleanup.
+    private func verifyPerceptionLifecycle() async {
+        @MainActor final class HeldText {
+            var calls = 0
+            var waiting: [Int: CheckedContinuation<String, Never>] = [:]
+            var cancelled: [Int: Bool] = [:]
+            func read() async -> String {
+                calls += 1
+                let call = calls
+                let result: String = await withCheckedContinuation { waiting[call] = $0 }
+                cancelled[call] = Task.isCancelled
+                return result
+            }
+            func resolve(_ call: Int, _ text: String) {
+                precondition(waiting[call] != nil)
+                waiting.removeValue(forKey: call)?.resume(returning: text)
+            }
+        }
+        func settle() async { for _ in 0..<20 { await Task.yield() } }
+        func waitFor(_ label: String, _ condition: () -> Bool) async {
+            for _ in 0..<100 where !condition() {
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+            precondition(condition(), label)
+        }
+        let image = CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8,
+                              bytesPerRow: 8, space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+        func capture(_ app: String, denied: Bool = false) -> CaptureResult {
+            CaptureResult(image: denied ? nil : image, appName: app, windowTitle: "",
+                          axOverride: denied ? "__NO_SCREEN_ACCESS__" : nil,
+                          reading: nil, focused: nil, visionUsable: false)
+        }
+        let ocr = HeldText()
+        let model = HeldText()
+        let agent = HolmesAgent(perception: .init(
+            recognizeText: { _ in await ocr.read() },
+            completeEnrichment: { _, _ in await model.read() },
+            canEnrich: { true }, frontmostAppName: { "" }))
+
+        let first = agent.beginPerceptionLifecycle()
+        agent.enqueueSnapshot(capture("Old OCR"), lifecycle: first)
+        await waitFor("first OCR held") { ocr.calls == 1 }
+        agent.enqueueSnapshot(capture("Old pending", denied: true), lifecycle: first)
+        await settle()
+        precondition(ocr.calls == 1 && agent.isAnalyzing)
+        agent.stopPerceptionLifecycle()
+        precondition(!agent.isAnalyzing)
+
+        let second = agent.beginPerceptionLifecycle()
+        agent.enqueueSnapshot(capture("New OCR"), lifecycle: second)
+        await waitFor("new OCR held independently") { ocr.calls == 2 }
+        agent.enqueueSnapshot(capture("Current pending", denied: true), lifecycle: second)
+        agent.enqueueSnapshot(capture("Stale callback", denied: true), lifecycle: first)
+        ocr.resolve(1, "Old screen text")
+        await settle()
+        precondition(agent.currentContext.appName != "Old OCR" && agent.currentContext.appName != "Old pending")
+        precondition(agent.isAnalyzing && ocr.calls == 2, "old cleanup cannot release the current OCR")
+        ocr.resolve(2, "")
+        await waitFor("current queued snapshot survives old completion") { agent.currentContext.appName == "Current pending" }
+        precondition(!agent.isAnalyzing && ocr.calls == 2)
+        agent.stopPerceptionLifecycle()
+        agent.enqueueSnapshot(capture("Stopped callback", denied: true), lifecycle: second)
+        await settle()
+        precondition(agent.currentContext.appName == "Current pending")
+
+        let context = LiveContext(source: .accessibility, confidence: .structural,
+                                  app: "Lifecycle fixture", headline: "Reading the lifecycle fixture")
+        agent.beginPerceptionLifecycle()
+        agent.live = context
+        agent.enrichLiveContext(context)
+        await waitFor("old enrichment held") { model.calls == 1 }
+        agent.stopPerceptionLifecycle()
+        agent.enrichLiveContext(context)
+        await settle()
+        precondition(model.calls == 1, "paused agent cannot start enrichment")
+        agent.beginPerceptionLifecycle()
+        agent.enrichLiveContext(context)
+        await waitFor("new enrichment held independently") { model.calls == 2 }
+        model.resolve(1, "{\"goal\":\"Stale goal\",\"headline\":\"\",\"lastMessageGist\":\"\"}")
+        await settle()
+        precondition(model.cancelled[1] == true && agent.deepContext == nil && agent.live.entities["goal"] == nil)
+        agent.stopPerceptionLifecycle()
+        model.resolve(2, "{\"goal\":\"\",\"headline\":\"\",\"lastMessageGist\":\"\"}")
+        await settle()
+        precondition(model.cancelled[2] == true && agent.deepContext == nil,
+                     "old cleanup cannot orphan the current model task before stop")
+        agent.beginPerceptionLifecycle()
+        agent.enrichLiveContext(context)
+        await waitFor("final enrichment held independently") { model.calls == 3 }
+        model.resolve(3, "{\"goal\":\"\",\"headline\":\"\",\"lastMessageGist\":\"\"}")
+        await waitFor("current enrichment publishes") { agent.deepContext != nil }
+        precondition(agent.currentContext.description == context.headline && agent.live.entities["goal"] == nil)
+        agent.stopPerceptionLifecycle()
+        precondition(ocr.waiting.isEmpty && model.waiting.isEmpty)
+        print("Passed 11 production perception lifecycle, held OCR/model and stale queue checks")
     }
 
     /// Sample-only fixtures; no native app is launched and no model is called.
