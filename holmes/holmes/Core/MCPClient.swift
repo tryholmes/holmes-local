@@ -272,8 +272,10 @@ struct MCPSSEParser {
 
 // MARK: - MCPHTTPConnection (remote Streamable HTTP)
 // Talks to a hosted MCP server over HTTP. Each JSON-RPC request is a POST; the server
-// may reply with a single JSON body or an SSE stream — both are handled. Auth is via
-// headers (e.g. Authorization: Bearer …) supplied in mcp.json.
+// may reply with a single JSON body or an SSE stream. A stream is read event by event
+// as bytes arrive, so a server that keeps the connection open after answering does
+// not stall the request. Auth is via headers (e.g. Authorization: Bearer …) supplied
+// in mcp.json.
 
 final class MCPHTTPConnection: MCPTransport {
     let serverName: String
@@ -351,18 +353,28 @@ final class MCPHTTPConnection: MCPTransport {
         let payload: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
         let body = try JSONSerialization.data(withJSONObject: payload)
 
-        let (data, response) = try await URLSession.shared.data(for: buildRequest(body: body))
+        // bytes(for:) returns once the headers are in, so an SSE reply can be consumed
+        // incrementally instead of waiting for the server to close the connection.
+        let (bytes, response) = try await URLSession.shared.bytes(for: buildRequest(body: body))
         let http = response as? HTTPURLResponse
         if let sid = http?.value(forHTTPHeaderField: "Mcp-Session-Id"), !sid.isEmpty { sessionID = sid }
 
         let status = http?.statusCode ?? 0
         guard (200..<300).contains(status) else {
+            let data = try await Self.collect(bytes)
             throw MCPError.http(status, String(data: data, encoding: .utf8) ?? "")
         }
 
         let ctype = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
-        guard let obj = Self.parseJSONRPC(data: data, contentType: ctype) else {
-            throw MCPError.badResponse("no JSON-RPC object in response")
+        let obj: [String: Any]
+        if ctype.contains("text/event-stream") {
+            obj = try await Self.firstResponse(in: bytes)
+        } else {
+            let data = try await Self.collect(bytes)
+            guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw MCPError.badResponse("no JSON-RPC object in response")
+            }
+            obj = parsed
         }
         if let error = obj["error"] as? [String: Any] {
             throw MCPError.badResponse(error["message"] as? String ?? "MCP error")
@@ -370,33 +382,32 @@ final class MCPHTTPConnection: MCPTransport {
         return obj["result"] as? [String: Any] ?? [:]
     }
 
+    /// Reads a whole body: a plain JSON reply or an error page.
+    private static func collect(_ bytes: URLSession.AsyncBytes) async throws -> Data {
+        var data = Data()
+        for try await byte in bytes { data.append(byte) }
+        return data
+    }
+
+    /// Walks an SSE stream event by event and returns the first JSON-RPC response
+    /// (an object carrying `result` or `error`) the moment it is complete.
+    private static func firstResponse(in bytes: URLSession.AsyncBytes) async throws -> [String: Any] {
+        var parser = MCPSSEParser()
+        for try await byte in bytes {
+            guard let payload = parser.feed(byte),
+                  let data = payload.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  obj["result"] != nil || obj["error"] != nil
+            else { continue }
+            return obj
+        }
+        throw MCPError.badResponse("SSE stream ended before a JSON-RPC response arrived")
+    }
+
     private func notify(_ method: String) async throws {
         let payload: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": [:]]
         let body = try JSONSerialization.data(withJSONObject: payload)
         _ = try await URLSession.shared.data(for: buildRequest(body: body))
-    }
-
-    /// Handles both `application/json` and `text/event-stream` JSON-RPC replies.
-    private static func parseJSONRPC(data: Data, contentType: String) -> [String: Any]? {
-        if contentType.contains("text/event-stream") {
-            let text = String(data: data, encoding: .utf8) ?? ""
-            for block in text.components(separatedBy: "\n\n") {
-                var payload = ""
-                for rawLine in block.split(separator: "\n") {
-                    let line = String(rawLine)
-                    if line.hasPrefix("data:") {
-                        payload += line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                    }
-                }
-                if let d = payload.data(using: .utf8),
-                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                   o["result"] != nil || o["error"] != nil {
-                    return o
-                }
-            }
-            return nil
-        }
-        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 }
 
