@@ -66,8 +66,8 @@ jobs:
   lint:
     name: SwiftLint (advisory)
     runs-on: macos-15
-    # Advisory until the codebase is clean: annotates the PR, never blocks it.
-    continue-on-error: true
+    # Report style violations as warnings; installation and execution failures
+    # still fail this job so a broken lint setup cannot silently pass.
 
     steps:
       - uses: actions/checkout@v4
@@ -76,4 +76,4 @@ jobs:
         run: brew install swiftlint
 
       - name: Run SwiftLint
-        run: swiftlint lint --config .swiftlint.yml --reporter github-actions-logging
+        run: swiftlint lint --config .swiftlint.yml --reporter github-actions-logging --lenient
