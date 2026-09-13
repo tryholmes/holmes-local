@@ -107,8 +107,12 @@ class MenuBarManager: NSObject {
         }
         
         if let button = statusItem?.button {
-            if !isPaused, let img = NSImage(named: "NoirCharacter") {
-                img.size = NSSize(width: 18, height: 18)
+            // Named images are cached and shared with the mascot views. Resize
+            // a private copy uniformly so resuming cannot distort their artwork.
+            if !isPaused, let img = NSImage(named: "NoirCharacter")?.copy() as? NSImage,
+               img.size.width > 0, img.size.height > 0 {
+                let scale = 18 / max(img.size.width, img.size.height)
+                img.size = NSSize(width: img.size.width * scale, height: img.size.height * scale)
                 img.isTemplate = true
                 button.image = img
             } else {
