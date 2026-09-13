@@ -141,6 +141,9 @@ struct MainPanelView: View {
 
                 // Window controls
                 HStack(spacing: 4) {
+                    WindowButton(icon: "play.circle", tooltip: "Try Holmes") {
+                        GuidedDemoWindowController.shared.show()
+                    }
                     WindowButton(icon: "minus", tooltip: "Minimise") { isVisible = false }
                     WindowButton(icon: "xmark", tooltip: "Close")    { isVisible = false }
                 }

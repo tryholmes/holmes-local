@@ -20,6 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
             ClickyController.shared.cancelPushToTalk()
+            GuidedDemoWindowController.shared.close()
         }
         HotkeyManager.shared.unregisterHotkeys()
     }
@@ -213,7 +214,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Install the notch HUD — it narrates WHAT Holmes is doing and the live
         // context it's doing it in. Idle bar shows on notch Macs; task/context
         // cards reveal on every Mac.
-        Task { @MainActor in NotchWindowController.shared.show() }
+        Task { @MainActor in
+            NotchWindowController.shared.show()
+            GuidedDemoWindowController.shared.showIfNeeded()
+        }
         startHolmesAgent()
     }
 }

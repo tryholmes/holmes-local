@@ -47,6 +47,9 @@ jobs:
             | grep -E 'error:|warning:|BUILD (SUCCEEDED|FAILED)' || true
           grep -q 'BUILD SUCCEEDED' ../xcodebuild.log
 
+      - name: Test guided demo behavior
+        run: holmes/tests/run-guided-demo-tests.sh
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4

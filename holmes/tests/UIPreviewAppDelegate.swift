@@ -73,6 +73,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func renderFixtures() async throws {
+        if ProcessInfo.processInfo.environment["HOLMES_UI_PREVIEW_DEMO_ONLY"] == "1" {
+            try await renderDemoFixtures()
+            return
+        }
         if glassMode {
             try await render("glass-surfaces", size: CGSize(width: 720, height: 420), view:
                 ZStack {
@@ -173,6 +177,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vm.taskActive = false
         vm.sneakPeek = NotchSneakPeek(show: true, title: "Reading a document", subtitle: vm.contextLine, symbol: "doc.text")
         try await render("notch-context", size: geometry.windowSize, view: NotchView(vm: vm))
+    }
+
+    /// Sample-only fixtures; no native app is launched and no model is called.
+    private func renderDemoFixtures() async throws {
+        let suite = "holmes.demo-preview." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dependencies = GuidedDemoModel.Dependencies(
+            isModelReady: { true }, modelNotReadyMessage: { "Finish model setup to continue." },
+            launchCalculator: { AppLaunchResult(appName: "Calculator", message: "Opened Calculator.", succeeded: true) },
+            complete: { _, user in
+                if user.contains("Sample message from Alex:") {
+                    return "Hey Alex, happy to help! I’ll be there at 9:30 on Saturday to set up the tables. I can bring name tags too — how many do we need?"
+                }
+                return "• Book swap: Saturday, October 17, 10 am–noon in the reserved community room.\n• Maya brings signs and name tags; Leo sets up tables by 9:30 am.\n• Next step: send the volunteer reminder by Thursday."
+            })
+        let model = GuidedDemoModel(defaults: defaults, dependencies: dependencies)
+        try await render("demo-welcome", size: CGSize(width: 760, height: 680),
+                         view: GuidedDemoView(model: model, onDone: {}))
+        try await render("demo-minimum", size: CGSize(width: 680, height: 600),
+                         view: GuidedDemoView(model: model, onDone: {}))
+        try await runDemoFixture(model, example: .openCalculator)
+        try await render("demo-app-result", size: CGSize(width: 760, height: 680),
+                         view: GuidedDemoView(model: model, onDone: {}))
+        model.select(.summarizeNotes)
+        try await render("demo-model-setup", size: CGSize(width: 680, height: 600),
+                         view: GuidedDemoView(model: model, onDone: {}))
+        try await runDemoFixture(model, example: .summarizeNotes)
+        try await render("demo-summary-result", size: CGSize(width: 760, height: 680),
+                         view: GuidedDemoView(model: model, onDone: {}), scrollOffset: 400)
+        try await runDemoFixture(model, example: .draftReply)
+        try await render("demo-editable-draft", size: CGSize(width: 680, height: 600),
+                         view: GuidedDemoView(model: model, onDone: {}), scrollOffset: 620)
+        model.updateOutput("", for: .draftReply)
+        try await render("demo-empty-draft", size: CGSize(width: 680, height: 600),
+                         view: GuidedDemoView(model: model, onDone: {}), scrollOffset: 620)
+        model.cancel()
+    }
+
+    private func runDemoFixture(_ model: GuidedDemoModel, example: GuidedDemoCase) async throws {
+        model.select(example)
+        model.runSelected()
+        let deadline = Date().addingTimeInterval(2)
+        while model.runningCase != nil && Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        precondition(model.runningCase == nil && model.outputs[example] != nil, "Demo fixture did not finish")
     }
 
     private func render<V: View>(_ name: String, size: CGSize, view: V,

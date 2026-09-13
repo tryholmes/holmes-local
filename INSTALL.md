@@ -20,7 +20,7 @@ xattr -dr com.apple.quarantine /Applications/Holmes.app
 
 ## 2. First launch does the setup
 
-Holmes walks you through six short steps. Each one can be skipped and
+Holmes walks you through setup. Optional connections and model setup can be
 finished later from Settings.
 
 | Step | What happens | Skip and do later in |
@@ -29,7 +29,25 @@ finished later from Settings.
 | Local model | Finds or installs [Ollama](https://ollama.com), starts it, downloads the default vision model | Settings ▸ Local Model |
 | Connect your browser | Automatically prepares or refreshes `~/Downloads/Holmes Extension` each time the step opens; choosing a browser opens its Extensions page and a two minute pairing window | Settings ▸ Privacy ▸ Install extension in… |
 | Connect your tools | Optional. Paste your Composio MCP URL and key. Holmes writes `mcp.json` and shows how many read only tools came back | Settings, or edit `mcp.json` |
-| Ready | Hotkeys and a summary | |
+| Ready | Hotkeys and a guided demo | Holmes menu ▸ Try Holmes… |
+
+### Try Holmes after setup
+
+Choose **Try Holmes** on the Ready screen to open three interactive examples:
+
+- **Open Calculator:** runs a native app launch, even before the model is ready.
+- **Summarize notes:** turns supplied sample meeting notes into action items.
+- **Draft a reply:** writes an editable reply to a supplied sample message.
+
+Each example runs when you press its button and shows the actual result. The
+text examples use your configured Ollama model and sample data; they do not read
+your conversations or send a message. If the model needs setup, the demo links
+to Settings. Closing the window cancels the active example, and successful
+examples stay marked as tried across launches.
+
+The demo appears once after completed setup, including the first launch after
+updating from a version without it. You can skip it and reopen it at any time
+from **Holmes menu ▸ Try Holmes…** or the play button in the assistant panel.
 
 ### The browser step in detail
 

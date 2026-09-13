@@ -70,6 +70,10 @@ class MenuBarManager: NSObject {
         panelItem.keyEquivalentModifierMask = .option
         panelItem.target = self
         menu?.addItem(panelItem)
+
+        let demoItem = NSMenuItem(title: "Try Holmes…", action: #selector(openDemo), keyEquivalent: "")
+        demoItem.target = self
+        menu?.addItem(demoItem)
         
         menu?.addItem(NSMenuItem.separator())
         
@@ -132,6 +136,10 @@ class MenuBarManager: NSObject {
     @objc private func openPanel() {
         SideIconWindowController.shared.show()
         MainPanelWindowController.shared.show()
+    }
+
+    @objc private func openDemo() {
+        Task { @MainActor in GuidedDemoWindowController.shared.show() }
     }
     
     @objc private func togglePause() {
