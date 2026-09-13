@@ -2,6 +2,8 @@ import SwiftUI
 
 struct OnboardingFlow: View {
     @StateObject private var viewModel = OnboardingViewModel()
+    // The brand intro plays once before Welcome; Reduce Motion skips it.
+    @State private var showLaunchIntro = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     let onComplete: () -> Void
     
     var body: some View {
@@ -27,7 +29,10 @@ struct OnboardingFlow: View {
                 Group {
                     switch viewModel.currentStep {
                     case .welcome:
-                        WelcomeScreen(viewModel: viewModel)
+                        // Held back until the intro ends so its entrance animation plays.
+                        if !showLaunchIntro {
+                            WelcomeScreen(viewModel: viewModel)
+                        }
                     case .howItWorks:
                         HowItWorksScreen(viewModel: viewModel)
                     case .permissions:
@@ -48,11 +53,27 @@ struct OnboardingFlow: View {
                 ))
             }
         }
+        .overlay {
+            if showLaunchIntro {
+                LaunchIntroView(onFinish: finishLaunchIntro)
+                    .overlay {
+                        // Click anywhere to skip.
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture(perform: finishLaunchIntro)
+                    }
+                    .ignoresSafeArea()
+            }
+        }
         .frame(minWidth: 600, minHeight: 700)
         // The whole palette is white-on-glass; pin the window to the dark
         // appearance so the .hudWindow material stays dark under a light
         // system appearance / light wallpaper instead of washing the text out.
         .preferredColorScheme(.dark)
+    }
+
+    private func finishLaunchIntro() {
+        showLaunchIntro = false
     }
 }
 
