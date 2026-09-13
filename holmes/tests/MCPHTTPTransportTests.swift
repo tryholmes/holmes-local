@@ -174,6 +174,7 @@ struct MCPHTTPTransportTests {
         try await httpStatusErrorCarriesBody()
         try await deadlineOnSilentStream()
         try await startHandshakeOverMixedReplies()
+        parserUnitChecks()
         print("Passed \(checks) MCP HTTP transport regression checks")
     }
 
@@ -328,5 +329,25 @@ struct MCPHTTPTransportTests {
             Set(ScriptedMCPServer.released).isSuperset(of: ["initialize", "notifications/initialized"])
         }
         expect(true, "Both open streams from the handshake are released")
+    }
+
+    // TEST: parserUnitChecks
+    static func parserUnitChecks() {
+        var p = MCPSSEParser()
+        expect(p.feed(Array("data: one\n\n".utf8)) == ["one"], "LF terminated event")
+        expect(p.feed(Array("data:two\r\n\r\n".utf8)) == ["two"], "CRLF endings and no space after the colon")
+        expect(p.feed(Array("data: three\r\r".utf8)) == ["three"], "CR only endings")
+        expect(p.feed(Array(": comment\nevent: message\nid: 5\nretry: 100\ndata: a\ndata: b\n\n".utf8)) == ["a\nb"], "Other fields ignored, data lines joined with LF")
+        expect(p.feed(Array("\n\n\n".utf8)).isEmpty, "Blank lines with no data dispatch nothing")
+        expect(p.feed(Array("data: x\n\ndata: y\n\n".utf8)) == ["x", "y"], "Two events in one chunk")
+        expect(p.feed(Array("data: partial".utf8)).isEmpty, "An unterminated event is not dispatched")
+        expect(p.feed(Array("\n\n".utf8)) == ["partial"], "The rest of the event completes it")
+        expect(p.feed(Array("data\n\n".utf8)) == [""], "A field with no colon has an empty value")
+        var q = MCPSSEParser()
+        var out: [String] = []
+        for byte in Array("event: message\r\ndata: {\"a\":1}\r\n\r\n".utf8) {
+            if let e = q.feed(byte) { out.append(e) }
+        }
+        expect(out == ["{\"a\":1}"], "Byte by byte feeding matches chunk feeding")
     }
 }
