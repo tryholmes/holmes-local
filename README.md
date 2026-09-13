@@ -1,9 +1,5 @@
 <h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="holmes/assets/holmes-wordmark-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="holmes/assets/holmes-wordmark-light.svg">
-    <img src="holmes/assets/holmes-wordmark-light.svg" alt="Holmes Local" width="460">
-  </picture>
+  <img src="holmes/assets/readmeicon.png" alt="Holmes" width="376">
 </h1>
 
 the autonomous desktop agent that runs entirely on your Mac
