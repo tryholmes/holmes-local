@@ -56,46 +56,64 @@ enum AppLauncher {
                                     appDirectories: [URL]) -> URL? {
         let raw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !raw.isEmpty else { return nil }
-        // Try a bundle identifier BEFORE trimming .app: an identifier may itself
-        // end in .app. Launch Services is the authority for apps outside the usual
-        // folders, including apps installed by other package managers.
-        if raw.contains("."), let url = workspaceLookup(raw) { return url }
-        if let running = runningApplications.first(where: {
-            $0.bundleIdentifier?.caseInsensitiveCompare(raw) == .orderedSame
-        }) { return running.url }
-        if let canonicalID = aliases.values.first(where: { $0.caseInsensitiveCompare(raw) == .orderedSame }),
-           let url = workspaceLookup(canonicalID) { return url }
-
-        let name = raw.lowercased().hasSuffix(".app") ? String(raw.dropLast(4)) : raw
-        guard !name.isEmpty else { return nil }
-        if let running = runningApplications.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
-            return running.url
-        }
-        if let identifier = aliases[name.lowercased()], let url = workspaceLookup(identifier) { return url }
-
         let fm = FileManager.default
         let candidates = appDirectories.flatMap { directory -> [URL] in
             let entries = (try? fm.contentsOfDirectory(at: directory,
                                                        includingPropertiesForKeys: [.isDirectoryKey],
                                                        options: [.skipsHiddenFiles])) ?? []
-            return entries.filter { url in
-                url.pathExtension.lowercased() == "app"
-                    && ((try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true)
-            }.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+            return entries.filter(isApplicationBundle)
+                .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
         }
-        // Exact names across ALL folders outrank every prefix candidate.
+        // runningApplications also includes app extensions and background
+        // helpers. Messages' Assistant Extension is itself named "Messages";
+        // passing its .appex URL to openApplication can open Quick Look Simulator.
+        let running = runningApplications.filter { isApplicationBundle($0.url) }
+        func application(withIdentifier identifier: String) -> URL? {
+            func matches(_ url: URL) -> Bool {
+                isApplicationBundle(url)
+                    && Bundle(url: url)?.bundleIdentifier?.caseInsensitiveCompare(identifier) == .orderedSame
+            }
+            // A normal installation outranks registered SDK/simulator copies
+            // that may share the same bundle identifier in Launch Services.
+            if let installed = candidates.first(where: matches) { return installed }
+            if let registered = workspaceLookup(identifier), matches(registered) { return registered }
+            return running.first(where: {
+                $0.bundleIdentifier?.caseInsensitiveCompare(identifier) == .orderedSame && matches($0.url)
+            })?.url
+        }
+
+        // Try a bundle identifier BEFORE trimming .app: an identifier may itself
+        // end in .app. Validate Launch Services' answer against bundle metadata.
+        if raw.contains(".") {
+            let canonicalID = aliases.values.first { $0.caseInsensitiveCompare(raw) == .orderedSame } ?? raw
+            if let byID = application(withIdentifier: canonicalID) { return byID }
+        }
+        let name = raw.lowercased().hasSuffix(".app") ? String(raw.dropLast(4)) : raw
+        guard !name.isEmpty else { return nil }
+        // Known app names always refer to their canonical identity, even if an
+        // unrelated process advertises the same localized display name.
+        if let identifier = aliases[name.lowercased()] {
+            return application(withIdentifier: identifier)
+        }
+        // Exact names across ALL folders outrank running helpers and prefixes.
         if let exact = candidates.first(where: {
             $0.deletingPathExtension().lastPathComponent.caseInsensitiveCompare(name) == .orderedSame
         }) { return exact }
-        if raw.contains("."), let byID = candidates.first(where: {
-            Bundle(url: $0)?.bundleIdentifier?.caseInsensitiveCompare(raw) == .orderedSame
-        }) { return byID }
+        if let active = running.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame }) {
+            return active.url
+        }
         // A prefix remains available only for the existing model computer tool;
         // a deterministic user launch must not turn 'Spot' into an arbitrary app.
         if allowPrefixMatch {
             return candidates.first { $0.deletingPathExtension().lastPathComponent.lowercased().hasPrefix(name.lowercased()) }
         }
         return nil
+    }
+
+    private nonisolated static func isApplicationBundle(_ url: URL) -> Bool {
+        url.pathExtension.caseInsensitiveCompare("app") == .orderedSame
+            && ((try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true)
+            && Bundle(url: url)?.bundleIdentifier != nil
     }
 
     /// The closures describe only the returned app and make launch failure,
@@ -140,6 +158,12 @@ enum AppLauncher {
         }
         do {
             let app = try await opener(url)
+            if let expectedIdentifier = Bundle(url: url)?.bundleIdentifier,
+               app.bundleIdentifier?.caseInsensitiveCompare(expectedIdentifier) != .orderedSame {
+                return AppLaunchResult(appName: name,
+                                       message: "macOS opened a different application instead of \(name). Try opening \(name) from Applications.",
+                                       succeeded: false)
+            }
             guard !app.isTerminated() else {
                 return AppLaunchResult(appName: app.name, message: "\(app.name) quit before it finished opening.", succeeded: false)
             }
