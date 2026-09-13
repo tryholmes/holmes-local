@@ -63,16 +63,7 @@ class OnboardingViewModel: ObservableObject {
     }
     
     private func checkScreenRecordingPermission() -> Bool {
-        var hasPermission = false
-        let semaphore = DispatchSemaphore(value: 0)
-        
-        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: false) { content, error in
-            hasPermission = (error == nil && content != nil)
-            semaphore.signal()
-        }
-        
-        _ = semaphore.wait(timeout: .now() + 1.0)
-        return hasPermission
+        CGPreflightScreenCaptureAccess()
     }
     
     func requestAccessibilityPermission() {

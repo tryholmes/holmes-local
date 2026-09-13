@@ -3,6 +3,7 @@ import SwiftUI
 struct PermissionsScreen: View {
     @ObservedObject var viewModel: OnboardingViewModel
     @State private var cardsOpacity: CGFloat = 0
+    @Environment(\.scenePhase) private var scenePhase
     
     var body: some View {
         VStack(spacing: 0) {
@@ -66,6 +67,16 @@ struct PermissionsScreen: View {
             .padding(.bottom, 60)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { viewModel.checkPermissions() }
+        }
+        .task {
+            while !Task.isCancelled {
+                viewModel.checkPermissions()
+                do { try await Task.sleep(for: .seconds(2)) }
+                catch { return }
+            }
+        }
         .onAppear {
             viewModel.checkPermissions()
             withAnimation(.easeOut(duration: 0.5)) {
