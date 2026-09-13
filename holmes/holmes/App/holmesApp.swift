@@ -42,8 +42,7 @@ struct SettingsView: View {
 
     var body: some View {
         ZStack {
-            // Apple-glass full-window background, matching the Holmes login/panel look.
-            VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+            AppleGlassBackground(cornerRadius: 12)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -53,18 +52,17 @@ struct SettingsView: View {
                         .font(.system(size: 13, weight: .bold, design: .monospaced))
                         .foregroundStyle(NoirColors.textPrimary)
                         .rotationEffect(.degrees(-45))
-                    Text("HOLMES")
-                        .font(.system(size: 15, weight: .bold, design: .monospaced))
+                    Text("holmes")
+                        .font(NoirFonts.brand(size: 30))
                         .foregroundStyle(NoirColors.textPrimary)
-                        .tracking(4)
                     Text("SETTINGS")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                         .foregroundStyle(NoirColors.goldAccent)
                         .tracking(2)
                     Spacer()
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 18)
+                .padding(.top, 40)
                 .padding(.bottom, 14)
 
                 // Custom glass tab selector
@@ -73,6 +71,7 @@ struct SettingsView: View {
                         tabButton(tab)
                     }
                 }
+                .frame(maxWidth: .infinity)
                 .padding(3)
                 .background(NoirColors.glassChrome)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -85,7 +84,9 @@ struct SettingsView: View {
                     .padding(.top, 6)
             }
         }
-        .frame(width: 640, height: 520)
+        .frame(minWidth: 640, idealWidth: 680, minHeight: 520, idealHeight: 620)
+        .font(NoirFonts.body())
+        .preferredColorScheme(.dark)
     }
 
     @ViewBuilder private var content: some View {
@@ -113,14 +114,17 @@ struct SettingsView: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: tab.icon).font(.system(size: 10))
-                Text(tab.rawValue).font(.system(size: 10, weight: .medium, design: .monospaced))
+                Text(tab.rawValue)
+                    .font(NoirFonts.font(size: 10, weight: .medium, design: .monospaced))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .foregroundStyle(selectedTab == tab ? Color.black.opacity(0.8) : NoirColors.textSecondary)
-            .frame(maxWidth: .infinity)
+            .foregroundStyle(selectedTab == tab ? NoirColors.ctaForeground : NoirColors.textSecondary)
+            .padding(.horizontal, 8)
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(selectedTab == tab ? NoirColors.goldAccent : Color.clear)
+                    .fill(selectedTab == tab ? NoirColors.ctaBackground : Color.clear)
             )
         }
         .buttonStyle(.plain)
@@ -145,7 +149,7 @@ struct AutomationsSettingsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Toggle(isOn: $masterEnabled) {
                     Text("Autonomous actions")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(NoirFonts.font(size: 12, weight: .semibold))
                 }
                 .toggleStyle(.switch)
                 .controlSize(.small)
@@ -153,7 +157,7 @@ struct AutomationsSettingsView: View {
                     AutonomyPolicy.shared.masterEnabled = newValue
                 }
                 Text("Auto does reversible work itself and still asks before it sends or deletes.")
-                    .font(.caption)
+                    .font(NoirFonts.caption())
                     .foregroundColor(.secondary)
             }
             .padding(.bottom, 8)
@@ -177,7 +181,7 @@ struct AutomationsSettingsView: View {
             // same draft-only path as the built-ins.
             HStack(spacing: 8) {
                 Text(communityStatusText)
-                    .font(.caption)
+                    .font(NoirFonts.caption())
                     .foregroundColor(.secondary)
                 Spacer()
                 Button("Open Folder") {
@@ -193,7 +197,7 @@ struct AutomationsSettingsView: View {
             .padding(.top, 6)
             ForEach(PlaybookRegistry.loadErrors) { error in
                 Text("\(error.file): \(error.message)")
-                    .font(.caption2)
+                    .font(NoirFonts.font(size: 10))
                     .foregroundColor(.orange)
                     .lineLimit(2)
             }
@@ -203,10 +207,10 @@ struct AutomationsSettingsView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(mcpStatusText)
-                    .font(.caption)
+                    .font(NoirFonts.caption())
                     .foregroundColor(.secondary)
                 Text("With Autonomous actions off, every playbook stays draft-only — Holmes prepares drafts for your review and never sends, posts, or publishes on its own.")
-                    .font(.caption)
+                    .font(NoirFonts.caption())
                     .foregroundColor(.secondary)
             }
         }
@@ -270,10 +274,10 @@ struct PlaybookToggleRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Text(playbook.name)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(NoirFonts.font(size: 12, weight: .semibold))
                     if playbook.source != nil {
                         Text("COMMUNITY")
-                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                             .foregroundColor(.accentColor)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
@@ -283,7 +287,7 @@ struct PlaybookToggleRow: View {
                     }
                     if !playbook.autoTriggers {
                         Text("MANUAL")
-                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 4)
                             .padding(.vertical, 1)
@@ -292,7 +296,7 @@ struct PlaybookToggleRow: View {
                     }
                 }
                 Text(playbook.summary)
-                    .font(.system(size: 10))
+                    .font(NoirFonts.font(size: 10))
                     .foregroundColor(.secondary)
                     .lineLimit(2)
             }
@@ -404,11 +408,11 @@ struct VoiceSettingsView: View {
         Form {
             LabeledContent("Push to Talk") {
                 Text("Hold Fn to talk")
-                    .font(.system(.body, design: .monospaced))
+                    .font(NoirFonts.mono())
                     .foregroundColor(.secondary)
             }
             Text("Hold the Fn key and speak; release to send. Ask about your screen out loud — Holmes answers and points on screen. Say \u{201C}agent…\u{201D} (or \u{201C}click…\u{201D}, \u{201C}book…\u{201D}, \u{201C}do this…\u{201D}) and it does the task instead.")
-                .font(.caption)
+                .font(NoirFonts.caption())
                 .foregroundColor(.secondary)
 
             LabeledContent("Microphone & Speech") {
@@ -426,7 +430,7 @@ struct VoiceSettingsView: View {
                 }
             }
             Text("On-device transcription (Apple Speech). Your voice is never sent to a server for recognition.")
-                .font(.caption)
+                .font(NoirFonts.caption())
                 .foregroundColor(.secondary)
 
             Divider()
@@ -436,7 +440,7 @@ struct VoiceSettingsView: View {
             // (An MCP server or a remote Ollama host the user connects is theirs,
             // not Holmes's — the README's Privacy section covers those.)
             Text("Optional natural voice. ElevenLabs is the only cloud service Holmes itself calls, and it stays off until you enter a key. With a key, only the short lines Holmes speaks are sent to ElevenLabs to be voiced — never your screen. Anything you connect yourself (an MCP server such as Composio, or an Ollama host on another machine) receives what the README's Privacy section describes.")
-                .font(.caption)
+                .font(NoirFonts.caption())
                 .foregroundColor(.secondary)
 
             SecureField("ElevenLabs API key (optional)", text: $elevenLabsKey)
@@ -455,7 +459,7 @@ struct VoiceSettingsView: View {
                 Text(isConfigured
                      ? "Natural voice (ElevenLabs)."
                      : "System voice (on-device) — add an ElevenLabs key for a natural voice.")
-                    .font(.caption)
+                    .font(NoirFonts.caption())
                     .foregroundColor(.secondary)
                 Spacer()
                 Button(isTesting ? "Testing…" : "Test voice") {
@@ -494,7 +498,7 @@ struct VoiceSettingsView: View {
 
             if let testResult {
                 Text(testResult)
-                    .font(.caption)
+                    .font(NoirFonts.caption())
                     .foregroundColor(testResult.hasPrefix("Played via ElevenLabs") ? .green : .secondary)
                     .textSelection(.enabled)
             }
@@ -506,7 +510,7 @@ struct VoiceSettingsView: View {
                     UserDefaults.standard.set(newValue, forKey: ClickyController.Defaults.drawGuidance)
                 }
             Text("When Holmes answers a question about your screen, it points the way with on-screen circles, arrows, and highlights.")
-                .font(.caption)
+                .font(NoirFonts.caption())
                 .foregroundColor(.secondary)
 
             Toggle("Speak answers", isOn: $speakAnswers)
@@ -521,7 +525,7 @@ struct VoiceSettingsView: View {
                     UserDefaults.standard.set(newValue, forKey: ClickyController.Defaults.showPointer)
                 }
             Text("When Holmes acts for you, it draws a glowing ring at each spot it clicks or types — so you can watch it work.")
-                .font(.caption)
+                .font(NoirFonts.caption())
                 .foregroundColor(.secondary)
 
             Toggle("Holmes narrates actions", isOn: $narrateActions)
@@ -529,7 +533,7 @@ struct VoiceSettingsView: View {
                     UserDefaults.standard.set(newValue, forKey: ClickyController.Defaults.narrateActions)
                 }
             Text("Holmes speaks a short line as it works — \u{201C}Opening Finder\u{201D}, \u{201C}Moving the files\u{201D} — and asks out loud before anything it can\u{2019}t undo.")
-                .font(.caption)
+                .font(NoirFonts.caption())
                 .foregroundColor(.secondary)
         }
         .scrollContentBackground(.hidden)
@@ -563,31 +567,31 @@ struct HotkeysSettingsView: View {
         Form {
             LabeledContent("Open Search") {
                 Text("Control + Space")
-                    .font(.system(.body, design: .monospaced))
+                    .font(NoirFonts.mono())
                     .foregroundColor(.secondary)
             }
             
             LabeledContent("Open Assistant") {
                 Text("Option + Space")
-                    .font(.system(.body, design: .monospaced))
+                    .font(NoirFonts.mono())
                     .foregroundColor(.secondary)
             }
             
             LabeledContent("Toggle Side Icon") {
                 Text("Command + \\")
-                    .font(.system(.body, design: .monospaced))
+                    .font(NoirFonts.mono())
                     .foregroundColor(.secondary)
             }
 
             LabeledContent("Push to Talk") {
                 Text("Hold Fn to talk")
-                    .font(.system(.body, design: .monospaced))
+                    .font(NoirFonts.mono())
                     .foregroundColor(.secondary)
             }
 
             LabeledContent("Stop Computer Control") {
                 Text("Command + Option + Esc")
-                    .font(.system(.body, design: .monospaced))
+                    .font(NoirFonts.mono())
                     .foregroundColor(.secondary)
             }
         }
@@ -906,25 +910,24 @@ struct AboutSettingsView: View {
                 .foregroundStyle(NoirColors.goldAccent)
                 .rotationEffect(.degrees(-45))
 
-            Text("HOLMES")
-                .font(.system(size: 22, weight: .bold, design: .monospaced))
+            Text("holmes")
+                .font(NoirFonts.brand(size: 30))
                 .foregroundStyle(NoirColors.textPrimary)
-                .tracking(4)
 
             Text("Holmes Local (beta)")
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .font(NoirFonts.font(size: 13, weight: .semibold, design: .monospaced))
                 .foregroundStyle(NoirColors.textSecondary)
 
             Text("Zero Prompt AI for macOS")
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
+                .font(NoirFonts.font(size: 12, weight: .regular, design: .monospaced))
                 .foregroundStyle(NoirColors.textSecondary)
 
             Text("Version \(Self.versionString)")
-                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                .font(NoirFonts.font(size: 11, weight: .regular, design: .monospaced))
                 .foregroundStyle(NoirColors.textTertiary)
 
             Text("Runs entirely on this Mac through Ollama — no account, no API key, nothing leaves the machine.")
-                .font(.caption)
+                .font(NoirFonts.caption())
                 .foregroundStyle(NoirColors.textTertiary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360)
