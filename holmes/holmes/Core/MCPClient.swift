@@ -394,8 +394,9 @@ final class MCPHTTPConnection: MCPTransport {
             throw MCPError.http(status, String(decoding: data, as: UTF8.self))
         }
 
+        // Media types are case insensitive, so `Text/Event-Stream` must stream too.
         let ctype = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
-if ctype.lowercased().contains("text/event-stream") {
+        if ctype.lowercased().contains("text/event-stream") {
             return try await Self.firstResponse(matching: id, in: bytes)
         }
         let data = try await Self.collect(bytes)

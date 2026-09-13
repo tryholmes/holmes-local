@@ -34,6 +34,11 @@ final class ScriptedMCPServer: URLProtocol {
     private static var scripts: [String: [Reply]] = [:]
     private static var seen: [Seen] = []
     private static var stops: [String] = []
+    /// Bumped by reset(). A load remembers the generation it started in, and a
+    /// stop from an earlier scenario (URLSession delivers stopLoading after the
+    /// client's cancel returns) is dropped instead of leaking into the next one.
+    private static var generation = 0
+    private var generation = 0
     private var stopped = false
     private var method = ""
     private let queue = DispatchQueue(label: "holmes.tests.scripted-mcp-server")
@@ -41,6 +46,7 @@ final class ScriptedMCPServer: URLProtocol {
     static func reset() {
         lock.lock(); defer { lock.unlock() }
         scripts = [:]; seen = []; stops = []
+        generation += 1
     }
 
     static func script(_ method: String, _ reply: Reply) {
@@ -53,8 +59,9 @@ final class ScriptedMCPServer: URLProtocol {
         return seen
     }
 
-    /// Methods whose load has been stopped. URLSession stops a finished load too, so
-    /// for a `.hold` reply this only happens when the client cancels it.
+    /// Methods whose load has been stopped in the current scenario. URLSession stops
+    /// a finished load too, so for a `.hold` reply this only happens when the client
+    /// cancels it.
     static var released: [String] {
         lock.lock(); defer { lock.unlock() }
         return stops
@@ -72,6 +79,7 @@ final class ScriptedMCPServer: URLProtocol {
         self.method = method
 
         Self.lock.lock()
+        generation = Self.generation
         Self.seen.append(Seen(method: method, id: id, headers: request.allHTTPHeaderFields ?? [:]))
         guard !(Self.scripts[method] ?? []).isEmpty else { fatalError("No scripted reply for \(method)") }
         let reply = Self.scripts[method]!.removeFirst()
@@ -86,7 +94,7 @@ final class ScriptedMCPServer: URLProtocol {
     override func stopLoading() {
         Self.lock.lock(); defer { Self.lock.unlock() }
         stopped = true
-        Self.stops.append(method)
+        if generation == Self.generation { Self.stops.append(method) }
     }
 
     private func isStopped() -> Bool {
@@ -167,6 +175,7 @@ struct MCPHTTPTransportTests {
         defer { URLProtocol.unregisterClass(ScriptedMCPServer.self) }
 
         try await streamedReplyOnOpenConnection()
+        try await contentTypeCaseIsIgnored()
         try await eventsSplitAcrossChunksWithCRLF()
         try await otherMessagesOnTheStreamAreSkipped()
         try await jsonReplyAndSessionHeader()
@@ -193,6 +202,19 @@ struct MCPHTTPTransportTests {
         expect(elapsed < 10, "Reply must not wait for the connection to close (took \(elapsed)s)")
         await eventually("connection release") { ScriptedMCPServer.released == ["tools/call"] }
         expect(ScriptedMCPServer.released == ["tools/call"], "The open stream is cancelled once the response is read")
+    }
+
+    // TEST: contentTypeCaseIsIgnored
+    /// Media types are case insensitive; a cased header must still take the SSE path.
+    static func contentTypeCaseIsIgnored() async throws {
+        ScriptedMCPServer.reset()
+        ScriptedMCPServer.script("tools/call", .init(
+            headers: ["Content-Type": "Text/Event-Stream; charset=utf-8"],
+            steps: [.chunk(toolResponse("cased")), .hold]))
+        let started = Date()
+        let result = try await connection().callTool("echo", arguments: [:])
+        expect(result.text == "cased", "A differently cased event stream content type is parsed as SSE")
+        expect(Date().timeIntervalSince(started) < 10, "It completes without waiting for the connection to close")
     }
 
     // TEST: eventsSplitAcrossChunksWithCRLF
