@@ -17,7 +17,6 @@ struct GlassCard<Content: View>: View {
             .background(
                 ZStack {
                     VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
-                    NoirColors.panelBackground.opacity(0.94)
                     NoirColors.glassSurface
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
@@ -48,7 +47,8 @@ struct VisualEffectBlur: NSViewRepresentable {
     }
 }
 
-// Full-panel glass background for floating windows
+// Full-panel glass background for floating windows. The native material supplies
+// contrast; keep the tint light so the desktop remains visible through the blur.
 struct AppleGlassBackground: View {
     var cornerRadius: CGFloat = 16
     var material: NSVisualEffectView.Material = .hudWindow
@@ -58,7 +58,7 @@ struct AppleGlassBackground: View {
             VisualEffectBlur(material: material, blendingMode: .behindWindow)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             RoundedRectangle(cornerRadius: cornerRadius)
-                .fill(NoirColors.panelBackground.opacity(0.94))
+                .fill(NoirColors.glassChrome)
         }
     }
 }
@@ -71,7 +71,7 @@ struct HeavyGlassBackground: View {
             VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             RoundedRectangle(cornerRadius: cornerRadius)
-                .fill(NoirColors.panelBackground.opacity(0.94))
+                .fill(NoirColors.glassElevated)
         }
         .glassBorder(cornerRadius: cornerRadius)
     }
