@@ -172,6 +172,7 @@ struct MCPHTTPTransportTests {
         try await jsonReplyAndSessionHeader()
         try await errorsSurfaceInsteadOfHanging()
         try await httpStatusErrorCarriesBody()
+        try await deadlineOnSilentStream()
         print("Passed \(checks) MCP HTTP transport regression checks")
     }
 
@@ -276,5 +277,24 @@ struct MCPHTTPTransportTests {
         } catch MCPHTTPConnection.MCPError.http(let status, let body) {
             expect(status == 401 && body == "unauthorized", "Status and body are reported")
         }
+    }
+
+    // TEST: deadlineOnSilentStream
+    /// Keepalive comments reset the URLRequest idle timeout; the deadline still fires.
+    static func deadlineOnSilentStream() async throws {
+        ScriptedMCPServer.reset()
+        ScriptedMCPServer.script("tools/call", .init(steps: [
+            .chunk(": ping\n\n"), .wait(0.2), .chunk(": ping\n\n"), .wait(0.2), .chunk(": ping\n\n"), .hold
+        ]))
+        let started = Date()
+        do {
+            _ = try await connection(timeout: 0.5).callTool("echo", arguments: [:])
+            fatalError("A stream that never answers must time out")
+        } catch MCPHTTPConnection.MCPError.timeout {
+            let elapsed = Date().timeIntervalSince(started)
+            expect(elapsed >= 0.5 && elapsed < 10, "Deadline fires close to requestTimeout (took \(elapsed)s)")
+        }
+        await eventually("cancel of the stalled load") { ScriptedMCPServer.released == ["tools/call"] }
+        expect(ScriptedMCPServer.released == ["tools/call"], "The stalled stream is cancelled on timeout")
     }
 }
