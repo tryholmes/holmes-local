@@ -205,10 +205,83 @@ final class MCPConnection: MCPTransport {
     }
 }
 
+// MARK: - MCPSSEParser
+// Incremental parser for a `text/event-stream` body (WHATWG Server-Sent Events).
+// Feed it bytes as they arrive off the wire; it hands back the `data` payload of
+// each event as soon as the event's terminating blank line has been seen, so the
+// caller never has to wait for the connection to close.
+
+struct MCPSSEParser {
+    private var line = Data()
+    private var dataLines: [String] = []
+    private var skipLineFeed = false
+    private var atStreamStart = true
+
+    /// Feeds one byte. Returns the event payload when this byte completes an event.
+    mutating func feed(_ byte: UInt8) -> String? {
+        switch byte {
+        case 0x0D: // CR ends the line; a following LF belongs to the same terminator.
+            skipLineFeed = true
+            return endLine()
+        case 0x0A:
+            if skipLineFeed { skipLineFeed = false; return nil }
+            return endLine()
+        default:
+            skipLineFeed = false
+            line.append(byte)
+            return nil
+        }
+    }
+
+    /// Feeds a chunk. Returns every event payload completed within it, in order.
+    mutating func feed<S: Sequence>(_ bytes: S) -> [String] where S.Element == UInt8 {
+        var events: [String] = []
+        for byte in bytes {
+            if let event = feed(byte) { events.append(event) }
+        }
+        return events
+    }
+
+    private mutating func endLine() -> String? {
+        var text = String(decoding: line, as: UTF8.self)
+        line.removeAll(keepingCapacity: true)
+        // The spec allows one byte order mark before the first line; it is not a field.
+        if atStreamStart {
+            atStreamStart = false
+            if text.hasPrefix("\u{FEFF}") { text.removeFirst() }
+        }
+
+        // A blank line dispatches the pending event; a blank line with no data is a no-op.
+        if text.isEmpty {
+            guard !dataLines.isEmpty else { return nil }
+            let payload = dataLines.joined(separator: "\n")
+            dataLines.removeAll()
+            return payload
+        }
+        if text.hasPrefix(":") { return nil } // comment / keepalive
+
+        let field: Substring
+        var value: Substring
+        if let colon = text.firstIndex(of: ":") {
+            field = text[..<colon]
+            value = text[text.index(after: colon)...]
+            if value.hasPrefix(" ") { value = value.dropFirst() }
+        } else {
+            field = Substring(text)
+            value = ""
+        }
+        // Only `data` carries JSON-RPC; `event`, `id` and `retry` do not affect Holmes.
+        if field == "data" { dataLines.append(String(value)) }
+        return nil
+    }
+}
+
 // MARK: - MCPHTTPConnection (remote Streamable HTTP)
 // Talks to a hosted MCP server over HTTP. Each JSON-RPC request is a POST; the server
-// may reply with a single JSON body or an SSE stream — both are handled. Auth is via
-// headers (e.g. Authorization: Bearer …) supplied in mcp.json.
+// may reply with a single JSON body or an SSE stream. A stream is read event by event
+// as bytes arrive, so a server that keeps the connection open after answering does
+// not stall the request. Auth is via headers (e.g. Authorization: Bearer …) supplied
+// in mcp.json.
 
 final class MCPHTTPConnection: MCPTransport {
     let serverName: String
@@ -220,12 +293,19 @@ final class MCPHTTPConnection: MCPTransport {
     private var sessionID: String?
     private var negotiatedVersion = MCPProtocol.version
 
+    /// Upper bound on one JSON-RPC exchange, headers to response. The URLRequest
+    /// timeout only fires when the connection goes quiet, so a stream that keeps
+    /// sending keepalive comments but never answers would otherwise wait forever.
+    /// Matches the stdio transport's per-request timeout.
+    var requestTimeout: TimeInterval = 120
+
     enum MCPError: LocalizedError {
-        case http(Int, String), badResponse(String)
+        case http(Int, String), badResponse(String), timeout
         var errorDescription: String? {
             switch self {
             case .http(let code, let body): return "HTTP \(code): \(body.prefix(200))"
             case .badResponse(let m):       return m
+            case .timeout:                  return "MCP request timed out"
             }
         }
     }
@@ -285,53 +365,111 @@ final class MCPHTTPConnection: MCPTransport {
         let id = nextRequestID()
         let payload: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
         let body = try JSONSerialization.data(withJSONObject: payload)
+        let request = buildRequest(body: body)
 
-        let (data, response) = try await URLSession.shared.data(for: buildRequest(body: body))
-        let http = response as? HTTPURLResponse
-        if let sid = http?.value(forHTTPHeaderField: "Mcp-Session-Id"), !sid.isEmpty { sessionID = sid }
-
-        let status = http?.statusCode ?? 0
-        guard (200..<300).contains(status) else {
-            throw MCPError.http(status, String(data: data, encoding: .utf8) ?? "")
-        }
-
-        let ctype = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
-        guard let obj = Self.parseJSONRPC(data: data, contentType: ctype) else {
-            throw MCPError.badResponse("no JSON-RPC object in response")
-        }
+        let obj = try await withDeadline { [self] in try await exchange(request, id: id) }
         if let error = obj["error"] as? [String: Any] {
             throw MCPError.badResponse(error["message"] as? String ?? "MCP error")
         }
         return obj["result"] as? [String: Any] ?? [:]
     }
 
+    /// One POST and its reply: the JSON-RPC response object for request `id`.
+    private func exchange(_ request: URLRequest, id: Int) async throws -> [String: Any] {
+        // bytes(for:) returns once the headers are in, so an SSE reply can be consumed
+        // incrementally instead of waiting for the server to close the connection.
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        // Once the response is in hand the rest of an open SSE stream is of no use;
+        // tearing the task down frees the connection instead of leaving it to idle out.
+        defer { bytes.task.cancel() }
+        let http = response as? HTTPURLResponse
+        if let sid = http?.value(forHTTPHeaderField: "Mcp-Session-Id"), !sid.isEmpty { sessionID = sid }
+
+        let status = http?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            // Only the start of an error page is ever shown; do not drain a large one.
+            // The cut is byte based and may split a multibyte character, so decode
+            // leniently rather than lose the whole message to one bad trailing byte.
+            let data = try await Self.collect(bytes, limit: 16_384)
+            throw MCPError.http(status, String(decoding: data, as: UTF8.self))
+        }
+
+        let ctype = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
+if ctype.lowercased().contains("text/event-stream") {
+            return try await Self.firstResponse(matching: id, in: bytes)
+        }
+        let data = try await Self.collect(bytes)
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw MCPError.badResponse("no JSON-RPC object in response")
+        }
+        return obj
+    }
+
+    /// Runs `operation` and fails with `.timeout` if it outlives `requestTimeout`.
+    /// Cancelling the group cancels the URLSession task behind a stalled stream.
+    private func withDeadline<T>(_ operation: @escaping () async throws -> T) async throws -> T {
+        let timeout = requestTimeout
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw MCPError.timeout
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw MCPError.timeout }
+            return first
+        }
+    }
+
+    /// Reads a body: a plain JSON reply in full, or an error page up to `limit` bytes.
+    private static func collect(_ bytes: URLSession.AsyncBytes, limit: Int? = nil) async throws -> Data {
+        var data = Data()
+        for try await byte in bytes {
+            data.append(byte)
+            if let limit, data.count >= limit { break }
+        }
+        return data
+    }
+
+    /// Walks an SSE stream event by event and returns the JSON-RPC response to request
+    /// `id` the moment it is complete. Anything else the server puts on the stream
+    /// first (notifications, its own requests, keepalive comments) is skipped.
+    private static func firstResponse(matching id: Int, in bytes: URLSession.AsyncBytes) async throws -> [String: Any] {
+        var parser = MCPSSEParser()
+        for try await byte in bytes {
+            guard let payload = parser.feed(byte),
+                  let data = payload.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  isResponse(obj, to: id)
+            else { continue }
+            return obj
+        }
+        throw MCPError.badResponse("SSE stream ended before a JSON-RPC response arrived")
+    }
+
+    /// A response carries `result` or `error` and echoes our id. An error with a null
+    /// id (the server could not read the request) is also ours: nothing else is pending
+    /// on this POST.
+    private static func isResponse(_ obj: [String: Any], to id: Int) -> Bool {
+        guard obj["result"] != nil || obj["error"] != nil else { return false }
+        switch obj["id"] {
+        case let n as NSNumber: return n.intValue == id
+        case let s as String:   return s == String(id)
+        case nil, is NSNull:    return obj["error"] != nil
+        default:                return false
+        }
+    }
+
+    /// A notification has no reply (the server answers 202 with an empty body), so only
+    /// the headers are awaited. A server that streams here anyway cannot stall start().
     private func notify(_ method: String) async throws {
         let payload: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": [:]]
         let body = try JSONSerialization.data(withJSONObject: payload)
-        _ = try await URLSession.shared.data(for: buildRequest(body: body))
-    }
-
-    /// Handles both `application/json` and `text/event-stream` JSON-RPC replies.
-    private static func parseJSONRPC(data: Data, contentType: String) -> [String: Any]? {
-        if contentType.contains("text/event-stream") {
-            let text = String(data: data, encoding: .utf8) ?? ""
-            for block in text.components(separatedBy: "\n\n") {
-                var payload = ""
-                for rawLine in block.split(separator: "\n") {
-                    let line = String(rawLine)
-                    if line.hasPrefix("data:") {
-                        payload += line.dropFirst(5).trimmingCharacters(in: .whitespaces)
-                    }
-                }
-                if let d = payload.data(using: .utf8),
-                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
-                   o["result"] != nil || o["error"] != nil {
-                    return o
-                }
-            }
-            return nil
+        let request = buildRequest(body: body)
+        try await withDeadline {
+            let (bytes, _) = try await URLSession.shared.bytes(for: request)
+            bytes.task.cancel()
         }
-        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 }
 

@@ -109,8 +109,12 @@ the URL and a token instead of a command:
 { "mcpServers": { "google": { "url": "https://your-endpoint/mcp", "bearerToken": "YOUR_TOKEN" } } }
 ```
 
-Holmes speaks the Streamable-HTTP transport (handles both JSON and SSE replies) and sends
-`Authorization: Bearer <token>`. You can also pass arbitrary `"headers": { … }`.
+Holmes speaks the Streamable-HTTP transport and sends `Authorization: Bearer <token>`.
+You can also pass arbitrary `"headers": { … }`. A server may answer each request with a
+plain JSON body or an SSE stream; Holmes reads a stream event by event and completes the
+call as soon as the matching JSON-RPC response arrives, so a server that keeps the
+connection open afterwards does not delay anything. A request that gets no response
+within 120 seconds fails with a timeout.
 
 ---
 
