@@ -215,6 +215,7 @@ struct MCPSSEParser {
     private var line = Data()
     private var dataLines: [String] = []
     private var skipLineFeed = false
+    private var atStreamStart = true
 
     /// Feeds one byte. Returns the event payload when this byte completes an event.
     mutating func feed(_ byte: UInt8) -> String? {
@@ -242,8 +243,13 @@ struct MCPSSEParser {
     }
 
     private mutating func endLine() -> String? {
-        let text = String(decoding: line, as: UTF8.self)
+        var text = String(decoding: line, as: UTF8.self)
         line.removeAll(keepingCapacity: true)
+        // The spec allows one byte order mark before the first line; it is not a field.
+        if atStreamStart {
+            atStreamStart = false
+            if text.hasPrefix("\u{FEFF}") { text.removeFirst() }
+        }
 
         // A blank line dispatches the pending event; a blank line with no data is a no-op.
         if text.isEmpty {
