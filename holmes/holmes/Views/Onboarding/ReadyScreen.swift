@@ -29,7 +29,7 @@ struct ReadyScreen: View {
                         .font(NoirFonts.headline())
                         .foregroundStyle(NoirColors.charcoalDark)
 
-                    Text("Holmes is now learning from\nyour desktop activity")
+                    Text("Try three small tasks to see\nwhat Holmes can do for you.")
                         .font(NoirFonts.body())
                         .foregroundStyle(NoirColors.deepTeal)
                         .multilineTextAlignment(.center)
@@ -57,7 +57,7 @@ struct ReadyScreen: View {
             
             Spacer()
             
-            NoirButton("Start Using Holmes", icon: "sparkles") {
+            NoirButton("Try Holmes", icon: "arrow.right") {
                 viewModel.completeOnboarding()
                 onComplete()
             }
