@@ -80,6 +80,8 @@ struct MainPanelView: View {
             }
         }
         .frame(width: 380, height: 600)
+        .font(NoirFonts.body())
+        .preferredColorScheme(.dark)
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .overlay(
             RoundedRectangle(cornerRadius: 18)
@@ -130,10 +132,9 @@ struct MainPanelView: View {
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(Color.white.opacity(0.85))
                     }
-                    Text("HOLMES")
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(NoirColors.textPrimary)
-                        .tracking(3)
+                    Text("holmes")
+                        .font(NoirFonts.brand(size: 28))
+                        .foregroundStyle(NoirColors.textPrimary)
                 }
 
                 Spacer()
@@ -171,12 +172,12 @@ struct MainPanelView: View {
                         .scaleEffect(0.55)
                         .tint(Color.white.opacity(0.60))
                     Text("Analyzing screen...")
-                        .font(.system(size: 11, weight: .regular, design: .default))
+                        .font(NoirFonts.font(size: 11, weight: .regular, design: .default))
                         .foregroundColor(NoirColors.textTertiary)
                     Spacer()
                     if let updated = agent.lastUpdated {
                         Text(updated, style: .relative)
-                            .font(.system(size: 10, weight: .regular, design: .default))
+                            .font(NoirFonts.font(size: 10, weight: .regular, design: .default))
                             .foregroundColor(NoirColors.textTertiary)
                     }
                 }
@@ -189,17 +190,17 @@ struct MainPanelView: View {
                         .fill(confidenceColor)
                         .frame(width: 5, height: 5)
                     Text(agent.live.confidence.label.uppercased())
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                         .foregroundColor(confidenceColor.opacity(0.85))
                         .tracking(0.8)
                     Text("· \(agent.live.source.label) · \(agent.modelBackend)")
-                        .font(.system(size: 10, weight: .regular, design: .default))
+                        .font(NoirFonts.font(size: 10, weight: .regular, design: .default))
                         .foregroundColor(NoirColors.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 4)
                     Text(updated, style: .relative)
-                        .font(.system(size: 10, weight: .regular, design: .default))
+                        .font(NoirFonts.font(size: 10, weight: .regular, design: .default))
                         .foregroundColor(NoirColors.textTertiary)
                         .fixedSize()
                 }
@@ -234,7 +235,7 @@ struct MainPanelView: View {
                 .font(.system(size: 10))
                 .foregroundColor(NoirColors.textTertiary)
             Text("No meetings in next 30 min")
-                .font(.system(size: 10, design: .default))
+                .font(NoirFonts.font(size: 10, design: .default))
                 .foregroundColor(NoirColors.textTertiary)
             Spacer()
             Button(action: { Task { await CalendarEngine.shared.scanUpcomingEvents() } }) {
@@ -290,13 +291,13 @@ struct UpcomingMeetingsCard: View {
                         .foregroundColor(NoirColors.calendarBlue)
                 }
                 Text("UPCOMING")
-                    .font(.system(size: 9, weight: .bold, design: .default))
+                    .font(NoirFonts.font(size: 9, weight: .bold, design: .default))
                     .foregroundColor(NoirColors.calendarBlue.opacity(0.80))
                     .tracking(2)
                 Spacer()
                 Button(action: { Task { await CalendarEngine.shared.debugFireNextMeeting() } }) {
                     Text("TEST")
-                        .font(.system(size: 8, weight: .bold, design: .default))
+                        .font(NoirFonts.font(size: 8, weight: .bold, design: .default))
                         .foregroundColor(Color.white.opacity(0.40))
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
@@ -339,18 +340,18 @@ struct MeetingRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(meeting.title)
-                    .font(.system(size: 11, weight: .semibold, design: .default))
+                    .font(NoirFonts.font(size: 11, weight: .semibold, design: .default))
                     .foregroundColor(NoirColors.textPrimary)
                     .lineLimit(1)
                 Text(meeting.meetingType?.rawValue ?? "Meeting")
-                    .font(.system(size: 10, design: .default))
+                    .font(NoirFonts.font(size: 10, design: .default))
                     .foregroundColor(NoirColors.textTertiary)
             }
 
             Spacer()
 
             Text(meeting.timeLabel)
-                .font(.system(size: 10, weight: .bold, design: .default))
+                .font(NoirFonts.font(size: 10, weight: .bold, design: .default))
                 .foregroundColor(meeting.minutesUntil <= 2 ? NoirColors.error : NoirColors.textSecondary)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
@@ -387,7 +388,7 @@ struct DraftsCard: View {
                         .foregroundColor(NoirColors.textPrimary)
                 }
                 Text("DRAFTS")
-                    .font(.system(size: 9, weight: .bold, design: .default))
+                    .font(NoirFonts.font(size: 9, weight: .bold, design: .default))
                     .foregroundColor(NoirColors.textSecondary)
                     .tracking(2)
                 Spacer()
@@ -426,11 +427,11 @@ struct DraftRow: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(draft.title)
-                        .font(.system(size: 11, weight: .semibold, design: .default))
+                        .font(NoirFonts.font(size: 11, weight: .semibold, design: .default))
                         .foregroundColor(NoirColors.textPrimary)
                         .lineLimit(1)
                     Text(draft.contextSummary)
-                        .font(.system(size: 10, design: .default))
+                        .font(NoirFonts.font(size: 10, design: .default))
                         .foregroundColor(NoirColors.textTertiary)
                         .lineLimit(1)
                 }
@@ -438,7 +439,7 @@ struct DraftRow: View {
                 Spacer()
 
                 Text(draft.createdAt, style: .relative)
-                    .font(.system(size: 9, design: .default))
+                    .font(NoirFonts.font(size: 9, design: .default))
                     .foregroundColor(NoirColors.textTertiary)
             }
             .padding(.vertical, 4)

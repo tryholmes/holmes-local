@@ -84,7 +84,7 @@ struct FeatureCard: View {
                         .foregroundColor(Color.black.opacity(0.82))
 
                     Text(shortcut)
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .font(NoirFonts.font(size: 10, weight: .bold, design: .monospaced))
                         .foregroundColor(Color.black.opacity(0.6))
                 }
             }

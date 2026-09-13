@@ -117,7 +117,7 @@ struct SearchBarView: View {
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(NoirColors.goldAccent)
                     Text("HOLMES")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .font(NoirFonts.font(size: 11, weight: .bold, design: .monospaced))
                         .foregroundColor(NoirColors.textPrimary)
                         .tracking(3)
                 }
@@ -137,7 +137,7 @@ struct SearchBarView: View {
             // Command input row
             HStack(spacing: 0) {
                 Text("❯")
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                    .font(NoirFonts.font(size: 13, weight: .semibold, design: .monospaced))
                     .foregroundColor(Color.white.opacity(0.55))
                     .padding(.leading, 16)
                     .padding(.trailing, 10)
@@ -152,7 +152,7 @@ struct SearchBarView: View {
                         HStack(spacing: 0) {
                             BlinkingCursor()
                             Text(placeholderText)
-                                .font(.system(size: 14, weight: .regular, design: .monospaced))
+                                .font(NoirFonts.font(size: 14, weight: .regular, design: .monospaced))
                                 .foregroundColor(NoirColors.textPlaceholder)
                                 .padding(.leading, 6)
                         }
@@ -162,7 +162,7 @@ struct SearchBarView: View {
                         set: { vm.onInputChange($0) }
                     ))
                     .focused($focused)
-                    .font(.system(size: 14, weight: .regular, design: .monospaced))
+                    .font(NoirFonts.font(size: 14, weight: .regular, design: .monospaced))
                     .foregroundColor(NoirColors.textPrimary)
                     .textFieldStyle(.plain)
                     .onSubmit { vm.submit() }
@@ -172,7 +172,7 @@ struct SearchBarView: View {
 
                 if !vm.inputText.isEmpty {
                     Text("↵")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .font(NoirFonts.font(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundColor(NoirColors.textTertiary)
                         .padding(.trailing, 14)
                 }
@@ -207,7 +207,7 @@ struct SearchBarView: View {
                     )
 
                 Text(outputHeaderText)
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textTertiary)
                     .tracking(2)
 
@@ -215,7 +215,7 @@ struct SearchBarView: View {
 
                 Button(action: { vm.reset() }) {
                     Text("✕  NEW")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                         .foregroundColor(NoirColors.textTertiary)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -235,11 +235,11 @@ struct SearchBarView: View {
                         ForEach(vm.log) { line in
                             HStack(alignment: .top, spacing: 8) {
                                 Text(line.prefix)
-                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .font(NoirFonts.font(size: 11, weight: .bold, design: .monospaced))
                                     .foregroundColor(line.color)
                                     .frame(width: 14, alignment: .center)
                                 Text(line.text)
-                                    .font(.system(size: 12, weight: .regular, design: .monospaced))
+                                    .font(NoirFonts.font(size: 12, weight: .regular, design: .monospaced))
                                     .foregroundColor(NoirColors.textSecondary)
                                     .lineSpacing(2)
                                 Spacer()
@@ -277,7 +277,7 @@ struct SearchBarView: View {
             Image(systemName: cmd.icon)
                 .font(.system(size: 10, weight: .bold))
             Text(cmd.trigger)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 11, weight: .bold, design: .monospaced))
         }
         .foregroundColor(Color.white.opacity(0.90))
         .padding(.horizontal, 8)
@@ -301,10 +301,10 @@ struct SearchBarView: View {
                                 .foregroundColor(NoirColors.goldAccent)
                                 .frame(width: 16)
                             Text(cmd.trigger)
-                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .font(NoirFonts.font(size: 13, weight: .semibold, design: .monospaced))
                                 .foregroundColor(NoirColors.textPrimary)
                             Text(cmd.description)
-                                .font(.system(size: 11, weight: .regular, design: .monospaced))
+                                .font(NoirFonts.font(size: 11, weight: .regular, design: .monospaced))
                                 .foregroundColor(NoirColors.textTertiary)
                             Spacer()
                         }
@@ -355,7 +355,7 @@ struct SearchBarView: View {
         HStack(spacing: 5) {
             Circle().fill(stateColor).frame(width: 5, height: 5)
             Text(stateLabel)
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                 .foregroundColor(NoirColors.textTertiary)
                 .tracking(1)
         }
@@ -417,7 +417,7 @@ struct TopBarButton: View {
     var body: some View {
         Button(action: {}) {
             Text(label)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 10, weight: .bold, design: .monospaced))
                 .foregroundColor(isHovered ? NoirColors.goldAccent : NoirColors.textPrimary)
                 .padding(.horizontal, 10).padding(.vertical, 7)
                 .frame(minWidth: 44, minHeight: 28)

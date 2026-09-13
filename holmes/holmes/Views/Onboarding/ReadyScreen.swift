@@ -87,7 +87,7 @@ struct HotkeyRow: View {
             HStack(spacing: 4) {
                 KeyCap(text: keys)
                 Text("+")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 12, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.deepTeal)
                 KeyCap(text: secondKey)
             }
@@ -108,7 +108,7 @@ struct KeyCap: View {
     
     var body: some View {
         Text(text)
-            .font(.system(size: 12, weight: .bold, design: .monospaced))
+            .font(NoirFonts.font(size: 12, weight: .bold, design: .monospaced))
             .foregroundColor(Color.black.opacity(0.85))
             .padding(.horizontal, 8)
             .padding(.vertical, 4)

@@ -17,6 +17,7 @@ struct GlassCard<Content: View>: View {
             .background(
                 ZStack {
                     VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
+                    NoirColors.panelBackground.opacity(0.94)
                     NoirColors.glassSurface
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
@@ -57,7 +58,7 @@ struct AppleGlassBackground: View {
             VisualEffectBlur(material: material, blendingMode: .behindWindow)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             RoundedRectangle(cornerRadius: cornerRadius)
-                .fill(Color.white.opacity(0.06))
+                .fill(NoirColors.panelBackground.opacity(0.94))
         }
     }
 }
@@ -70,7 +71,7 @@ struct HeavyGlassBackground: View {
             VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             RoundedRectangle(cornerRadius: cornerRadius)
-                .fill(NoirColors.glassElevated)
+                .fill(NoirColors.panelBackground.opacity(0.94))
         }
         .glassBorder(cornerRadius: cornerRadius)
     }
@@ -92,7 +93,7 @@ struct GlassBorderModifier: ViewModifier {
                 RoundedRectangle(cornerRadius: cornerRadius - 0.5)
                     .stroke(
                         LinearGradient(
-                            colors: [Color.white.opacity(0.45), Color.clear],
+                            colors: [NoirColors.cream.opacity(0.12), Color.clear],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),
@@ -119,8 +120,8 @@ struct PixelBevelModifier: ViewModifier {
                     .stroke(
                         LinearGradient(
                             colors: raised
-                                ? [Color.white.opacity(0.45), Color.clear]
-                                : [Color.clear, Color.white.opacity(0.25)],
+                                ? [NoirColors.cream.opacity(0.12), Color.clear]
+                                : [Color.clear, NoirColors.cream.opacity(0.08)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ),

@@ -16,12 +16,12 @@ struct NoirTextField: View {
         ZStack {
             if text.isEmpty {
                 Text(placeholder)
-                    .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: fontSize, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textPlaceholder)
             }
 
             TextField("", text: $text)
-                .font(.system(size: fontSize, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: fontSize, weight: .bold, design: .monospaced))
                 .foregroundColor(NoirColors.textPrimary)
                 .textFieldStyle(.plain)
                 .multilineTextAlignment(.center)

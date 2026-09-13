@@ -22,7 +22,7 @@ struct ActionSuggestions: View {
                         .foregroundColor(NoirColors.iconPrimary)
                 }
                 Text("SUGGESTED ACTIONS")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textTertiary)
                     .tracking(2)
 
@@ -30,7 +30,7 @@ struct ActionSuggestions: View {
 
                 // Live count badge
                 Text("\(suggestions.count)")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textTertiary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -60,7 +60,7 @@ struct ActionSuggestions: View {
                         Image(systemName: "checkmark")
                             .font(.system(size: 11, weight: .bold))
                         Text("Approve All")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .font(NoirFonts.font(size: 12, weight: .bold, design: .monospaced))
                     }
                     .foregroundColor(.white)
                     .padding(.horizontal, 16)
@@ -87,7 +87,7 @@ struct ActionSuggestions: View {
                 // Customize — ghost
                 Button(action: {}) {
                     Text("Customize")
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                        .font(NoirFonts.font(size: 12, weight: .semibold, design: .monospaced))
                         .foregroundColor(NoirColors.textSecondary)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
@@ -172,7 +172,7 @@ struct ActionRow: View {
                 // Command text
                 VStack(alignment: .leading, spacing: 1) {
                     Text(suggestion.title)
-                        .font(.system(size: 12, weight: .regular, design: .monospaced))
+                        .font(NoirFonts.font(size: 12, weight: .regular, design: .monospaced))
                         .foregroundColor(isHovered ? NoirColors.textPrimary : NoirColors.textSecondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
