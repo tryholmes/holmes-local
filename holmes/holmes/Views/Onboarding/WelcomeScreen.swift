@@ -21,7 +21,7 @@ struct WelcomeScreen: View {
                         .font(NoirFonts.brand(size: 60))
                         .foregroundStyle(NoirColors.charcoalDark)
 
-                    Text("Zero Prompt AI for macOS")
+                    Text("Your Mac, agentic")
                         .font(NoirFonts.body())
                         .foregroundStyle(NoirColors.deepTeal)
                 }
