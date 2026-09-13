@@ -1,0 +1,41 @@
+name: Maintenance or chore
+description: Exploration, cleanup, refactoring, dependency, CI or documentation work
+title: "[Chore]: "
+labels: ["chore"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for work that is neither a bug nor a user facing feature. One chore issue may back several small pull requests delivered incrementally.
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this is done.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: The files, areas or workflows involved, and what is deliberately out of scope.
+    validations:
+      required: true
+  - type: textarea
+    id: plan
+    attributes:
+      label: Plan
+      description: The pull requests you expect to open, if more than one.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - Cleanup or refactor
+        - CI or release pipeline
+        - Repository management
+        - Documentation
+        - Exploration or spike
+        - Other
+    validations:
+      required: true
