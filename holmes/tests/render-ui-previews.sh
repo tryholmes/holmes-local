@@ -5,6 +5,7 @@
 # colored backdrop and captures the real compositor to verify transparency.
 # Default mode renders offscreen layout/font snapshots. Glass mode requires
 # existing screen-capture access; it never changes system privacy settings.
+# HOLMES_UI_PREVIEW_DEMO_ONLY=1 renders only the guided demo's sample fixtures.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
