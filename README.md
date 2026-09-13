@@ -1,7 +1,8 @@
 <!-- ⚠️ This README has been generated from the file(s) "blueprint.md" ⚠️-->
 [![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#holmes)
 
-# ➤ Holmes <img width="1437" height="782" alt="Screenshot 2026-09-13 at 11 09 31 AM" src="https://github.com/user-attachments/assets/f73df218-0659-4c59-8fea-e59e3763c3c1" />
+# ➤ Holmes 
+<img width="1437" height="782" alt="Screenshot 2026-09-13 at 11 09 31 AM" src="https://github.com/user-attachments/assets/f73df218-0659-4c59-8fea-e59e3763c3c1" />
 
 
 Your personal macOS AI agent that works for you.
