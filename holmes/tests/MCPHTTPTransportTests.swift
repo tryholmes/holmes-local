@@ -173,6 +173,7 @@ struct MCPHTTPTransportTests {
         try await errorsSurfaceInsteadOfHanging()
         try await httpStatusErrorCarriesBody()
         try await deadlineOnSilentStream()
+        try await startHandshakeOverMixedReplies()
         print("Passed \(checks) MCP HTTP transport regression checks")
     }
 
@@ -296,5 +297,36 @@ struct MCPHTTPTransportTests {
         }
         await eventually("cancel of the stalled load") { ScriptedMCPServer.released == ["tools/call"] }
         expect(ScriptedMCPServer.released == ["tools/call"], "The stalled stream is cancelled on timeout")
+    }
+
+    // TEST: startHandshakeOverMixedReplies
+    /// initialize over SSE, a misbehaving notification reply left open, paginated JSON tools/list.
+    static func startHandshakeOverMixedReplies() async throws {
+        ScriptedMCPServer.reset()
+        ScriptedMCPServer.script("initialize", .init(
+            headers: ["Content-Type": "text/event-stream", "Mcp-Session-Id": "sess-9"],
+            steps: [.chunk(event(["jsonrpc": "2.0", "id": 1, "result": ["protocolVersion": "2025-03-26", "capabilities": [:]]])), .hold]))
+        ScriptedMCPServer.script("notifications/initialized", .init(status: 202, steps: [.chunk(": ignored\n\n"), .hold]))
+        ScriptedMCPServer.script("tools/list", .init(
+            headers: ["Content-Type": "application/json"],
+            steps: [.chunk("{\"jsonrpc\":\"2.0\",\"id\":{{id}},\"result\":{\"tools\":[{\"name\":\"a\"}],\"nextCursor\":\"p2\"}}"), .finish]))
+        ScriptedMCPServer.script("tools/list", .init(
+            headers: ["Content-Type": "application/json"],
+            steps: [.chunk("{\"jsonrpc\":\"2.0\",\"id\":{{id}},\"result\":{\"tools\":[{\"name\":\"b\",\"annotations\":{\"readOnlyHint\":true}}]}}"), .finish]))
+        let started = Date()
+        let tools = try await connection().start()
+        let elapsed = Date().timeIntervalSince(started)
+        expect(tools.map(\.name) == ["a", "b"], "Both pages of tools are collected")
+        expect(tools[1].readOnly, "Tool annotations survive")
+        expect(elapsed < 10, "start() is not stalled by open streams (took \(elapsed)s)")
+        let requests = ScriptedMCPServer.requests
+        expect(requests.map(\.method) == ["initialize", "notifications/initialized", "tools/list", "tools/list"], "Handshake order")
+        expect(requests[2].headers["MCP-Protocol-Version"] == "2025-03-26", "Negotiated version is sent after initialize")
+        expect(requests[3].headers["Mcp-Session-Id"] == "sess-9", "Session id from initialize is reused")
+        // A held load is only ever stopped by a cancel from the client.
+        await eventually("release of both open streams") {
+            Set(ScriptedMCPServer.released).isSuperset(of: ["initialize", "notifications/initialized"])
+        }
+        expect(true, "Both open streams from the handshake are released")
     }
 }
