@@ -356,6 +356,9 @@ final class MCPHTTPConnection: MCPTransport {
         // bytes(for:) returns once the headers are in, so an SSE reply can be consumed
         // incrementally instead of waiting for the server to close the connection.
         let (bytes, response) = try await URLSession.shared.bytes(for: buildRequest(body: body))
+        // Once the response is in hand the rest of an open SSE stream is of no use;
+        // tearing the task down frees the connection instead of leaving it to idle out.
+        defer { bytes.task.cancel() }
         let http = response as? HTTPURLResponse
         if let sid = http?.value(forHTTPHeaderField: "Mcp-Session-Id"), !sid.isEmpty { sessionID = sid }
 
