@@ -19,8 +19,8 @@ final class ActionExecutor {
         var focusedRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
               let focused = focusedRef,
-              CFGetTypeID(focused) == AXUIElementGetTypeID(),
-              let element = focused as? AXUIElement else { return false }
+              CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
+        let element = focused as! AXUIElement
         var roleRef: CFTypeRef?
         let role = (AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success ? roleRef as? String : nil) ?? ""
         if role == kAXTextAreaRole as String || role == kAXTextFieldRole as String || role == "AXWebArea" { return true }
@@ -43,10 +43,10 @@ final class ActionExecutor {
             return typeViaKeyboard(text: text)
         }
 
-        guard CFGetTypeID(focused) == AXUIElementGetTypeID(),
-              let element = focused as? AXUIElement else {
+        guard CFGetTypeID(focused) == AXUIElementGetTypeID() else {
             return typeViaKeyboard(text: text)
         }
+        let element = focused as! AXUIElement
 
         // Check if it's settable
         var settable: DarwinBoolean = false
