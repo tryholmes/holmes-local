@@ -127,19 +127,31 @@ actor OllamaClient {
         let thinking: Bool
     }
     private var capabilityCache: [String: Capabilities] = [:]
+    private var capabilityGeneration = 0
 
     func capabilities(for model: String) async throws -> Capabilities {
-        if let cached = capabilityCache[model] { return cached }
+        let host = OllamaConfig.host
+        let key = "\(host)\n\(model)"
+        let generation = capabilityGeneration
+        if let cached = capabilityCache[key] { return cached }
         let json = try await request(path: "/api/show", body: ["model": model], timeout: 30)
+        // An old server's response cannot populate the new configuration's
+        // cache after the user changes host/model while /api/show is in flight.
+        guard generation == capabilityGeneration, host == OllamaConfig.host else {
+            throw CancellationError()
+        }
         let caps = Set((json["capabilities"] as? [String]) ?? [])
         let c = Capabilities(tools: caps.contains("tools"),
                              vision: caps.contains("vision"),
                              thinking: caps.contains("thinking"))
-        capabilityCache[model] = c
+        capabilityCache[key] = c
         return c
     }
 
-    func forgetCapabilities() { capabilityCache.removeAll() }
+    func forgetCapabilities() {
+        capabilityGeneration &+= 1
+        capabilityCache.removeAll()
+    }
 
     // MARK: - Serialization gate
 
