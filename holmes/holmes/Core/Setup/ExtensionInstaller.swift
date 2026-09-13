@@ -17,6 +17,23 @@ import Foundation
 // When a Web Store listing exists, `storeURL` short-circuits all of that.
 
 enum ExtensionInstaller {
+    private static let pendingReloadKey = "holmes.extension.pendingReloadVersion"
+    static let reloadInstructions = "Browser extension updated. Reload Holmes at chrome://extensions, then refresh Gmail."
+    static var needsBrowserReload: Bool { UserDefaults.standard.string(forKey: pendingReloadKey) != nil }
+
+    static func markNeedsBrowserReload(version: String, defaults: UserDefaults = .standard) {
+        defaults.set(version, forKey: pendingReloadKey)
+    }
+
+    static func noteBrowserVersion(_ version: String, defaults: UserDefaults = .standard) {
+        guard let expected = defaults.string(forKey: pendingReloadKey),
+              version.compare(expected, options: .numeric) != .orderedAscending else { return }
+        defaults.removeObject(forKey: pendingReloadKey)
+    }
+
+    static func needsBrowserReload(defaults: UserDefaults) -> Bool {
+        defaults.string(forKey: pendingReloadKey) != nil
+    }
 
     /// Set once the extension is published; onboarding then offers the store
     /// first and the unpacked path as fallback.
@@ -44,6 +61,29 @@ enum ExtensionInstaller {
     static var bundledVersion: String? { version(at: bundledFolder) }
     static var installedVersion: String? { version(at: installedFolder) }
 
+    /// Refresh only an existing managed export when the bundled version changes.
+    /// Fresh installs still use onboarding; no browser, pairing or Finder UI runs.
+    @discardableResult
+    static func refreshInstalledIfNeeded() throws -> URL? {
+        guard let source = bundledFolder else { return nil }
+        let refreshed = try refreshInstalledIfNeeded(from: source, to: installedFolder)
+        if refreshed != nil, let version = version(at: source) { markNeedsBrowserReload(version: version) }
+        return refreshed
+    }
+
+    @discardableResult
+    static func refreshInstalledIfNeeded(from source: URL, to destination: URL) throws -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: destination.path) else { return nil }
+        try validateManagedFolder(destination)
+        guard let bundled = version(at: source) else {
+            throw NSError(domain: "Holmes.ExtensionInstaller", code: 2,
+                          userInfo: [NSLocalizedDescriptionKey: "The bundled extension is missing its manifest."])
+        }
+        guard version(at: destination) != bundled else { return nil }
+        return try installUnpacked(from: source, to: destination)
+    }
+
     private static func version(at folder: URL?) -> String? {
         guard let folder,
               let data = try? Data(contentsOf: folder.appendingPathComponent("manifest.json")),
@@ -58,7 +98,12 @@ enum ExtensionInstaller {
             throw NSError(domain: "Holmes.ExtensionInstaller", code: 1,
                           userInfo: [NSLocalizedDescriptionKey: "This build of Holmes does not include the browser extension."])
         }
-        return try installUnpacked(from: source, to: installedFolder)
+        let previousVersion = installedVersion
+        let installed = try installUnpacked(from: source, to: installedFolder)
+        if let previousVersion, let version = version(at: source), previousVersion != version {
+            markNeedsBrowserReload(version: version)
+        }
+        return installed
     }
 
     /// Stage a complete copy before refreshing the folder Chrome uses. Explicit
@@ -71,14 +116,7 @@ enum ExtensionInstaller {
                           userInfo: [NSLocalizedDescriptionKey: "The bundled extension is missing its manifest. Reinstall Holmes and try again."])
         }
         if fm.fileExists(atPath: dest.path) {
-            let values = try dest.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-            let manifest = try? Data(contentsOf: dest.appendingPathComponent("manifest.json"))
-            let json = manifest.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-            guard values.isDirectory == true, values.isSymbolicLink != true,
-                  json?["name"] as? String == "Holmes", version(at: dest) != nil else {
-                throw NSError(domain: "Holmes.ExtensionInstaller", code: 3,
-                              userInfo: [NSLocalizedDescriptionKey: "A different file or folder already exists at \(dest.path). Rename it, then try again."])
-            }
+            try validateManagedFolder(dest)
         }
         try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
         // Replace atomically: stage next to the target, then swap, so a browser
@@ -92,6 +130,17 @@ enum ExtensionInstaller {
             try fm.moveItem(at: staging, to: dest)
         }
         return dest
+    }
+
+    private static func validateManagedFolder(_ folder: URL) throws {
+        let values = try folder.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        let manifest = try? Data(contentsOf: folder.appendingPathComponent("manifest.json"))
+        let json = manifest.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        guard values.isDirectory == true, values.isSymbolicLink != true,
+              json?["name"] as? String == "Holmes", version(at: folder) != nil else {
+            throw NSError(domain: "Holmes.ExtensionInstaller", code: 3,
+                          userInfo: [NSLocalizedDescriptionKey: "A different file or folder already exists at \(folder.path). Rename it, then try again."])
+        }
     }
 
     // MARK: Browsers

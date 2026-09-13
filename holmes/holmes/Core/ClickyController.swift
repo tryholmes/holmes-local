@@ -73,6 +73,11 @@ final class ClickyController {
     }
 
     private var isConfigured = false
+    private var queryTask: Task<Void, Never>?
+    private var queryGeneration = UUID()
+    private var activityID: UUID?
+    private var voiceHoldID: UUID?
+    private var queryHoldID: UUID?
 
     private init() {}
 
@@ -87,7 +92,9 @@ final class ClickyController {
         // A finished dictation drives the same router as typed input.
         VoiceInputController.shared.onFinalTranscript = { [weak self] transcript in
             guard let self else { return }
-            Task { @MainActor in await self.handle(query: transcript) }
+            let holdID = self.voiceHoldID
+            self.voiceHoldID = nil
+            self.startQuery(transcript, holdID: holdID)
         }
 
     }
@@ -113,8 +120,8 @@ final class ClickyController {
     /// Recheck after the AppDelegate's main-actor hop: the key may already be up.
     func beginPushToTalk(holdID: UUID) {
         guard HotkeyManager.shared.isPushToTalkHeld(holdID) else { return }
-        SpeechSynthesizer.shared.stop()
-        VisualGuidanceOverlay.shared.hide()
+        cancelPendingQuery()
+        voiceHoldID = holdID
         VoiceInputController.shared.beginListening(holdID: holdID)
     }
 
@@ -123,7 +130,10 @@ final class ClickyController {
     }
 
     func cancelPushToTalk(holdID: UUID? = nil) {
+        if let holdID, voiceHoldID != holdID, queryHoldID != holdID { return }
+        voiceHoldID = nil
         VoiceInputController.shared.cancelListening(holdID: holdID)
+        cancelPendingQuery()
     }
 
     // MARK: - Text entry (works without voice)
@@ -131,7 +141,7 @@ final class ClickyController {
     /// Fire-and-forget entry point for typed questions (e.g. the command bar).
     /// Routes through the same two-mode router as voice.
     func askAloud(_ text: String) {
-        Task { @MainActor in await handle(query: text) }
+        _ = startQuery(text)
     }
 
     // MARK: - Router (Clicky's two modes)
@@ -139,8 +149,86 @@ final class ClickyController {
     /// Handles explicit native app launches first, then routes questions to
     /// ASK/TEACH and other action requests to the AGENT pipeline.
     func handle(query: String) async {
+        guard let task = startQuery(query) else { return }
+        let generation = queryGeneration
+        await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+            Task { @MainActor in
+                guard self.queryGeneration == generation else { return }
+                self.cancelPendingQuery()
+            }
+        }
+    }
+
+    /// Cancelling after Fn-up still owns the released query, so a late model
+    /// reply cannot restore speech, drawings, or a draft after sleep/new input.
+    func cancelPendingQuery() {
+        queryGeneration = UUID()
+        queryTask?.cancel()
+        queryTask = nil
+        queryHoldID = nil
+        if let activityID { WorkActivityCenter.shared.cancel(activityID) }
+        activityID = nil
+        SpeechSynthesizer.shared.stop()
+        VisualGuidanceOverlay.shared.hide()
+        ScreenGlowController.shared.set(state: .off)
+    }
+
+    @discardableResult
+    private func startQuery(_ query: String, holdID: UUID? = nil) -> Task<Void, Never>? {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return nil }
+        cancelPendingQuery()
+        queryHoldID = holdID
+        let generation = queryGeneration
+        let id = WorkActivityCenter.shared.begin(title: "Your request", detail: trimmed, origin: .user)
+        activityID = id
+        let task = Task { @MainActor in
+            await WorkActivityScope.$id.withValue(id) {
+                await route(query: trimmed, generation: generation)
+            }
+            guard queryGeneration == generation else { return }
+            if WorkActivityCenter.shared.isActive(id) {
+                WorkActivityCenter.shared.cancel(id)
+            }
+            queryTask = nil
+            queryHoldID = nil
+            activityID = nil
+        }
+        queryTask = task
+        WorkActivityCenter.shared.setCancellationHandler(id) { [weak self] in
+            guard let self, self.queryGeneration == generation else { return }
+            self.cancelPendingQuery()
+        }
+        return task
+    }
+
+    private func isCurrent(_ generation: UUID) -> Bool {
+        guard queryGeneration == generation, !Task.isCancelled, let activityID else { return false }
+        return WorkActivityCenter.shared.isActive(activityID)
+    }
+
+    private func route(query trimmed: String, generation: UUID) async {
+        guard isCurrent(generation) else { return }
+
+        // Drafting produces an editable card and never falls through to screen
+        // teaching or the computer-control agent, including missing-context errors.
+        if EmailDraftCoordinator.shared.canHandle(trimmed) {
+            ScreenGlowController.shared.set(state: .thinking)
+            let result = await EmailDraftCoordinator.shared.request(instruction: trimmed)
+            guard isCurrent(generation) else { return }
+            switch result {
+            case .ready(let summary):
+                await completeQuery(summary, outcome: .success, generation: generation)
+            case .needsContext(let message), .failed(let message):
+                await completeQuery(message, outcome: .failure, generation: generation)
+            case .cancelled:
+                await completeQuery("Request cancelled", outcome: .cancelled, generation: generation)
+            }
+            return
+        }
 
         // Opening an explicitly requested app is a native macOS operation. It
         // needs neither the model nor permission to post mouse/keyboard events.
@@ -149,17 +237,15 @@ final class ClickyController {
         if let appName = AppLaunchIntent.appName(in: trimmed) {
             ScreenGlowController.shared.set(state: .thinking)
             let result = await AppLauncher.launch(named: appName)
-            ScreenGlowController.shared.set(state: result.succeeded ? .ready : .off)
-            NotchWindowController.shared.flashAction(
-                result.message, subtitle: "", symbol: result.succeeded ? "app" : "exclamationmark.circle")
-            await speakIfEnabled(result.message)
+            guard isCurrent(generation) else { return }
+            await completeQuery(result.message, outcome: result.succeeded ? .success : .failure, generation: generation)
             return
         }
 
         if Self.isAgentIntent(trimmed) {
-            await runAgent(goal: trimmed)
+            await runAgent(goal: trimmed, generation: generation)
         } else {
-            await runAskTeach(question: trimmed)
+            await runAskTeach(question: trimmed, generation: generation)
         }
     }
 
@@ -168,9 +254,9 @@ final class ClickyController {
     /// Sees the screen, asks the local model for a spoken answer plus optional draw-on-screen
     /// annotations, then speaks the answer and paints the annotations. Needs only
     /// Screen Recording — no computer-control permission, because it never clicks.
-    private func runAskTeach(question: String) async {
+    private func runAskTeach(question: String, generation: UUID) async {
         guard OllamaConfig.isConfigured else {
-            await speakIfEnabled(Self.notReadySpoken)
+            await completeQuery(Self.notReadySpoken, outcome: .failure, generation: generation)
             return
         }
 
@@ -179,13 +265,19 @@ final class ClickyController {
         // Ground the answer in the current live context so it stays pinned to the
         // screen the user is actually looking at, never drifting to an off-screen topic.
         let grounding = HolmesAgent.shared.currentContext.description
-        guard let result = await VisualGuidance.answer(question: question, context: grounding) else {
-            ScreenGlowController.shared.set(state: .off)
-            await speakIfEnabled("I couldn't get a read on your screen just now. Mind asking me again?")
+        let result: VisualGuidance.Result
+        do {
+            result = try await VisualGuidance.answerResult(question: question, context: grounding)
+        } catch is CancellationError {
+            guard isCurrent(generation) else { return }
+            await completeQuery("Request cancelled", outcome: .cancelled, generation: generation)
+            return
+        } catch {
+            guard isCurrent(generation) else { return }
+            await completeQuery(error.localizedDescription, outcome: .failure, generation: generation)
             return
         }
-
-        ScreenGlowController.shared.set(state: .ready)
+        guard isCurrent(generation) else { return }
 
         // Draw first (instant visual), then speak (which blocks until the answer
         // finishes playing). Hold the drawing at least as long as we expect the
@@ -200,9 +292,8 @@ final class ClickyController {
             )
         }
 
-        if !result.spokenAnswer.isEmpty {
-            await speakIfEnabled(result.spokenAnswer)
-        }
+        await completeQuery(result.spokenAnswer.isEmpty ? "Guidance is ready on your screen" : result.spokenAnswer,
+                            outcome: .success, generation: generation)
     }
 
     // MARK: - AGENT (does the task; computer control)
@@ -212,9 +303,9 @@ final class ClickyController {
     /// per-action re-confirmation for irreversible steps) — this router never
     /// weakens it and never force-enables it. A short spoken confirmation bookends
     /// the run.
-    private func runAgent(goal: String) async {
+    private func runAgent(goal: String, generation: UUID) async {
         guard OllamaConfig.isConfigured else {
-            await speakIfEnabled(Self.notReadySpoken)
+            await completeQuery(Self.notReadySpoken, outcome: .failure, generation: generation)
             return
         }
 
@@ -223,7 +314,7 @@ final class ClickyController {
         // Acknowledge immediately, but don't block the task on the ack — let "On it."
         // play WHILE the agent gets to work. The closing line supersedes it cleanly.
         if speakAnswersEnabled {
-            Task { @MainActor in SpeechSynthesizer.shared.enqueue("On it.", priority: .status) }
+            SpeechSynthesizer.shared.enqueue("On it.", priority: .status)
         }
 
         let result = await HolmesBrain.shared.run(goal: goal, narrateAloud: false) { _ in
@@ -232,15 +323,17 @@ final class ClickyController {
             // own "On it."/"All done." bookends below, so run() must not double up.
         }
 
-        ScreenGlowController.shared.set(state: .ready)
+        guard isCurrent(generation) else { return }
 
         switch result {
         case .notConfigured:
-            await speakIfEnabled(Self.notReadySpoken)
+            await completeQuery(Self.notReadySpoken, outcome: .failure, generation: generation)
+        case .failed(let message):
+            await completeQuery(message, outcome: .failure, generation: generation)
+        case .cancelled:
+            await completeQuery("Request cancelled", outcome: .cancelled, generation: generation)
         case .text(let message):
-            // A refusal or launch failure is still a text result. Read the actual
-            // outcome instead of claiming every completed request succeeded.
-            await speakIfEnabled(String(message.prefix(400)))
+            await completeQuery(String(message.prefix(400)), outcome: .success, generation: generation)
         }
     }
 
@@ -254,58 +347,23 @@ final class ClickyController {
         return "\(why). You can fix that in Holmes settings, under Local Model."
     }
 
-    /// Speaks `text` only when "Speak answers" is on. Awaits completion so callers
-    /// can sequence spoken lines without overlap.
-    private func speakIfEnabled(_ text: String) async {
-        guard speakAnswersEnabled else { return }
-        await SpeechSynthesizer.shared.speak(text)
+    /// The notch always receives an outcome, including when speech is disabled.
+    /// Keep the owner alive through TTS so a new hold can cancel playback too.
+    private func completeQuery(_ text: String, outcome: WorkActivityCenter.Outcome, generation: UUID) async {
+        guard isCurrent(generation), let activityID else { return }
+        ScreenGlowController.shared.set(state: outcome == .success ? .ready : .off)
+        WorkActivityCenter.shared.update(activityID, phase: speakAnswersEnabled ? .speaking : .working, detail: text)
+        if speakAnswersEnabled, outcome != .cancelled {
+            await SpeechSynthesizer.shared.speak(text)
+        }
+        guard isCurrent(generation) else { return }
+        WorkActivityCenter.shared.finish(activityID, outcome: outcome, summary: text)
     }
 
     /// Heuristic: does the user want Holmes to DO the task (agent / computer
     /// control) rather than answer a question about the screen? Clicky's rule is
     /// "say 'agent' and it does it"; we also catch the common imperative phrasings.
     static func isAgentIntent(_ query: String) -> Bool {
-        let q = query.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return false }
-
-        // Clicky's model is "say 'agent' and it does the task"; the DEFAULT is
-        // ask/teach. The risk is asymmetric — a false AGENT drives the user's Mac,
-        // a false ASK merely answers — so this defaults to ASK and only escalates
-        // to AGENT on an unambiguous act-now signal.
-
-        // (1) A QUESTION always answers, even if it happens to contain an action
-        //     word ("how do I go to my downloads?", "can you explain this for me?").
-        //     This guard runs first precisely to stop those from being misrouted.
-        let firstWord = String(q.split(whereSeparator: { $0 == " " || $0 == "," }).first ?? "")
-        let questionLeads: Set<String> = [
-            "what", "whats", "what's", "how", "why", "where", "when", "who", "which",
-            "can", "could", "would", "should", "is", "are", "do", "does", "did",
-            "explain", "tell", "show", "describe", "summarize", "summarise", "help"
-        ]
-        if q.hasSuffix("?") || questionLeads.contains(firstWord) { return false }
-
-        // (2) Explicit agent trigger — the sanctioned "agent, book me a table…".
-        if q == "agent" || q.hasPrefix("agent ") || q.hasPrefix("agent,")
-            || q.hasPrefix("hey clicky agent") || q.contains("holmes agent") {
-            return true
-        }
-
-        // (3) A bare imperative that clearly asks Holmes to ACT now — only when the
-        //     sentence STARTS with an action verb (not merely contains one) and it
-        //     wasn't a question. Kept tight to avoid capturing statements.
-        let leadingActVerbs: Set<String> = [
-            "click", "type", "open", "book", "fill", "send", "buy", "order",
-            "purchase", "install", "schedule", "compose", "navigate", "select",
-            "press", "drag", "scroll", "paste", "submit", "download"
-        ]
-        if leadingActVerbs.contains(firstWord) { return true }
-
-        // (4) Explicit "do it / do this for me" hand-off.
-        if q.hasPrefix("do this") || q.hasPrefix("do it") || q.hasPrefix("just do") {
-            return true
-        }
-
-        // Anything else → ask/teach (answer + draw). Safe default: never drives the Mac.
-        return false
+        ActionRequestIntent.matches(query)
     }
 }

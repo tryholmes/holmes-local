@@ -261,7 +261,8 @@ struct PlaybookToggleRow: View {
 
     /// Community playbooks only offer Observe / Draft; the engine clamps too.
     private var availableLevels: [AutonomyLevel] {
-        playbook.source == nil ? AutonomyLevel.allCases : AutonomyLevel.allCases.filter { $0 <= .draft }
+        playbook.source == nil && playbook.kind != .emailCompose
+            ? AutonomyLevel.allCases : AutonomyLevel.allCases.filter { $0 <= .draft }
     }
 
     var body: some View {
@@ -777,6 +778,15 @@ struct PrivacySettingsView: View {
             Text(bridgeDetail)
                 .font(NoirFonts.caption())
                 .foregroundColor(.secondary)
+            if (ExtensionInstaller.needsBrowserReload && bridge.extensionVersion != ExtensionInstaller.bundledVersion)
+                || bridge.emailComposeUnavailableReason != nil {
+                Text(ExtensionInstaller.needsBrowserReload
+                     ? ExtensionInstaller.reloadInstructions
+                     : (bridge.emailComposeUnavailableReason ?? ""))
+                    .font(NoirFonts.caption())
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             // Pairing is a deliberate act. The extension mints its own secret, and
             // Holmes will not adopt one on its own initiative — a loopback port is
             // reachable by every process on this Mac, so "whoever posts first" is

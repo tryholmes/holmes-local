@@ -25,7 +25,7 @@ struct PlaybookContext {
 // MARK: - DraftKind
 
 enum DraftKind: String {
-    case emailReply, promptSuggestion, repoBrief, linkedInPost, meetingPrep, chatReply, aiAnswer
+    case emailCompose, emailReply, promptSuggestion, repoBrief, linkedInPost, meetingPrep, chatReply, aiAnswer
     case briefing, triage
     case followUp, prRadar, scheduleAlert, wrapup
 }
@@ -35,6 +35,7 @@ enum DraftKind: String {
 // ActionExecutor, which never presses Send/Return.
 
 enum DraftTarget {
+    case emailCompose(EmailComposeSnapshot) // exact body-only target, revalidated after review
     case typeIntoApp(appName: String)     // stage via ActionExecutor after user approval
     case remoteDraft(urlString: String?)  // e.g. a Gmail draft was created; offer Open
     case clipboard

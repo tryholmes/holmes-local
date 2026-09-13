@@ -128,16 +128,18 @@ final class ReplyComposer {
     ///     replied to.
     ///   - styleExemplars: things the user has actually written, used as voice
     ///     samples. Auto-filled from the iMessage thread when left empty.
-    ///   - priority: `.background` for autopilot drafts (dropped with `.busy`
-    ///     while an agent session owns the GPU); `.agent` when the user asked.
+    ///   - priority: `.background` waits with visible queued status while an
+    ///     explicit agent owns the GPU; `.agent` when the user asked.
     /// - Returns: nil when there is nothing to reply to, the local model is not ready, or the
     ///   model's answer can't be trusted — never a placeholder draft.
     func draftReply(to msg: IncomingMessage,
                     context: LiveContext?,
                     styleExemplars: [String] = [],
-                    priority: OllamaClient.Priority = .background) async -> DraftedReply? {
+                    priority: OllamaClient.Priority = .background,
+                    onFailure: ((String) -> Void)? = nil) async -> DraftedReply? {
         let incoming = msg.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !incoming.isEmpty else { return nil }
+        guard !Task.isCancelled else { return nil }
+        guard !incoming.isEmpty else { onFailure?("There is no message text to reply to."); return nil }
 
         // 1. TOPIC RECALL — runs FIRST, ahead of even the local-model readiness check.
         //    Extracting the subject and pulling the rows about it is entirely
@@ -145,10 +147,12 @@ final class ReplyComposer {
         //    NOW section lights up the moment the message lands, whether or not
         //    a draft can be produced afterwards.
         let recall = await recallForIncoming(incoming)
+        guard !Task.isCancelled else { return nil }
         let hits = recall.hits
         let topics = recall.topics
 
         guard OllamaConfig.isConfigured else {
+            onFailure?(OllamaConfig.notReadyMessage)
             print("[Holmes] ReplyComposer: local model not ready — cannot draft a reply (\(OllamaConfig.lastProblem ?? "Ollama isn't ready"))")
             return nil
         }
@@ -230,21 +234,32 @@ final class ReplyComposer {
 
         let raw: String
         do {
-            raw = try await OllamaClient.shared.complete(
-                system: system, user: user, maxTokens: Self.maxTokens,
-                asJSON: true, schema: Self.draftSchema, priority: priority)
-        } catch OllamaClient.AgentError.busy {
-            print("[Holmes] ReplyComposer: the local model is busy with an agent session — draft skipped")
-            return nil
+            let deadline = Date().addingTimeInterval(180)
+            while true {
+                try Task.checkCancellation()
+                do {
+                    raw = try await OllamaClient.shared.complete(
+                        system: system, user: user, maxTokens: Self.maxTokens,
+                        asJSON: true, schema: Self.draftSchema, priority: priority)
+                    break
+                } catch OllamaClient.AgentError.busy where priority == .background && Date() < deadline {
+                    if let id = WorkActivityScope.id {
+                        WorkActivityCenter.shared.update(id, phase: .queued, detail: "Waiting for the local model to draft a reply")
+                    }
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                }
+            }
+            try Task.checkCancellation()
         } catch {
-            print("[Holmes] ReplyComposer: draft failed — \(error.localizedDescription)")
+            if !Task.isCancelled { onFailure?(error.localizedDescription) }
             return nil
         }
 
         guard let parsed = parseDraft(raw) else {
-            print("[Holmes] ReplyComposer: unparseable draft response")
+            onFailure?("The local model didn't produce a usable reply. Try again.")
             return nil
         }
+        guard !Task.isCancelled else { return nil }
 
         let body = String(parsed.reply.prefix(Self.maxBodyCharacters))
         let confidence = draftConfidence(context: context, thread: thread, uncertain: parsed.uncertain)

@@ -1,11 +1,14 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     var onboardingWindow: NSWindow?
     /// The model is preloaded once, the first time Ollama reports ready, so the
     /// first real request doesn't pay the 20-40 s cold load.
     private var warmedUpModel: String? = nil
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    private var extensionUpdateNeedsNotice = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NoirFonts.registerBundledFonts()
@@ -14,14 +17,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // FileHandle.write then throws EPIPE, which MCPClient already handles.
         signal(SIGPIPE, SIG_IGN)
 
+        do {
+            if let folder = try ExtensionInstaller.refreshInstalledIfNeeded() {
+                extensionUpdateNeedsNotice = true
+                print("[Holmes] Updated unpacked extension at \(folder.path) — reload Holmes on chrome://extensions, then refresh Gmail")
+            }
+        } catch {
+            print("[Holmes] Extension refresh skipped: \(error.localizedDescription)")
+        }
+
         setupApp()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         MainActor.assumeIsolated {
-            ClickyController.shared.cancelPushToTalk()
+            MenuBarManager.shared.stopAllWork()
             GuidedDemoWindowController.shared.close()
         }
+        for observer in lifecycleObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        lifecycleObservers.removeAll()
         HotkeyManager.shared.unregisterHotkeys()
     }
 
@@ -35,6 +49,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupApp() {
         MenuBarManager.shared.setup()
         setupHotkeys()
+        setupWorkLifecycle()
 
         Task { @MainActor in
             // Local model: readiness = "Ollama answers AND the chosen model is
@@ -89,7 +104,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startHolmesAgent() {
         Task { @MainActor in
+            guard !MenuBarManager.shared.isPaused, !MenuBarManager.shared.isSystemSuspended else { return }
             await HolmesAgent.shared.start()
+        }
+    }
+
+    private func setupWorkLifecycle() {
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
+                     NSWorkspace.sessionDidResignActiveNotification] {
+            lifecycleObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { MenuBarManager.shared.suspendForSystemEvent() }
+            })
+        }
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
+                     NSWorkspace.sessionDidBecomeActiveNotification] {
+            lifecycleObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { MenuBarManager.shared.resumeAfterSystemEvent() }
+            })
         }
     }
 
@@ -118,6 +150,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         HotkeyManager.shared.onCommandOptionEscape = {
             Task { @MainActor in
                 ComputerUseEngine.shared.cancelRun()
+                AutonomousActionRunner.shared.cancelCurrentRun()
+                WorkActivityCenter.shared.cancelSelected()
             }
         }
 
@@ -216,6 +250,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // cards reveal on every Mac.
         Task { @MainActor in
             NotchWindowController.shared.show()
+            if extensionUpdateNeedsNotice {
+                extensionUpdateNeedsNotice = false
+                let notice = "Browser extension updated. Reload Holmes at chrome://extensions, then refresh Gmail."
+                let activity = WorkActivityCenter.shared.begin(title: "Browser extension updated")
+                WorkActivityCenter.shared.finish(activity, outcome: .success, summary: notice)
+                NotchWindowController.shared.viewModel.showSneakPeek(
+                    title: "Browser extension updated",
+                    subtitle: "Reload Holmes at chrome://extensions, then refresh Gmail.",
+                    symbol: "puzzlepiece.extension", duration: 12)
+            }
             GuidedDemoWindowController.shared.showIfNeeded()
         }
         startHolmesAgent()

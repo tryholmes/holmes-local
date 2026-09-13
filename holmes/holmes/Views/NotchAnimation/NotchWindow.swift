@@ -56,9 +56,15 @@ class NotchWindowController: NSObject, ObservableObject {
     private var window: NSWindow?
     @Published var viewModel = NotchViewModel()
     private var screenObserver: NSObjectProtocol?
+    private var legacyTaskID: UUID?
+    private var ownsLegacyTask = false
 
     override private init() {
         super.init()
+        WorkActivityCenter.shared.onChange = { [weak self] in
+            self?.viewModel.synchronize(with: WorkActivityCenter.shared)
+        }
+        viewModel.synchronize(with: WorkActivityCenter.shared)
     }
 
     var hasNotch: Bool {
@@ -66,6 +72,7 @@ class NotchWindowController: NSObject, ObservableObject {
     }
 
     func show() {
+        viewModel.synchronize(with: WorkActivityCenter.shared)
         if window == nil {
             createWindow()
         }
@@ -117,29 +124,28 @@ class NotchWindowController: NSObject, ObservableObject {
     /// A task run has begun — light the closed-notch wings and announce the goal.
     func beginTask(_ title: String) {
         viewModel.contextLine = HolmesAgent.shared.currentContext.description
-        viewModel.taskName = title
-        viewModel.taskStep = title
-        viewModel.taskProgress = 0
-        withAnimation(.smooth) { viewModel.taskActive = true }
-        viewModel.showSneakPeek(title: "On it", subtitle: title, symbol: "bolt.fill", duration: 2.5)
+        if ownsLegacyTask, let legacyTaskID { WorkActivityCenter.shared.cancel(legacyTaskID) }
+        ownsLegacyTask = WorkActivityScope.id == nil
+        legacyTaskID = WorkActivityScope.id ?? WorkActivityCenter.shared.begin(title: title)
+        if let legacyTaskID {
+            WorkActivityCenter.shared.update(legacyTaskID, phase: .working, detail: title)
+        }
     }
 
     /// Advance the task: the current step's text + progress fraction.
     func stepProgress(_ step: String, fraction: Double) {
-        viewModel.taskStep = step
-        viewModel.taskProgress = min(1, max(0, fraction))
+        guard let legacyTaskID else { return }
+        WorkActivityCenter.shared.update(legacyTaskID, phase: .working, detail: step, progress: fraction)
     }
 
     /// The run finished — drop the wings, flash the result.
     func endTask(success: Bool, summary: String) {
-        withAnimation(.smooth) { viewModel.taskActive = false }
-        viewModel.taskProgress = 0
-        viewModel.lastResult = (success ? "Done — " : "Stopped — ") + summary
-        viewModel.showSneakPeek(
-            title: success ? "Holmes finished" : "Holmes stopped",
-            subtitle: summary,
-            symbol: success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
-            duration: 3.5)
+        guard let legacyTaskID else { return }
+        if ownsLegacyTask {
+            WorkActivityCenter.shared.finish(legacyTaskID, outcome: success ? .success : .failure, summary: summary)
+        }
+        self.legacyTaskID = nil
+        ownsLegacyTask = false
     }
 
     /// The live context changed — keep the panel's context line current and,

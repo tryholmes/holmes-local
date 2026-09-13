@@ -134,6 +134,8 @@ final class VoiceInputController {
     @ObservationIgnored private var permissionRequest: Task<Bool, Never>?
     @ObservationIgnored private var latestTranscript = ""
     @ObservationIgnored private var finalizeFallback: Task<Void, Never>?
+    @ObservationIgnored private var activityID: UUID?
+    @ObservationIgnored private var recognitionFailure: String?
     private let finalTranscriptFallbackDelay: UInt64 = 1_500_000_000
 
     private init() {}
@@ -203,9 +205,23 @@ final class VoiceInputController {
         guard session.holdID != holdID else { return }
         cancelListening()
         session.begin(holdID)
+        activityID = WorkActivityCenter.shared.begin(title: "Voice request", detail: "Checking microphone permission", origin: .user)
+        if let activityID {
+            WorkActivityCenter.shared.setCancellationHandler(activityID) { [weak self] in
+                self?.cancelListening(holdID: holdID)
+            }
+        }
         permissionTask = Task { @MainActor in
             let granted = await requestPermission()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, session.holdID == holdID else { return }
+            guard HotkeyManager.shared.isPushToTalkHeld(holdID) else {
+                cancelListening(holdID: holdID)
+                return
+            }
+            guard granted else {
+                failListening(holdID: holdID, message: "Microphone and Speech Recognition permission are required. Enable them in System Settings ▸ Privacy & Security.")
+                return
+            }
             guard session.authorize(holdID,
                                     isHeld: HotkeyManager.shared.isPushToTalkHeld(holdID),
                                     permissionGranted: granted) else { return }
@@ -221,13 +237,13 @@ final class VoiceInputController {
         }
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
               recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else {
-            print("VoiceInputController: on-device speech recognition unavailable; capture refused.")
-            cancelListening(holdID: holdID)
+            failListening(holdID: holdID, message: "On-device speech recognition is unavailable. You can type your request instead.")
             return
         }
         self.recognizer = recognizer
         latestTranscript = ""
         partialTranscript = ""
+        recognitionFailure = nil
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
@@ -239,9 +255,12 @@ final class VoiceInputController {
         audioEngine = engine
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0,
-              HotkeyManager.shared.isPushToTalkHeld(holdID) else {
+        guard HotkeyManager.shared.isPushToTalkHeld(holdID) else {
             cancelListening(holdID: holdID)
+            return
+        }
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            failListening(holdID: holdID, message: "No working microphone input was found. Check your sound input settings.")
             return
         }
 
@@ -259,8 +278,7 @@ final class VoiceInputController {
         do {
             try engine.start()
         } catch {
-            print("VoiceInputController: failed to start audio engine: \(error.localizedDescription)")
-            cancelListening(holdID: holdID)
+            failListening(holdID: holdID, message: "The microphone couldn't start: \(error.localizedDescription)")
             return
         }
         guard HotkeyManager.shared.isPushToTalkHeld(holdID) else {
@@ -268,12 +286,15 @@ final class VoiceInputController {
             return
         }
         isListening = true
+        if let activityID {
+            WorkActivityCenter.shared.update(activityID, phase: .listening, detail: "Hold Fn while you speak")
+        }
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
-            let errored = error != nil
+            let failure = error?.localizedDescription
             Task { @MainActor in
-                self?.handleRecognition(holdID: holdID, text: text, isFinal: isFinal, errored: errored)
+                self?.handleRecognition(holdID: holdID, text: text, isFinal: isFinal, failure: failure)
             }
         }
     }
@@ -288,6 +309,9 @@ final class VoiceInputController {
             return
         }
         stopAudio()
+        if let activityID {
+            WorkActivityCenter.shared.update(activityID, phase: .transcribing, detail: "Finishing your request")
+        }
         request?.endAudio()
         if recognitionAlreadyEnded {
             deliverFinal(latestTranscript, holdID: holdID)
@@ -305,6 +329,9 @@ final class VoiceInputController {
     func cancelListening(holdID: UUID? = nil) {
         if let holdID, session.holdID != holdID { return }
         session.cancel(holdID)
+        let cancelledActivity = activityID
+        activityID = nil
+        if let cancelledActivity { WorkActivityCenter.shared.cancel(cancelledActivity) }
         permissionTask?.cancel()
         permissionTask = nil
         finalizeFallback?.cancel()
@@ -312,23 +339,37 @@ final class VoiceInputController {
         teardownAudioAndTask()
         latestTranscript = ""
         partialTranscript = ""
+        recognitionFailure = nil
+    }
+
+    private func failListening(holdID: UUID, message: String) {
+        guard session.holdID == holdID else { return }
+        if let activityID {
+            WorkActivityCenter.shared.finish(activityID, outcome: .failure, summary: message)
+            self.activityID = nil
+        }
+        cancelListening(holdID: holdID)
     }
 
     // MARK: Recognition handling
 
-    private func handleRecognition(holdID: UUID, text: String?, isFinal: Bool, errored: Bool) {
+    private func handleRecognition(holdID: UUID, text: String?, isFinal: Bool, failure: String?) {
         guard session.acceptsRecognition(holdID), task != nil else { return }
         if let text {
             latestTranscript = text
             partialTranscript = text
         }
-        guard isFinal || errored else { return }
+        if let failure { recognitionFailure = failure }
+        guard isFinal || failure != nil else { return }
         stopAudio()
         if session.phase == .finalizing {
             deliverFinal(latestTranscript, holdID: holdID)
         } else {
             // No action is submitted before the physical hold is released.
             session.recognitionEnded(holdID)
+            if let activityID {
+                WorkActivityCenter.shared.update(activityID, phase: .listening, detail: "Release Fn to submit your request")
+            }
             task?.cancel()
             task = nil
             request = nil
@@ -343,6 +384,14 @@ final class VoiceInputController {
         partialTranscript = ""
         latestTranscript = ""
         let finalText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let activityID {
+            let message = finalText.isEmpty
+                ? recognitionFailure.map { "Speech recognition failed: \($0)" } ?? "I didn't catch any speech. Hold Fn and try again, or type your request."
+                : "Voice request received"
+            WorkActivityCenter.shared.finish(activityID, outcome: finalText.isEmpty ? .failure : .success, summary: message)
+            self.activityID = nil
+        }
+        recognitionFailure = nil
         guard !finalText.isEmpty else { return }
         onFinalTranscript?(finalText)
     }

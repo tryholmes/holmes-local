@@ -75,11 +75,59 @@ final class HolmesAgent {
     private(set) var lastTextConfidence: ContextConfidence = .inferred
     private(set) var lastSnapshot: ContextSnapshot? = nil
 
-    private init() {}
+    /// The slow boundaries are injectable so a held OCR/model response can be
+    /// checked against a real stop/restart without starting capture or a model.
+    struct PerceptionDependencies {
+        var recognizeText: @MainActor (CGImage) async -> String = { image in
+            await OCREngine.shared.recognize(image: image).fullText
+        }
+        var completeEnrichment: @MainActor (LiveContext, String?) async throws -> String = { context, image in
+            try await OllamaClient.shared.complete(
+                system: HolmesAgent.enrichmentSystemPrompt,
+                user: HolmesAgent.enrichmentPrompt(for: context),
+                maxTokens: 400, asJSON: true, schema: HolmesAgent.enrichmentSchema,
+                imageBase64: image)
+        }
+        var canEnrich: @MainActor () -> Bool = { OllamaConfig.isConfigured && OllamaConfig.backgroundModelEnabled }
+        var frontmostAppName: @MainActor () -> String = { NSWorkspace.shared.frontmostApplication?.localizedName ?? "" }
+    }
+
+    @ObservationIgnored private let perception: PerceptionDependencies
+    @ObservationIgnored private var lifecycleID: UUID?
+    init(perception: PerceptionDependencies = PerceptionDependencies()) {
+        self.perception = perception
+    }
+
+    @discardableResult
+    func beginPerceptionLifecycle() -> UUID {
+        stopPerceptionLifecycle()
+        let lifecycle = UUID()
+        lifecycleID = lifecycle
+        return lifecycle
+    }
+
+    func stopPerceptionLifecycle() {
+        lifecycleID = nil
+        snapshotTaskID = nil
+        snapshotTask?.cancel()
+        snapshotTask = nil
+        pendingSnapshot = nil
+        enrichmentTaskID = nil
+        enrichmentTask?.cancel()
+        enrichmentTask = nil
+        isAnalyzing = false
+        lastCapturedImage = nil
+        lastBrowserContextAt = .distantPast
+        lastEnrichFingerprint = ""
+        lastEnrichAttemptAt = .distantPast
+    }
 
     // MARK: - Start
 
     func start() async {
+        guard !Task.isCancelled else { return }
+        let lifecycle = beginPerceptionLifecycle()
+        EmailDraftCoordinator.shared.start()
         // "Local model (<tag>) · MCP: N tools", or the Ollama problem text.
         // OllamaConfig.onStatusChanged (wired in AppDelegate) re-renders it
         // whenever the server or the pulled model changes.
@@ -90,22 +138,23 @@ final class HolmesAgent {
         // inside it on purpose: the card must update in this same runloop turn,
         // with no Task hop that a slower path could win.
         BrowserBridge.shared.onLiveContext = { [weak self] context in
-            self?.applyLiveContext(context)
+            guard let self, self.lifecycleID == lifecycle else { return }
+            self.applyLiveContext(context)
         }
         BrowserBridge.shared.start()
 
         // Screen engine — Accessibility first, OCR only when AX gives nothing.
         ScreenEngine.shared.onNewSnapshot = { [weak self] result in
             guard let self else { return }
-            Task { @MainActor in
-                await self.processSnapshot(result)
-            }
+            self.enqueueSnapshot(result, lifecycle: lifecycle)
         }
 
         await ScreenEngine.shared.start()
+        guard !Task.isCancelled, lifecycleID == lifecycle else { return }
 
         // Calendar engine — monitors upcoming meetings, fires MeetingJoinEngine
         await CalendarEngine.shared.start()
+        guard !Task.isCancelled, lifecycleID == lifecycle else { return }
 
         // Agentic action brain — connects MCP servers in the background, then
         // republishes the model label with the tool count.
@@ -119,7 +168,8 @@ final class HolmesAgent {
         // runloop turn it fires, so the answer is already written by the time
         // the user opens Holmes. Nothing in this path sends: see draftReply(to:).
         IncomingMessageWatcher.shared.onIncoming = { [weak self] message in
-            self?.draftReply(to: message)
+            guard let self, self.lifecycleID == lifecycle else { return }
+            self.draftReply(to: message)
         }
         IncomingMessageWatcher.shared.start()
 
@@ -140,7 +190,12 @@ final class HolmesAgent {
     }
 
     func stop() {
+        stopPerceptionLifecycle()
+        EmailDraftCoordinator.shared.stop()
+        PlaybookEngine.shared.stop()
+        cancelReplyDraft()
         ScreenEngine.shared.stop()
+        CalendarEngine.shared.stop()
         BrowserBridge.shared.stop()
         IncomingMessageWatcher.shared.stop()
     }
@@ -170,6 +225,7 @@ final class HolmesAgent {
         }
 
         live = context
+        EmailDraftCoordinator.shared.observe(context)
         if context.source == .browserExtension {
             lastBrowserContextAt = Date()
         }
@@ -227,8 +283,11 @@ final class HolmesAgent {
         // Persist immediately. recordLiveContext drops .inferred contexts and
         // dedupes on the fingerprint, so this is safe to call on every tick; the
         // dashboard is only nudged when a new row could plausibly have landed.
+        let lifecycle = lifecycleID
         Task { @MainActor in
+            guard !Task.isCancelled, self.lifecycleID == lifecycle else { return }
             await MemoryStore.shared.recordLiveContext(context)
+            guard !Task.isCancelled, self.lifecycleID == lifecycle else { return }
             if isNewScreen { MemoryFeed.shared.markDirty() }
         }
 
@@ -254,7 +313,8 @@ final class HolmesAgent {
 
     // MARK: - Snapshot path (Accessibility / OCR)
 
-    private var isRunningOCR = false
+    @ObservationIgnored private var snapshotTask: Task<Void, Never>?
+    @ObservationIgnored private var snapshotTaskID: UUID?
     /// The newest snapshot that arrived while a previous pass's Vision/AX work
     /// was still in flight. The old behavior DROPPED it — which turned a
     /// mid-OCR app switch into a 3-4.5s context delay (nothing retried until
@@ -275,26 +335,37 @@ final class HolmesAgent {
     /// model's vision during enrichment when the text was too thin to describe.
     private var lastCapturedImage: CGImage? = nil
 
-    private func processSnapshot(_ result: CaptureResult) async {
+    func enqueueSnapshot(_ result: CaptureResult, lifecycle: UUID) {
+        guard lifecycleID == lifecycle, !result.appName.lowercased().contains("holmes") else { return }
+        guard snapshotTask == nil else {
+            pendingSnapshot = result
+            return
+        }
+        let taskID = UUID()
+        snapshotTaskID = taskID
+        snapshotTask = Task { @MainActor in
+            defer {
+                // An old OCR operation may ignore cancellation and finish
+                // after wake. It must not clear the new pass or its queue.
+                if self.snapshotTaskID == taskID {
+                    self.snapshotTaskID = nil
+                    self.snapshotTask = nil
+                    if let queued = self.pendingSnapshot {
+                        self.pendingSnapshot = nil
+                        self.enqueueSnapshot(queued, lifecycle: lifecycle)
+                    }
+                }
+            }
+            await self.processSnapshot(result, lifecycle: lifecycle)
+        }
+    }
+
+    private func processSnapshot(_ result: CaptureResult, lifecycle: UUID) async {
+        guard !Task.isCancelled, lifecycleID == lifecycle else { return }
         let appName = result.appName
         let windowTitle = result.windowTitle
         // Skip Holmes itself — only analyze other apps
         guard !appName.lowercased().contains("holmes") else { return }
-        guard !isRunningOCR else {
-            // Supersede, never drop: stash the newest snapshot and run it as
-            // soon as the in-flight pass completes.
-            pendingSnapshot = result
-            return
-        }
-        isRunningOCR = true
-        defer {
-            isRunningOCR = false
-            if let queued = pendingSnapshot {
-                pendingSnapshot = nil
-                Task { @MainActor in await self.processSnapshot(queued) }
-            }
-        }
-
         // Capture failed entirely (Screen Recording permission stale) — show a clear
         // message instead of freezing on "Analyzing your screen…", and stop early.
         if result.axOverride == "__NO_SCREEN_ACCESS__" {
@@ -348,10 +419,10 @@ final class HolmesAgent {
             axText = text
             print("[Holmes] AX text (\(text.count) chars): \(String(text.prefix(200)).replacingOccurrences(of: "\n", with: " | "))")
         } else if let image = result.image {
-            let ocr = await OCREngine.shared.recognize(image: image)
-            ocrText = ocr.fullText
+            ocrText = await perception.recognizeText(image)
+            guard !Task.isCancelled, lifecycleID == lifecycle else { return }
             axText = ""
-            print("[Holmes] OCR (\(ocr.fullText.count) chars): \(String(ocr.fullText.prefix(200)).replacingOccurrences(of: "\n", with: " | "))")
+            print("[Holmes] OCR (\(ocrText.count) chars): \(String(ocrText.prefix(200)).replacingOccurrences(of: "\n", with: " | "))")
         } else {
             axText = ""
         }
@@ -364,13 +435,13 @@ final class HolmesAgent {
         // Retina display is 200-1000ms), and the bridge delivers on THIS actor —
         // `BrowserBridge.ingest` hops in via `Task { @MainActor in … }`, so it
         // runs *inside* that suspension. That is actor reentrancy, not a race the
-        // `isRunningOCR` flag covers (it only guards processSnapshot against
+        // snapshot single-flight covers (it only guards processSnapshot against
         // itself). The gate at the top of this function was decided before the
         // await; deciding again here, off state read at THIS instant, is what
         // stops a finished OCR pass from replacing a fact with a guess — and stops
         // a mid-Vision cmd-tab from stamping the old app's reading over the new
         // one.
-        let frontmostNow = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
+        let frontmostNow = perception.frontmostAppName()
         let extensionLiveNow = Date().timeIntervalSince(lastBrowserContextAt) < Self.browserContextTTL
         // Holmes's own panel in front doesn't change WHICH app this reading is of.
         let stillSameScreen = frontmostNow.isEmpty
@@ -459,6 +530,7 @@ final class HolmesAgent {
     /// message can land after a newer one (they overlap freely), and the user
     /// must never be shown an answer to the message before last.
     @ObservationIgnored private var replyDraftSeq = 0
+    @ObservationIgnored private var replyDraftTask: Task<Void, Never>?
 
     /// How many reply drafts are being written right now. Non-zero from the
     /// instant a message is detected until its draft lands or fails — the window
@@ -521,7 +593,14 @@ final class HolmesAgent {
     /// because "what the user was doing when the message arrived" is the fact
     /// the reply is grounded in — by the time a model answers they may well have
     /// switched apps.
+    func cancelReplyDraft() {
+        replyDraftSeq += 1
+        replyDraftTask?.cancel()
+        replyDraftTask = nil
+    }
+
     private func draftReply(to message: ReplyComposer.IncomingMessage) {
+        replyDraftTask?.cancel()
         replyDraftSeq += 1
         let sequence = replyDraftSeq
         // `.unknown` is an admission that nothing has been read, not a reading.
@@ -531,26 +610,38 @@ final class HolmesAgent {
         let who = message.sender.trimmingCharacters(in: .whitespaces)
 
         replyDraftsInFlight += 1
-        Task { @MainActor in
+        let activity = WorkActivityCenter.shared.begin(title: "Drafting reply", detail: who, origin: .background)
+        let work = Task { @MainActor in
+            await WorkActivityScope.$id.withValue(activity) {
             // Balanced on every exit, including the two guards below: the
             // counter is what protects the freshly-published recall from being
             // overwritten before its draft exists (see mayPublishActivityRecall).
-            defer { replyDraftsInFlight -= 1 }
+            var didPublish = false
+            var failure = "Couldn't prepare a reply. Try again."
+            defer {
+                replyDraftsInFlight -= 1
+                if sequence == replyDraftSeq { replyDraftTask = nil }
+                if Task.isCancelled || sequence != replyDraftSeq { WorkActivityCenter.shared.cancel(activity) }
+                else { WorkActivityCenter.shared.finish(activity, outcome: didPublish ? .success : .failure,
+                    summary: didPublish ? "Your reply is ready to review" : failure) }
+            }
+            guard !Task.isCancelled else { return }
 
             // draftReply runs the topic recall FIRST and publishes it, so the
             // dashboard's REFERENCED NOW section fills in even when this call
             // comes back nil (local model not ready, unparseable answer).
-            guard let draft = await ReplyComposer.shared.draftReply(to: message, context: context) else {
+            guard let draft = await ReplyComposer.shared.draftReply(to: message, context: context, onFailure: { failure = $0 }) else {
                 print("[Holmes] Reply: no draft for \(who.isEmpty ? message.surface : who) — recall was still published")
                 return
             }
             // A newer message overtook this one while the model was thinking.
             // Its draft is the current one; this answer is already stale.
-            guard sequence == replyDraftSeq else {
+            guard !Task.isCancelled, sequence == replyDraftSeq else {
                 print("[Holmes] Reply: discarded a stale draft for \(who.isEmpty ? message.surface : who)")
                 return
             }
 
+            didPublish = true
             pendingReply = draft
             pendingReplyTo = message
             pendingReplyEdit = draft.body
@@ -567,7 +658,10 @@ final class HolmesAgent {
             if !ConfirmationBus.shared.showReplyCard() {
                 print("[Holmes] Reply card deferred — an approval is on screen; the draft is waiting in the panel")
             }
+            }
         }
+        replyDraftTask = work
+        WorkActivityCenter.shared.setCancellationHandler(activity) { work.cancel() }
     }
 
     // MARK: - Proactive playbooks
@@ -597,7 +691,8 @@ final class HolmesAgent {
 
     // MARK: - TIER 1 — enrichment (goal + entities, behind the headline)
 
-    private var isRunningEnrichment = false
+    @ObservationIgnored private var enrichmentTask: Task<Void, Never>?
+    @ObservationIgnored private var enrichmentTaskID: UUID?
     private var lastEnrichFingerprint = ""
     private var lastEnrichAttemptAt: Date = .distantPast
     /// Floor between enrichment CALLS. Each distinct screen is asked about once;
@@ -636,13 +731,13 @@ final class HolmesAgent {
     /// Asks the local model ONE question about an already-described screen: what is the
     /// user trying to get done. Single-flight, fingerprint-gated, and applied
     /// only if the user is still on the same screen when the answer lands.
-    private func enrichLiveContext(_ context: LiveContext) {
-        guard OllamaConfig.isConfigured else { return }
+    func enrichLiveContext(_ context: LiveContext) {
+        guard let lifecycle = lifecycleID, perception.canEnrich() else { return }
         // Never enrich a guess. An .inferred context has no facts to build on,
         // and dressing one up with a plausible "goal" is exactly the failure
         // mode this architecture exists to prevent.
         guard context.confidence != .inferred else { return }
-        guard !isRunningEnrichment else { return }
+        guard enrichmentTask == nil else { return }
 
         // Once per SCREEN, not once per tick: a screen already enriched has
         // nothing new to say, and the extension posts on every keystroke.
@@ -653,15 +748,20 @@ final class HolmesAgent {
         // backoff after a failed call (the fingerprint is only recorded on
         // success, so a failure re-queues rather than sticking).
         guard Date().timeIntervalSince(lastEnrichAttemptAt) >= Self.enrichFloor else { return }
-        // Local model: background enrichment is opt-in (Settings ▸ Local Model).
-        guard OllamaConfig.backgroundModelEnabled else { return }
-
-        isRunningEnrichment = true
         let requestedAt = Date()
         lastEnrichAttemptAt = requestedAt
+        let taskID = UUID()
+        enrichmentTaskID = taskID
+        let capturedImage = lastCapturedImage
 
-        Task { @MainActor in
-            defer { isRunningEnrichment = false }
+        enrichmentTask = Task { @MainActor in
+            defer {
+                if self.enrichmentTaskID == taskID {
+                    self.enrichmentTaskID = nil
+                    self.enrichmentTask = nil
+                }
+            }
+            guard !Task.isCancelled, self.lifecycleID == lifecycle else { return }
 
             // Vision escalation, narrowly scoped: a STRUCTURAL context whose text
             // came back too thin to reason about, where a real screenshot exists.
@@ -676,29 +776,26 @@ final class HolmesAgent {
                context.entities["headlineKind"] != "fallback",
                context.bodyText.count < Self.thinTextThreshold,
                Date().timeIntervalSince(lastVisionAt) > Self.visionMinInterval,
-               let image = lastCapturedImage {
+               let image = capturedImage {
                 imageBase64 = await Self.encodeForVisionOffMain(image)
+                guard !Task.isCancelled, self.lifecycleID == lifecycle else { return }
                 if imageBase64 != nil { lastVisionAt = Date() }
             }
 
             let raw: String
             do {
-                raw = try await OllamaClient.shared.complete(
-                    system: Self.enrichmentSystemPrompt,
-                    user: Self.enrichmentPrompt(for: context),
-                    maxTokens: 400,
-                    asJSON: true,
-                    schema: Self.enrichmentSchema,
-                    imageBase64: imageBase64)
+                raw = try await perception.completeEnrichment(context, imageBase64)
             } catch OllamaClient.AgentError.busy {
                 // The GPU is owned by an agent session; the screen is retried
                 // after the floor (fingerprint is only recorded on success).
                 return
             } catch {
+                guard !Task.isCancelled, self.lifecycleID == lifecycle else { return }
                 print("[Holmes] Enrichment failed — \(error.localizedDescription)")
                 return
             }
 
+            guard !Task.isCancelled, self.lifecycleID == lifecycle else { return }
             guard let parsed = Self.parseEnrichment(raw) else {
                 print("[Holmes] Enrichment: unparseable reply — ignored")
                 return
@@ -741,6 +838,7 @@ final class HolmesAgent {
     /// from what the user did last time, and tells the dashboard which rows the
     /// agent is actually leaning on.
     private func reactivateMemory(for context: LiveContext) {
+        guard let lifecycle = lifecycleID else { return }
         // Search on what IDENTIFIES this task: the enriched goal plus the
         // entities that name a specific thing. Generic keys (surface, activity)
         // are excluded — they match everything, which matches nothing useful.
@@ -768,11 +866,13 @@ final class HolmesAgent {
         let fingerprint = context.fingerprint
 
         Task { @MainActor in
+            guard !Task.isCancelled, self.lifecycleID == lifecycle else { return }
             let similar = await MemoryStore.shared.findSimilar(
                 activity: activity, terms: terms, site: site, excludingSummary: summary)
             // Surface reactivations only while the user is still on the screen
             // that triggered them.
-            guard live.fingerprint == fingerprint else { return }
+            guard !Task.isCancelled, self.lifecycleID == lifecycle,
+                  live.fingerprint == fingerprint else { return }
             relatedMemories = similar
             // Published through the spotlight rather than straight to the feed:
             // these rows matched the user's CURRENT ACTIVITY, not a subject
@@ -908,7 +1008,8 @@ final class HolmesAgent {
             focusedField: base.focusedField,
             media: base.media,
             bodyText: base.bodyText,
-            capturedAt: base.capturedAt)
+            capturedAt: base.capturedAt,
+            emailCompose: base.emailCompose)
     }
 
     /// THE GUARD. A model may only ever ADD to what Holmes already established.
@@ -1085,7 +1186,7 @@ final class HolmesAgent {
         logActivity(note: context.description)
     }
 
-    private func logActivity(note: String) {
+    func logActivity(note: String) {
         // A repeated observation is not a new activity — the perception loop
         // sees one screen many times a minute.
         if recentActivities.first?.description == note { return }

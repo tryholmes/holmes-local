@@ -157,6 +157,9 @@ final class AutonomyPolicy {
     /// old key directly — agrees with the dial without waiting for callers to
     /// migrate.
     func setLevel(_ level: AutonomyLevel, for playbookId: String) {
+        if playbookId == "email-compose", level == .observe {
+            EmailDraftCoordinator.shared.cancelAutomaticDraft()
+        }
         levels[playbookId] = level
         UserDefaults.standard.set(level.rawValue, forKey: Self.levelKey(playbookId))
         UserDefaults.standard.set(level != .observe, forKey: Self.legacyEnabledKey(playbookId))

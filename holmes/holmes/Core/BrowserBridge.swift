@@ -87,10 +87,51 @@ enum BridgeProtocol {
     static let commandResultTimeout: TimeInterval = 20
 }
 
+/// Cancellation handlers run outside the main actor. Mark synchronously so a
+/// polling drain can refuse a cancelled command before its actor cleanup runs.
+private final class BrowserCommandCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+}
+
 @Observable
 @MainActor
 final class BrowserBridge {
     static let shared = BrowserBridge()
+
+    struct AppIdentity {
+        let name: String
+        let bundleIdentifier: String?
+    }
+    struct ContextEnvironment {
+        let frontmost: () -> AppIdentity?
+        let ownBundleIdentifier: String?
+        let nameForBundle: (String) -> String?
+        var didObserveExtensionVersion: (String) -> Void = { _ in }
+
+        static var system: ContextEnvironment {
+            ContextEnvironment(frontmost: {
+                NSWorkspace.shared.frontmostApplication.map {
+                    AppIdentity(name: $0.localizedName ?? "", bundleIdentifier: $0.bundleIdentifier)
+                }
+            }, ownBundleIdentifier: Bundle.main.bundleIdentifier, nameForBundle: { bundle in
+                NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first?.localizedName
+            }, didObserveExtensionVersion: { ExtensionInstaller.noteBrowserVersion($0) })
+        }
+    }
+    @ObservationIgnored private var contextEnvironment = ContextEnvironment.system
 
     static let port = BridgeProtocol.port
     static let tokenHeader = BridgeProtocol.tokenHeader
@@ -99,6 +140,12 @@ final class BrowserBridge {
     /// Delivered on the main actor for every payload that parses into a real
     /// LiveContext. Nil-payloads (heartbeats, blank pages) never fire it.
     var onLiveContext: ((LiveContext) -> Void)?
+    @ObservationIgnored private var lastPayloadCaptureAt: [String: Date] = [:]
+    @ObservationIgnored private var browserBundlesByInstance: [String: String] = [:]
+    @ObservationIgnored private var lastForegroundBrowserInstance: String?
+    private(set) var emailComposeUnavailableReason: String?
+    private(set) var extensionVersion: String?
+    private static let composeReloadMessage = "Reload Holmes on chrome://extensions, then refresh Gmail to enable email drafting."
 
     // ── Observable state the UI reads ───────────────────────────────
     /// True while the extension is actively posting. When this is FALSE the UI
@@ -205,14 +252,14 @@ final class BrowserBridge {
         let action: String            // wire (camelCase) action name automation.js expects
         let params: [String: Any]
         let enqueuedAt: Date
+        let cancellation: BrowserCommandCancellation
     }
     /// Commands waiting for the extension to fetch them via GET /commands.
     private var pendingCommands: [PendingBrowserCommand] = []
-    /// Results that arrived before their awaiter registered (or after it gave up),
-    /// keyed by command id so a late awaiter can still collect one.
-    private var commandResults: [Int: [String: Any]] = [:]
+    /// Includes delivered commands while their producer still awaits a result.
+    private var commandCancellations: [Int: BrowserCommandCancellation] = [:]
     /// The awaiting continuations, keyed by command id. Exactly one of {result
-    /// POST, enqueue timeout, TTL expiry} resumes each — all via removeValue, so
+    /// POST, cancellation, enqueue timeout, TTL expiry} resumes each — all via removeValue, so
     /// a continuation can never be resumed twice.
     private var commandContinuations: [Int: CheckedContinuation<[String: Any], Never>] = [:]
     /// Monotonic id source. A plain incrementing Int (not a UUID/Date) so echoed
@@ -223,6 +270,21 @@ final class BrowserBridge {
         token = BridgeToken.loadOrCreate()
         pairedToken = BridgeToken.loadPaired()
     }
+
+    #if DEBUG
+    /// Isolated integration harness: real queue/parser, fake OS identity and no
+    /// token files, listening sockets, browser access or app activation.
+    init(testToken: String, environment: ContextEnvironment) {
+        token = testToken
+        contextEnvironment = environment
+    }
+    func testIngest(_ data: Data) -> LiveContext? { ingest(data) }
+    func testDrainCommands(instance: String?) -> Data { drainCommandsJSON(forInstance: instance) }
+    func testCommandResult(_ data: Data) { recordCommandResult(data) }
+    var testPendingCommandIDs: [Int] { pendingCommands.map(\.id) }
+    var testAwaitingCommandCount: Int { commandContinuations.count }
+    var testTrackedCommandCount: Int { commandCancellations.count }
+    #endif
 
     // MARK: - Lifecycle
 
@@ -247,16 +309,16 @@ final class BrowserBridge {
             onPaired: { secret in
                 Task { @MainActor in BrowserBridge.shared.notePaired(secret) }
             },
-            onCommandsPoll: {
+            onCommandsPoll: { instance in
                 // Called on a background client queue. The queue is @MainActor
                 // state, and GET /commands must return its bytes synchronously,
                 // so hop to main and block. This can't deadlock: no main-actor
                 // code ever waits on the client queue, so there is no reentrancy.
                 if Thread.isMainThread {
-                    return MainActor.assumeIsolated { BrowserBridge.shared.drainCommandsJSON() }
+                    return MainActor.assumeIsolated { BrowserBridge.shared.drainCommandsJSON(forInstance: instance) }
                 }
                 return DispatchQueue.main.sync {
-                    MainActor.assumeIsolated { BrowserBridge.shared.drainCommandsJSON() }
+                    MainActor.assumeIsolated { BrowserBridge.shared.drainCommandsJSON(forInstance: instance) }
                 }
             },
             onCommandResult: { data in
@@ -371,38 +433,109 @@ final class BrowserBridge {
     /// ("navigate", "fillField", …); `params` are its expected keys. Returns the
     /// extension's structured outcome verbatim (`{ok, refused, reason, error, …}`),
     /// or `{"error":"timeout"}` if nothing answered within `commandResultTimeout`,
+    /// or `{"error":"cancelled","cancelled":true}` when its producer stops,
     /// or `{"error": …}` if the queue is full. NEVER throws and NEVER hangs — a
     /// disconnected extension resolves to a timeout, not a stuck producer.
     func enqueueBrowserCommand(_ action: String, _ params: [String: Any]) async -> [String: Any] {
+        guard !Task.isCancelled else { return Self.cancelledCommandResult }
         expireStaleCommands()
         guard pendingCommands.count < BridgeProtocol.maxPendingCommands else {
             return ["error": "browser command queue is full (\(BridgeProtocol.maxPendingCommands) pending) — the extension may be disconnected"]
         }
         let id = nextCommandID
         nextCommandID += 1
-        pendingCommands.append(PendingBrowserCommand(id: id, action: action, params: params, enqueuedAt: Date()))
+        let cancellation = BrowserCommandCancellation()
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { (continuation: CheckedContinuation<[String: Any], Never>) in
+                guard !Task.isCancelled, !cancellation.isCancelled else {
+                    continuation.resume(returning: Self.cancelledCommandResult)
+                    return
+                }
+                // Registration and enqueue are synchronous on the main actor;
+                // a result cannot arrive before its continuation is registered.
+                commandContinuations[id] = continuation
+                commandCancellations[id] = cancellation
+                pendingCommands.append(PendingBrowserCommand(id: id, action: action, params: params,
+                    enqueuedAt: Date(), cancellation: cancellation))
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(BridgeProtocol.commandResultTimeout * 1_000_000_000))
+                    self?.timeoutCommand(id)
+                }
+            }
+        }, onCancel: { [weak self] in
+            cancellation.cancel()
+            Task { @MainActor [weak self] in
+                self?.finishCommand(id, result: Self.cancelledCommandResult)
+            }
+        })
+    }
 
-        return await withCheckedContinuation { (continuation: CheckedContinuation<[String: Any], Never>) in
-            // A result could (in principle) already be sitting here; otherwise
-            // park the continuation for recordCommandResult/timeout to resume.
-            if let existing = commandResults.removeValue(forKey: id) {
-                continuation.resume(returning: existing)
-                return
-            }
-            commandContinuations[id] = continuation
-            // Backstop: resolve with a timeout if the extension never fetches the
-            // command or never reports its result.
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: UInt64(BridgeProtocol.commandResultTimeout * 1_000_000_000))
-                BrowserBridge.shared.timeoutCommand(id)
-            }
+    /// A real on-demand DOM observation, including an explicit absence of a
+    /// composer. Never re-label the cached lastLiveContext as a fresh reading.
+    func refreshEmailComposeContext() async -> LiveContext? {
+        guard !Task.isCancelled else { return nil }
+        guard frontmostBrowserName() != nil else {
+            emailComposeUnavailableReason = "Return to the email composer to refresh its contents."
+            return nil
         }
+        guard let instance = lastForegroundBrowserInstance else {
+            emailComposeUnavailableReason = isExtensionConnected ? Self.composeReloadMessage
+                : "Connect the Holmes browser extension, then refresh Gmail to enable email drafting."
+            return nil
+        }
+        let result = await enqueueBrowserCommand("read_email_compose", ["_browserInstanceID": instance])
+        guard !Task.isCancelled, result["cancelled"] as? Bool != true else { return nil }
+        guard result["ok"] as? Bool == true,
+              let payload = result["payload"] as? [String: Any],
+              let data = try? JSONSerialization.data(withJSONObject: payload) else {
+            emailComposeUnavailableReason = (result["reason"] as? String) ?? Self.composeReloadMessage
+            return nil
+        }
+        // onLiveContext runs synchronously inside ingest. An observer may publish
+        // a newer context before that callback returns; the awaiting coordinator
+        // must not receive the superseded observation and overwrite that update.
+        guard let refreshed = ingest(data), lastLiveContext == refreshed else {
+            emailComposeUnavailableReason = "The browser changed before its fresh reading arrived. Return to the composer and try again."
+            return nil
+        }
+        emailComposeUnavailableReason = nil
+        return refreshed
+    }
+
+    /// Explicit Insert only. The extension compares the exact composer and all
+    /// headers and the expected body, then changes only that body. Auto generation
+    /// never calls this method; a nonempty rewrite requires explicit review.
+    func stageEmailDraft(_ body: String, expected: EmailComposeSnapshot) async throws -> Bool {
+        try Task.checkCancellation()
+        guard expected.source == .browser, expected.bodyReadable,
+              !EmailComposeSnapshot.isBlankBody(body), body.count <= 16_000,
+              let app = contextEnvironment.frontmost(),
+              app.bundleIdentifier == expected.appBundleIdentifier
+                || app.bundleIdentifier == contextEnvironment.ownBundleIdentifier else {
+            throw EmailComposeError.unavailable("Return to the original email composer before inserting the draft.")
+        }
+        guard let encoded = expected.identity.data(using: .utf8),
+              let identity = (try? JSONSerialization.jsonObject(with: encoded)) as? [Any],
+              let instance = identity.first as? String else {
+            throw EmailComposeError.unavailable("The original browser composer is unavailable.")
+        }
+        try Task.checkCancellation()
+        let result = await enqueueBrowserCommand("fill_email_draft", ["body": body,
+            "expected": expected.browserExpectation, "_browserInstanceID": instance])
+        try Task.checkCancellation()
+        if result["cancelled"] as? Bool == true { throw CancellationError() }
+        guard result["ok"] as? Bool == true, result["inserted"] as? Bool == true,
+              result["identity"] as? String == expected.identity else {
+            throw EmailComposeError.unavailable((result["reason"] ?? result["error"]) as? String
+                ?? "The composer could not confirm insertion. Your draft is still available to copy.")
+        }
+        return true
     }
 
     /// Drains and RETURNS the pending commands as the JSON array background.js
     /// expects — `[{"id":Int,"action":String,"params":{…}}]`, or `[]` when empty.
     /// Fetching is destructive: a command is delivered exactly once.
-    private func drainCommandsJSON() -> Data {
+    private func drainCommandsJSON(forInstance instance: String?) -> Data {
         // A GET /commands only reaches here past the token gate, and the extension's
         // worker polls it every ~2s while alive. That poll is therefore an
         // independent, focus-proof proof of life: treat it as a heartbeat so an
@@ -413,8 +546,13 @@ final class BrowserBridge {
         noteHeartbeat()
         expireStaleCommands()
         guard !pendingCommands.isEmpty else { return Data("[]".utf8) }
-        let batch = pendingCommands
-        pendingCommands.removeAll(keepingCapacity: true)
+        let batch = pendingCommands.filter {
+            guard !$0.cancellation.isCancelled else { return false }
+            guard let target = $0.params["_browserInstanceID"] as? String else { return true }
+            return target == instance
+        }
+        let delivered = Set(batch.map(\.id))
+        pendingCommands.removeAll { delivered.contains($0.id) }
         let array: [[String: Any]] = batch.map {
             ["id": $0.id, "action": $0.action, "params": $0.params]
         }
@@ -425,9 +563,8 @@ final class BrowserBridge {
         return data
     }
 
-    /// Records a POST /command-result body: resolve the awaiting continuation, or
-    /// stash the result by id if the awaiter hasn't registered yet. A result POST
-    /// is proof the extension is alive and executing, so it also beats the
+    /// Records a POST /command-result body, ignoring unrequested or late results.
+    /// A result POST is proof the extension is alive and executing, so it also beats the
     /// connection watchdog.
     private func recordCommandResult(_ data: Data) {
         noteHeartbeat()
@@ -436,21 +573,25 @@ final class BrowserBridge {
             print("[Bridge] Dropped a command-result that wasn't a JSON object with an id")
             return
         }
-        if let continuation = commandContinuations.removeValue(forKey: id) {
-            continuation.resume(returning: object)
-        } else {
-            commandResults[id] = object
-        }
+        guard let cancellation = commandCancellations[id] else { return }
+        finishCommand(id, result: cancellation.isCancelled ? Self.cancelledCommandResult : object)
+    }
+
+    private static var cancelledCommandResult: [String: Any] { ["error": "cancelled", "cancelled": true] }
+
+    /// Removing a queued command prevents future delivery. A command already
+    /// delivered may have written its body; cancellation cannot roll that back.
+    private func finishCommand(_ id: Int, result: [String: Any]) {
+        pendingCommands.removeAll { $0.id == id }
+        commandCancellations.removeValue(forKey: id)
+        commandContinuations.removeValue(forKey: id)?.resume(returning: result)
     }
 
     /// Resolves an awaiting continuation with a timeout and clears the command.
     /// Safe to call for an id already resolved — removeValue makes it a no-op.
     private func timeoutCommand(_ id: Int) {
-        pendingCommands.removeAll { $0.id == id }
-        commandResults.removeValue(forKey: id)
-        if let continuation = commandContinuations.removeValue(forKey: id) {
-            continuation.resume(returning: ["error": "timeout"])
-        }
+        let cancelled = commandCancellations[id]?.isCancelled == true
+        finishCommand(id, result: cancelled ? Self.cancelledCommandResult : ["error": "timeout"])
     }
 
     /// Drops commands the extension never fetched within the TTL, resolving any
@@ -458,14 +599,14 @@ final class BrowserBridge {
     /// forever. (The enqueue await's own timeout is the primary backstop; this is
     /// belt-and-suspenders and also reclaims the pending slot sooner.)
     private func expireStaleCommands() {
+        for id in commandCancellations.filter({ $0.value.isCancelled }).map(\.key) {
+            finishCommand(id, result: Self.cancelledCommandResult)
+        }
         let cutoff = Date().addingTimeInterval(-BridgeProtocol.commandQueueTTL)
         guard pendingCommands.contains(where: { $0.enqueuedAt < cutoff }) else { return }
         let stale = pendingCommands.filter { $0.enqueuedAt < cutoff }
-        pendingCommands.removeAll { $0.enqueuedAt < cutoff }
         for command in stale {
-            if let continuation = commandContinuations.removeValue(forKey: command.id) {
-                continuation.resume(returning: ["error": "expired before the extension fetched it"])
-            }
+            finishCommand(command.id, result: ["error": "expired before the extension fetched it"])
         }
     }
 
@@ -507,7 +648,7 @@ final class BrowserBridge {
     /// Parses the payload ON THE MAIN ACTOR (so it can read the frontmost app) and
     /// converts it into an exact LiveContext. JSON is re-decoded here rather than
     /// on the socket thread so only Sendable `Data` crosses the boundary.
-    private func ingest(_ data: Data) {
+    @discardableResult private func ingest(_ data: Data) -> LiveContext? {
         noteHeartbeat()
         // Any POST to /context — even one we later drop (background tab, not frontmost)
         // — is proof the extension is alive and posting, so it counts as an independent
@@ -516,21 +657,28 @@ final class BrowserBridge {
 
         guard var payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             print("[Bridge] Dropped a payload that wasn't a JSON object (\(data.count) bytes)")
-            return
+            return nil
         }
 
         // A background or hidden tab is not what the user is doing right now.
         // The extension labels these explicitly; narrating one would describe a
         // page the user cannot even see. The heartbeat above still counted, so
         // connectivity stays accurate.
-        if let isActiveTab = payload["isActiveTab"] as? Bool, !isActiveTab { return }
-        if let visible = payload["visible"] as? Bool, !visible { return }
+        if let isActiveTab = payload["isActiveTab"] as? Bool, !isActiveTab { return nil }
+        if let visible = payload["visible"] as? Bool, !visible { return nil }
+        if (payload["emailComposeProtocolVersion"] as? Int ?? 0) < 1 {
+            emailComposeUnavailableReason = Self.composeReloadMessage
+        }
+        let instanceID = payload["browserInstanceId"] as? String ?? ""
+        if payload["capturedAt"] != nil {
+            guard let date = EmailComposeSnapshot.browserCaptureDate(payload["capturedAt"]),
+                  date > (lastPayloadCaptureAt[instanceID] ?? .distantPast) else { return nil }
+            lastPayloadCaptureAt[instanceID] = date
+        }
 
         // The extension can only guess its macOS app name from the User-Agent
         // ("Comet" vs "Chrome" is a coin flip there), so prefer the real
         // frontmost app and keep the guess as the fallback.
-        let payloadApp = (payload["app"] as? String)?.trimmingCharacters(in: .whitespaces) ?? ""
-        if !payloadApp.isEmpty { lastBrowserApp = payloadApp }
         // The content script keeps posting for as long as its tab is the ACTIVE
         // tab of its window — which stays true after the user cmd-tabs away to
         // Xcode. Those posts describe a page the user is no longer looking at, so
@@ -540,19 +688,55 @@ final class BrowserBridge {
         // browser-outranks-OCR gate on the time of the last exact context).
         guard let frontmost = frontmostBrowserName() else {
             // The heartbeat above already counted, so connectivity stays accurate.
-            return
+            return nil
         }
         payload["app"] = frontmost
+        let foregroundApp = contextEnvironment.frontmost()
+        if !instanceID.isEmpty {
+            if foregroundApp?.bundleIdentifier != contextEnvironment.ownBundleIdentifier {
+                guard let bundle = foregroundApp?.bundleIdentifier else { return nil }
+                if payload["focused"] as? Bool == true {
+                    // The DOM document has OS focus, so this is the browser that
+                    // actually owns this extension instance (Comet and Chrome
+                    // can share a User-Agent but never an instance identity).
+                    browserBundlesByInstance[instanceID] = bundle
+                }
+                guard browserBundlesByInstance[instanceID] == bundle else { return nil }
+                lastForegroundBrowserInstance = instanceID
+            } else {
+                // Holmes's review card owns focus. Keep only the previously
+                // identified originating browser, not a background browser's tab.
+                guard browserBundlesByInstance[instanceID] != nil,
+                      instanceID == lastForegroundBrowserInstance else { return nil }
+            }
+        }
+        if foregroundApp?.bundleIdentifier != contextEnvironment.ownBundleIdentifier {
+            payload["appBundleIdentifier"] = foregroundApp?.bundleIdentifier
+        } else if let bundle = browserBundlesByInstance[instanceID] {
+            payload["appBundleIdentifier"] = bundle
+            if let name = contextEnvironment.nameForBundle(bundle) {
+                payload["app"] = name
+            }
+        }
 
         guard let context = LiveContextBuilder.fromBrowser(payload) else {
             // Not an error: heartbeats and content-free pages land here. Holmes
             // simply keeps the previous context rather than inventing one.
-            return
+            return nil
+        }
+
+        if (payload["emailComposeProtocolVersion"] as? Int ?? 0) >= 1,
+           let version = payload["extensionVersion"] as? String,
+           version.range(of: #"^[0-9]+(?:\.[0-9]+){0,3}$"#, options: .regularExpression) != nil {
+            contextEnvironment.didObserveExtensionVersion(version)
+            extensionVersion = version
+            emailComposeUnavailableReason = nil
         }
 
         lastLiveContext = context
         onLiveContext?(context)
         print("[Bridge] \(context.confidence.rawValue) · \(context.headline)")
+        return context
     }
 
     /// The honest context to show when the user is in a browser but the extension
@@ -565,7 +749,7 @@ final class BrowserBridge {
     /// case the posting tab is not what they are doing and the payload must be
     /// dropped, not relabelled with the browser they left.
     private func frontmostBrowserName() -> String? {
-        let name = NSWorkspace.shared.frontmostApplication?.localizedName ?? ""
+        let name = contextEnvironment.frontmost()?.name ?? ""
         let lower = name.lowercased()
         if Self.isBrowserName(lower) {
             lastBrowserApp = name
@@ -577,7 +761,7 @@ final class BrowserBridge {
         return nil
     }
 
-    private static let knownBrowsers: Set<String> = ["comet", "safari", "chrome", "chromium", "firefox", "arc",
+    private nonisolated static let knownBrowsers: Set<String> = ["comet", "safari", "chrome", "chromium", "firefox", "arc",
                                                      "brave", "edge", "opera", "vivaldi", "orion",
                                                      "dia", "zen"]
 
@@ -695,7 +879,7 @@ private final class BridgeServer: @unchecked Sendable {
     private let onPaired: @Sendable (String) -> Void
     /// Synchronously drains + returns the queued commands as the JSON array
     /// background.js expects. Called on the client queue; hops to the main actor.
-    private let onCommandsPoll: @Sendable () -> Data
+    private let onCommandsPoll: @Sendable (String?) -> Data
     /// Hands off a POST /command-result body (fire-and-forget, like onPayload).
     private let onCommandResult: @Sendable (Data) -> Void
 
@@ -727,7 +911,7 @@ private final class BridgeServer: @unchecked Sendable {
          onHeartbeat: @escaping @Sendable () -> Void,
          onUnauthorized: @escaping @Sendable (String) -> Void,
          onPaired: @escaping @Sendable (String) -> Void,
-         onCommandsPoll: @escaping @Sendable () -> Data,
+         onCommandsPoll: @escaping @Sendable (String?) -> Data,
          onCommandResult: @escaping @Sendable (Data) -> Void) {
         self.port = port
         self.token = token
@@ -901,7 +1085,7 @@ private final class BridgeServer: @unchecked Sendable {
         if request.method == "GET" && path == BridgeProtocol.commandsPath {
             var headers = corsHeaders(origin: origin)
             headers["Content-Type"] = "application/json"
-            write(fd, status: "200 OK", headers: headers, body: onCommandsPoll())
+            write(fd, status: "200 OK", headers: headers, body: onCommandsPoll(request.headers["x-holmes-browser-instance"]))
             return
         }
         if request.method == "POST" && path == BridgeProtocol.commandResultPath {
@@ -1128,7 +1312,7 @@ private final class BridgeServer: @unchecked Sendable {
               !origin.isEmpty, Self.isExtensionOrigin(origin) else { return headers }
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
-        headers["Access-Control-Allow-Headers"] = "Content-Type, \(BridgeProtocol.tokenHeader)"
+        headers["Access-Control-Allow-Headers"] = "Content-Type, \(BridgeProtocol.tokenHeader), X-Holmes-Browser-Instance"
         headers["Access-Control-Max-Age"] = "600"
         return headers
     }

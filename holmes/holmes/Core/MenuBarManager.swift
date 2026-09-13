@@ -1,15 +1,26 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 class MenuBarManager: NSObject {
     static let shared = MenuBarManager()
     
     private var statusItem: NSStatusItem?
     private var menu: NSMenu?
+    private var resumeTask: Task<Void, Never>?
+    private var resumeRevision: UInt64 = 0
+    private(set) var isSystemSuspended = false
     
     var isPaused: Bool = false {
         didSet {
+            guard oldValue != isPaused else { return }
             updateMenuItemTitles()
+            if isPaused {
+                stopAllWork()
+                SideIconWindowController.shared.iconState = .dormant
+            } else if !isSystemSuspended {
+                resumeObservation()
+            }
         }
     }
     
@@ -102,7 +113,7 @@ class MenuBarManager: NSObject {
     }
     
     private func updateMenuItemTitles() {
-        if let pauseItem = menu?.item(withTitle: isPaused ? "Resume Holmes" : "Pause Holmes") {
+        if let pauseItem = menu?.items.first(where: { $0.action == #selector(togglePause) }) {
             pauseItem.title = isPaused ? "Resume Holmes" : "Pause Holmes"
         }
         
@@ -144,9 +155,48 @@ class MenuBarManager: NSObject {
     
     @objc private func togglePause() {
         isPaused.toggle()
-        
-        if isPaused {
-            SideIconWindowController.shared.iconState = .dormant
+    }
+
+    /// Shared teardown for Pause, sleep/lock and termination. Invalidation is
+    /// synchronous so a response arriving after wake cannot revive old UI.
+    func stopAllWork() {
+        resumeRevision &+= 1
+        resumeTask?.cancel()
+        resumeTask = nil
+        ClickyController.shared.cancelPushToTalk()
+        EmailDraftCoordinator.shared.stop()
+        AutonomousActionRunner.shared.cancelCurrentRun()
+        ComputerUseEngine.shared.cancelRun()
+        WorkActivityCenter.shared.invalidateAll()
+        HolmesAgent.shared.stop()
+        SpeechSynthesizer.shared.stop()
+        VisualGuidanceOverlay.shared.hide()
+        ScreenGlowController.shared.set(state: .off)
+    }
+
+    func suspendForSystemEvent() {
+        guard !isSystemSuspended else { return }
+        isSystemSuspended = true
+        stopAllWork()
+    }
+
+    func resumeAfterSystemEvent() {
+        guard isSystemSuspended else { return }
+        isSystemSuspended = false
+        guard !isPaused else { return }
+        resumeObservation()
+    }
+
+    private func resumeObservation() {
+        resumeRevision &+= 1
+        let revision = resumeRevision
+        resumeTask?.cancel()
+        EmailDraftCoordinator.shared.start()
+        resumeTask = Task { @MainActor [weak self] in
+            guard let self, !self.isPaused, !self.isSystemSuspended, !Task.isCancelled else { return }
+            await HolmesAgent.shared.start()
+            guard self.resumeRevision == revision else { return }
+            self.resumeTask = nil
         }
     }
     

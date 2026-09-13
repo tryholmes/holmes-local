@@ -50,13 +50,67 @@ final class NotchViewModel: ObservableObject {
     @Published var taskName: String = ""
     @Published var taskStep: String = ""
     @Published var taskProgress: Double = 0
+    @Published var taskIsIndeterminate = true
+    @Published var taskPhase: WorkActivityCenter.Phase = .preparing
+    @Published var additionalTaskCount = 0
 
     /// Last finished run's one-liner, shown in the open panel.
     @Published var lastResult: String = ""
+    @Published var lastResultSymbol = "checkmark.circle.fill"
+    @Published var lastResultFailed = false
 
     @Published var sneakPeek = NotchSneakPeek()
 
     private var sneakPeekTask: Task<Void, Never>?
+    private var completionRevision: UInt64?
+
+    func synchronize(with center: WorkActivityCenter) {
+        let activity = center.selectedActivity
+        taskActive = activity != nil
+        taskName = activity?.title ?? ""
+        taskStep = activity?.detail ?? ""
+        taskPhase = activity?.phase ?? .preparing
+        taskProgress = activity?.progress ?? 0
+        taskIsIndeterminate = activity?.progress == nil
+        additionalTaskCount = max(0, center.activeCount - 1)
+
+        guard let completion = center.completion else {
+            if completionRevision != nil {
+                completionRevision = nil
+                lastResult = ""
+                hideSneakPeek()
+            }
+            return
+        }
+        guard completion.revision != completionRevision else { return }
+        completionRevision = completion.revision
+        let title: String
+        switch completion.outcome {
+        case .success:
+            title = "Holmes finished"
+            lastResultSymbol = "checkmark.circle.fill"
+        case .failure:
+            title = "Holmes couldn't finish"
+            lastResultSymbol = "exclamationmark.triangle.fill"
+        case .cancelled:
+            title = "Holmes stopped"
+            lastResultSymbol = "stop.circle"
+        }
+        lastResultFailed = completion.outcome == .failure
+        lastResult = completion.summary
+        // Background work and other live requests retain their continuous
+        // indicator. The outcome is still available in the expanded panel.
+        if !taskActive {
+            showSneakPeek(title: title, subtitle: completion.summary,
+                          symbol: lastResultSymbol, duration: completion.outcome == .failure ? 6 : 3.5)
+        }
+    }
+
+    func hideSneakPeek() {
+        sneakPeekTask?.cancel()
+        sneakPeekTask = nil
+        sneakPeek.show = false
+    }
 
     var effectiveClosedNotchHeight: CGFloat { closedNotchSize.height }
 

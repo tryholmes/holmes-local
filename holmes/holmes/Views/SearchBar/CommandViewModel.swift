@@ -68,6 +68,9 @@ final class CommandViewModel {
     var showOutput: Bool = false
     var matchedCommand: HolmesCommand? = nil
     var suggestions: [HolmesCommand] = []
+    @ObservationIgnored private var commandTask: Task<Void, Never>?
+    @ObservationIgnored private var commandGeneration = UUID()
+    @ObservationIgnored private var activityID: UUID?
 
     // Called by SearchBarView on appear — picks up any pending suggestion tap
     func checkPendingCommand() {
@@ -98,6 +101,7 @@ final class CommandViewModel {
     }
 
     func reset() {
+        cancelCurrentCommand()
         inputText = ""
         state = .idle
         log = []
@@ -120,6 +124,8 @@ final class CommandViewModel {
     }
 
     private func runCommand(_ text: String) {
+        cancelCurrentCommand()
+        ClickyController.shared.cancelPendingQuery()
         state = .running
         showOutput = true
         log = []
@@ -131,21 +137,78 @@ final class CommandViewModel {
             String(text.dropFirst($0.trigger.count)).trimmingCharacters(in: .whitespacesAndNewlines)
         } ?? text
 
-        Task {
-            await executeWithLLM(command: cmd, argument: arg)
+        let generation = commandGeneration
+        let id = WorkActivityCenter.shared.begin(title: cmd?.label ?? "Your request", detail: arg, origin: .user)
+        activityID = id
+        commandTask = Task {
+            await WorkActivityScope.$id.withValue(id) {
+                await executeWithLLM(command: cmd, argument: arg, generation: generation)
+            }
+            guard commandGeneration == generation else { return }
+            if Task.isCancelled {
+                WorkActivityCenter.shared.cancel(id)
+            } else if WorkActivityCenter.shared.isActive(id) {
+                let summary = log.last?.text ?? "Request finished"
+                WorkActivityCenter.shared.finish(id, outcome: state == .done ? .success : .failure, summary: summary)
+            }
+            commandTask = nil
+            activityID = nil
         }
+        WorkActivityCenter.shared.setCancellationHandler(id) { [weak self] in
+            guard let self, self.commandGeneration == generation else { return }
+            self.cancelCurrentCommand()
+            self.appendLog("Request stopped.", kind: .info)
+            self.state = .idle
+        }
+    }
+
+    private func cancelCurrentCommand() {
+        commandGeneration = UUID()
+        commandTask?.cancel()
+        commandTask = nil
+        if let activityID { WorkActivityCenter.shared.cancel(activityID) }
+        activityID = nil
+    }
+
+    private func isCurrent(_ generation: UUID) -> Bool {
+        guard commandGeneration == generation, !Task.isCancelled, let activityID else { return false }
+        return WorkActivityCenter.shared.isActive(activityID)
     }
 
     // MARK: - Real LLM execution
 
-    private func executeWithLLM(command: HolmesCommand?, argument: String) async {
+    private func executeWithLLM(command: HolmesCommand?, argument: String, generation: UUID) async {
+        guard isCurrent(generation) else { return }
         let trigger = command?.trigger ?? "/ask"
+
+        // An explicit /plan remains a plan. Plain text, /ask and /run drafting
+        // requests all produce the same editable email card before other routing.
+        if command == nil || trigger == "/ask" || trigger == "/run",
+           EmailDraftCoordinator.shared.canHandle(argument) {
+            appendLog("Drafting your email…", kind: .step)
+            let result = await EmailDraftCoordinator.shared.request(instruction: argument)
+            guard isCurrent(generation) else { return }
+            switch result {
+            case .ready(let summary):
+                appendLog(summary, kind: .success)
+                state = .done
+            case .needsContext(let message), .failed(let message):
+                appendLog(message, kind: .error)
+                state = .error
+            case .cancelled:
+                appendLog("Request cancelled", kind: .info)
+                state = .idle
+                if let activityID { WorkActivityCenter.shared.cancel(activityID, summary: "Request cancelled") }
+            }
+            return
+        }
 
         // A clear app launch is native and needs neither screen context nor a
         // model. Explicit /ask and compound requests retain their existing path.
         if command == nil || trigger == "/run",
            let appName = AppLaunchIntent.appName(in: argument) {
             let result = await AppLauncher.launch(named: appName)
+            guard isCurrent(generation) else { return }
             appendLog(result.message, kind: result.succeeded ? .success : .error)
             state = result.succeeded ? .done : .error
             return
@@ -168,7 +231,8 @@ final class CommandViewModel {
         // ReplyComposer has no send path at all, and staging still goes through
         // ActionExecutor after the user approves.
         if argL.hasPrefix("reply imessage") || argL.hasPrefix("suggest imessage reply") {
-            if await draftGroundedReply(appName: appName) { return }
+            if await draftGroundedReply(appName: appName, generation: generation) { return }
+            guard isCurrent(generation) else { return }
         }
 
         if trigger == "/run" {
@@ -203,8 +267,8 @@ final class CommandViewModel {
 
         // Agentic action path: /run runs the local model + MCP tool-use loop, which can
         // take real, multi-step actions. Everything else is a single completion.
-        if trigger == "/run" {
-            await runAgentic(argument: argument)
+        if trigger == "/run" || (command == nil && ActionRequestIntent.matches(argument)) {
+            await runAgentic(argument: argument, generation: generation)
             return
         }
 
@@ -225,24 +289,35 @@ final class CommandViewModel {
                 maxTokens: 1024,
                 priority: .agent)
         } catch OllamaClient.AgentError.serverUnreachable {
+            guard isCurrent(generation) else { return }
             appendLog("Ollama isn't running — start it in Holmes ▸ Settings ▸ Local Model and try again.", kind: .error)
             state = .error
             Task { await OllamaServer.shared.refreshAfterFailure() }
             return
         } catch OllamaClient.AgentError.modelMissing(let model) {
+            guard isCurrent(generation) else { return }
             appendLog("The local model \(model) isn't downloaded — download it in Holmes ▸ Settings ▸ Local Model.", kind: .error)
             state = .error
             Task { await OllamaServer.shared.refreshAfterFailure() }
             return
         } catch OllamaClient.AgentError.busy {
+            guard isCurrent(generation) else { return }
             appendLog("The local model is busy — try again in a moment.", kind: .error)
             state = .error
             return
+        } catch is CancellationError {
+            guard isCurrent(generation) else { return }
+            appendLog("Request cancelled", kind: .info)
+            state = .idle
+            if let activityID { WorkActivityCenter.shared.cancel(activityID, summary: "Request cancelled") }
+            return
         } catch {
+            guard isCurrent(generation) else { return }
             appendLog("Local model request failed — \(error.localizedDescription)", kind: .error)
             state = .error
             return
         }
+        guard isCurrent(generation) else { return }
 
         // Final: split into lines for readability
         log = []
@@ -269,15 +344,13 @@ final class CommandViewModel {
 
         if isMessaging && isAsk && !fullResponse.isEmpty {
             let clean = fullResponse.trimmingCharacters(in: .whitespacesAndNewlines)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                let action = PendingAction(
-                    title: "Send this reply on \(appName)",
-                    preview: clean,
-                    appName: appName,
-                    actionType: .typeMessage
-                )
-                ConfirmationBus.shared.propose(action)
-            }
+            let action = PendingAction(
+                title: "Send this reply on \(appName)",
+                preview: clean,
+                appName: appName,
+                actionType: .typeMessage
+            )
+            ConfirmationBus.shared.propose(action)
         }
     }
 
@@ -287,15 +360,24 @@ final class CommandViewModel {
 
     // MARK: - Agentic /run (local model + MCP tools)
 
-    private func runAgentic(argument: String) async {
+    private func runAgentic(argument: String, generation: UUID) async {
         let goal = argument.isEmpty ? "Help me with what's on my screen right now." : argument
         let result = await HolmesBrain.shared.run(goal: goal) { [weak self] text in
-            self?.appendLog(text, kind: .info)
+            guard let self, self.isCurrent(generation) else { return }
+            self.appendLog(text, kind: .info)
         }
+        guard isCurrent(generation) else { return }
         switch result {
         case .notConfigured:
             appendLog("\(OllamaConfig.notReadyMessage) Agentic actions need the local model.", kind: .error)
             state = .error
+        case .failed(let message):
+            appendLog(message, kind: .error)
+            state = .error
+        case .cancelled:
+            appendLog("Request cancelled", kind: .info)
+            state = .idle
+            if let activityID { WorkActivityCenter.shared.cancel(activityID, summary: "Request cancelled") }
         case .text(let final):
             if log.isEmpty { appendLog(final, kind: .success) }
             else { appendLog("Done.", kind: .success) }
@@ -308,7 +390,7 @@ final class CommandViewModel {
     /// Drafts a reply to the conversation actually on screen. Returns false when
     /// there is no readable thread — the caller then falls back to the canned
     /// availability line rather than inventing a recipient.
-    private func draftGroundedReply(appName: String) async -> Bool {
+    private func draftGroundedReply(appName: String, generation: UUID) async -> Bool {
         guard OllamaConfig.isConfigured else { return false }
         guard MessagesReader.shared.isMessagesFrontmost(),
               let thread = MessagesReader.shared.readFrontmostThread(),
@@ -327,11 +409,13 @@ final class CommandViewModel {
 
         // The user typed this command: it jumps the GPU queue instead of being
         // dropped as `.busy` behind a running playbook.
-        guard let draft = await ReplyComposer.shared.draftReply(
+        let draft = await ReplyComposer.shared.draftReply(
             to: message, context: HolmesAgent.shared.live, priority: .agent)
-        else {
-            appendLog("Couldn't draft a grounded reply (see the console for why) — falling back.", kind: .error)
-            return false
+        guard isCurrent(generation) else { return true }
+        guard let draft else {
+            appendLog("Couldn't draft a grounded reply. Try again after checking the local model.", kind: .error)
+            state = .error
+            return true
         }
 
         appendLog("Drafting: \"\(draft.body)\"", kind: .success)
@@ -378,15 +462,13 @@ final class CommandViewModel {
         appendLog("Drafting: \"\(reply)\"", kind: .success)
         state = .done
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            let action = PendingAction(
-                title: title,
-                preview: reply,
-                appName: appName,
-                actionType: .typeMessage
-            )
-            ConfirmationBus.shared.propose(action)
-        }
+        let action = PendingAction(
+            title: title,
+            preview: reply,
+            appName: appName,
+            actionType: .typeMessage
+        )
+        ConfirmationBus.shared.propose(action)
     }
 
     // MARK: - Action prompt builder
@@ -471,4 +553,3 @@ Answer directly. No intro. Max 80 words.
         }
     }
 }
-

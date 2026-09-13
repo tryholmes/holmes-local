@@ -7,6 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		AA000001000000000000114 /* ActionRunEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000114 /* ActionRunEvidence.swift */; };
+		AA000001000000000000113 /* EmailDraftCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000113 /* EmailDraftCoordinator.swift */; };
+		AA000001000000000000112 /* EmailDrafting.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000112 /* EmailDrafting.swift */; };
+		AA000001000000000000111 /* EmailDraftIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000111 /* EmailDraftIntent.swift */; };
+		AA000001000000000000110 /* MailComposeReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000110 /* MailComposeReader.swift */; };
+		AA000001000000000000109 /* EmailComposeSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000109 /* EmailComposeSnapshot.swift */; };
+		AA000001000000000000108 /* WorkActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000108 /* WorkActivity.swift */; };
 		AA000001000000000000107 /* GuidedDemoWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000107 /* GuidedDemoWindow.swift */; };
 		AA000001000000000000106 /* GuidedDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000106 /* GuidedDemoView.swift */; };
 		AA000001000000000000105 /* GuidedDemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000105 /* GuidedDemo.swift */; };
@@ -111,6 +118,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		AA000002000000000000114 /* ActionRunEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionRunEvidence.swift; sourceTree = "<group>"; };
+		AA000002000000000000113 /* EmailDraftCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailDraftCoordinator.swift; sourceTree = "<group>"; };
+		AA000002000000000000112 /* EmailDrafting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailDrafting.swift; sourceTree = "<group>"; };
+		AA000002000000000000111 /* EmailDraftIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailDraftIntent.swift; sourceTree = "<group>"; };
+		AA000002000000000000110 /* MailComposeReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailComposeReader.swift; sourceTree = "<group>"; };
+		AA000002000000000000109 /* EmailComposeSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailComposeSnapshot.swift; sourceTree = "<group>"; };
+		AA000002000000000000108 /* WorkActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkActivity.swift; sourceTree = "<group>"; };
 		AA000002000000000000107 /* GuidedDemoWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidedDemoWindow.swift; sourceTree = "<group>"; };
 		AA000002000000000000106 /* GuidedDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidedDemoView.swift; sourceTree = "<group>"; };
 		AA000002000000000000105 /* GuidedDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidedDemo.swift; sourceTree = "<group>"; };
@@ -346,6 +360,13 @@
 		AA000005000000000000007 /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				AA000002000000000000108 /* WorkActivity.swift */,
+				AA000002000000000000109 /* EmailComposeSnapshot.swift */,
+				AA000002000000000000110 /* MailComposeReader.swift */,
+				AA000002000000000000111 /* EmailDraftIntent.swift */,
+				AA000002000000000000112 /* EmailDrafting.swift */,
+				AA000002000000000000113 /* EmailDraftCoordinator.swift */,
+				AA000002000000000000114 /* ActionRunEvidence.swift */,
 				AA000002000000000000105 /* GuidedDemo.swift */,
 				AA000005000000000000030 /* Setup */,
 				AA000002000000000000103 /* AppLauncher.swift */,
@@ -569,6 +590,13 @@
 			files = (
 				AA000001000000000000107 /* GuidedDemoWindow.swift in Sources */,
 				AA000001000000000000106 /* GuidedDemoView.swift in Sources */,
+				AA000001000000000000108 /* WorkActivity.swift in Sources */,
+				AA000001000000000000109 /* EmailComposeSnapshot.swift in Sources */,
+				AA000001000000000000110 /* MailComposeReader.swift in Sources */,
+				AA000001000000000000111 /* EmailDraftIntent.swift in Sources */,
+				AA000001000000000000112 /* EmailDrafting.swift in Sources */,
+				AA000001000000000000113 /* EmailDraftCoordinator.swift in Sources */,
+				AA000001000000000000114 /* ActionRunEvidence.swift in Sources */,
 				AA000001000000000000105 /* GuidedDemo.swift in Sources */,
 				AA000001000000000000001 /* holmesApp.swift in Sources */,
 				AA000001000000000000097 /* ExtensionInstaller.swift in Sources */,
