@@ -381,7 +381,8 @@ final class MCPHTTPConnection: MCPTransport {
 
         let status = http?.statusCode ?? 0
         guard (200..<300).contains(status) else {
-            let data = try await Self.collect(bytes)
+            // Only the start of an error page is ever shown; do not drain a large one.
+            let data = try await Self.collect(bytes, limit: 16_384)
             throw MCPError.http(status, String(data: data, encoding: .utf8) ?? "")
         }
 
@@ -412,10 +413,13 @@ final class MCPHTTPConnection: MCPTransport {
         }
     }
 
-    /// Reads a whole body: a plain JSON reply or an error page.
-    private static func collect(_ bytes: URLSession.AsyncBytes) async throws -> Data {
+    /// Reads a body: a plain JSON reply in full, or an error page up to `limit` bytes.
+    private static func collect(_ bytes: URLSession.AsyncBytes, limit: Int? = nil) async throws -> Data {
         var data = Data()
-        for try await byte in bytes { data.append(byte) }
+        for try await byte in bytes {
+            data.append(byte)
+            if let limit, data.count >= limit { break }
+        }
         return data
     }
 
