@@ -167,6 +167,7 @@ struct MCPHTTPTransportTests {
         defer { URLProtocol.unregisterClass(ScriptedMCPServer.self) }
 
         try await streamedReplyOnOpenConnection()
+        try await eventsSplitAcrossChunksWithCRLF()
         print("Passed \(checks) MCP HTTP transport regression checks")
     }
 
@@ -184,5 +185,19 @@ struct MCPHTTPTransportTests {
         expect(elapsed < 10, "Reply must not wait for the connection to close (took \(elapsed)s)")
         await eventually("connection release") { ScriptedMCPServer.released == ["tools/call"] }
         expect(ScriptedMCPServer.released == ["tools/call"], "The open stream is cancelled once the response is read")
+    }
+
+    // TEST: eventsSplitAcrossChunksWithCRLF
+    /// Bytes land in arbitrary pieces and servers may use CRLF; data may span lines.
+    static func eventsSplitAcrossChunksWithCRLF() async throws {
+        ScriptedMCPServer.reset()
+        ScriptedMCPServer.script("tools/call", .init(steps: [
+            .chunk("event: mess"), .wait(0.05),
+            .chunk("age\r\nid: 7\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":{{id}},\r\n"), .wait(0.05),
+            .chunk("data: \"result\":{\"content\":[{\"type\":\"text\",\"text\":\"pieces\"}]}}\r\n"), .wait(0.05),
+            .chunk("\r\n"), .hold
+        ]))
+        let result = try await connection().callTool("echo", arguments: [:])
+        expect(result.text == "pieces", "Multi line data across chunk boundaries with CRLF is reassembled")
     }
 }
