@@ -252,6 +252,12 @@ Holmes is mostly hands-off: it runs in the menu bar and acts on its own. But you
 | **Hold Fn (globe)** | Push-to-talk: ask a question, Holmes answers out loud and points on screen |
 | `Cmd + Option + Esc` | Emergency stop for a computer-control run |
 
+Say **“open Spotify”** while holding Fn, or type it into the command bar. Explicit
+app-opening requests use the native macOS launcher immediately, including polite
+forms such as “can you open Spotify?”. They work without Ollama or the Computer
+control toggle; clicking and typing inside apps still require that toggle.
+Holmes reports the actual launch result, including when an app is not installed.
+
 - **Settings → Automations**: per-playbook on/off toggles.
 - **Settings → Local Model**: server status, model picker and download, and under Advanced the Context window, Keep model loaded, Let the model think before acting, Click coordinates and Start Ollama automatically controls.
 - **Main panel → Drafts**: everything Holmes has prepared; tap to re-open the review card.

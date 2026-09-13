@@ -15,10 +15,10 @@
 //    • HolmesBrain           — the existing computer-control agent (the DO path).
 //    • ScreenGlowController   — the ambient thinking/ready edge glow + haptics.
 //
-//  The router has Clicky's two modes: ASK/TEACH (answer + draw, never clicks) and
-//  AGENT (HolmesBrain drives the Mac). Only the AGENT branch touches computer
-//  control, and that path self-enforces the ComputerUseEngine master switch — the
-//  ASK/TEACH branch needs only Screen Recording for the screenshot.
+//  Explicit app-opening requests use macOS's native launcher. Other requests
+//  use ASK/TEACH (answer + draw) or AGENT (HolmesBrain drives the Mac). Mouse and
+//  keyboard actions remain behind ComputerUseEngine's master switch; ASK/TEACH
+//  needs Screen Recording for the screenshot.
 //
 //  ── Attribution ────────────────────────────────────────────────────
 //  The companion loop this orchestrates — global hotkey → dictate → decide
@@ -136,12 +136,25 @@ final class ClickyController {
 
     // MARK: - Router (Clicky's two modes)
 
-    /// Routes a query to either the ASK/TEACH pipeline (answer aloud + draw on
-    /// screen) or the AGENT pipeline (HolmesBrain drives the Mac). This is the one
-    /// place voice and text converge.
+    /// Handles explicit native app launches first, then routes questions to
+    /// ASK/TEACH and other action requests to the AGENT pipeline.
     func handle(query: String) async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
+        // Opening an explicitly requested app is a native macOS operation. It
+        // needs neither the model nor permission to post mouse/keyboard events.
+        // Do this before the question heuristic, so "can you open Spotify?"
+        // actually opens Spotify instead of asking the model to describe it.
+        if let appName = AppLaunchIntent.appName(in: trimmed) {
+            ScreenGlowController.shared.set(state: .thinking)
+            let result = await AppLauncher.launch(named: appName)
+            ScreenGlowController.shared.set(state: result.succeeded ? .ready : .off)
+            NotchWindowController.shared.flashAction(
+                result.message, subtitle: "", symbol: result.succeeded ? "app" : "exclamationmark.circle")
+            await speakIfEnabled(result.message)
+            return
+        }
 
         if Self.isAgentIntent(trimmed) {
             await runAgent(goal: trimmed)
@@ -224,11 +237,10 @@ final class ClickyController {
         switch result {
         case .notConfigured:
             await speakIfEnabled(Self.notReadySpoken)
-        case .text:
-            // A short confirmation, not the whole transcript. If computer control
-            // was off, HolmesBrain already narrated that in-run; this just closes
-            // the loop.
-            await speakIfEnabled("All done.")
+        case .text(let message):
+            // A refusal or launch failure is still a text result. Read the actual
+            // outcome instead of claiming every completed request succeeded.
+            await speakIfEnabled(String(message.prefix(400)))
         }
     }
 

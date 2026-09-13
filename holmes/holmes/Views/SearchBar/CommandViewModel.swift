@@ -90,8 +90,8 @@ final class CommandViewModel {
     }
 
     func submit() {
-        guard !inputText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        let text = inputText.trimmingCharacters(in: .whitespaces)
+        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
         matchedCommand = resolveCommand(from: text)
         suggestions = []
         runCommand(text)
@@ -115,7 +115,8 @@ final class CommandViewModel {
     }
 
     private func resolveCommand(from text: String) -> HolmesCommand? {
-        HolmesCommand.all.first { text.lowercased().hasPrefix($0.trigger) }
+        let firstWord = text.split(maxSplits: 1, whereSeparator: \.isWhitespace).first?.lowercased()
+        return HolmesCommand.all.first { $0.trigger == firstWord }
     }
 
     private func runCommand(_ text: String) {
@@ -124,7 +125,11 @@ final class CommandViewModel {
         log = []
 
         let cmd = matchedCommand
-        let arg = text.drop(while: { !$0.isWhitespace }).trimmingCharacters(in: .whitespaces)
+        // Strip only a recognized slash command. Plain text is the whole
+        // request: "open Spotify" must not silently become "Spotify".
+        let arg = cmd.map {
+            String(text.dropFirst($0.trigger.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        } ?? text
 
         Task {
             await executeWithLLM(command: cmd, argument: arg)
@@ -134,13 +139,24 @@ final class CommandViewModel {
     // MARK: - Real LLM execution
 
     private func executeWithLLM(command: HolmesCommand?, argument: String) async {
+        let trigger = command?.trigger ?? "/ask"
+
+        // A clear app launch is native and needs neither screen context nor a
+        // model. Explicit /ask and compound requests retain their existing path.
+        if command == nil || trigger == "/run",
+           let appName = AppLaunchIntent.appName(in: argument) {
+            let result = await AppLauncher.launch(named: appName)
+            appendLog(result.message, kind: result.succeeded ? .success : .error)
+            state = result.succeeded ? .done : .error
+            return
+        }
+
         let agent = HolmesAgent.shared
         let appName = agent.currentContext.appName.isEmpty
             ? ScreenEngine.shared.latestActiveApp
             : agent.currentContext.appName
         let contextSummary = agent.currentContext.description
         let ocrText = agent.lastOCRText
-        let trigger = command?.trigger ?? "/ask"
 
         // ── Instant commands: no model at all ─────────────────────────────────
         // Pure local logic (calendar + AX reads), so they work even when Ollama is down.
@@ -455,5 +471,4 @@ Answer directly. No intro. Max 80 words.
         }
     }
 }
-
 

@@ -76,42 +76,13 @@ final class HolmesBrain {
     /// launch intent qualifies; anything with a further task ("open Safari and
     /// search for…") goes to the model.
     nonisolated static func openAppIntent(in goal: String) -> String? {
-        let trimmed = goal.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pattern = #"^(?:please\s+|can you\s+|could you\s+|hey\s+)*(?:open(?:\s+up)?|launch|start|switch\s+to|go\s+to|bring\s+up)\s+(?:the\s+|my\s+)?([a-z0-9 .'&-]{2,40}?)(?:\s+(?:app|application))?(?:\s+(?:for\s+me|please|now))?[.!]?$"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
-              let match = regex.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
-              let range = Range(match.range(at: 1), in: trimmed) else { return nil }
-        var name = String(trimmed[range]).trimmingCharacters(in: .whitespacesAndNewlines)
-        // "apple notes" / "the apple calendar" → "notes" / "calendar"
-        for prefix in ["apple ", "the "] where name.lowercased().hasPrefix(prefix) {
-            name = String(name.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-        }
-        // "open the file", "open settings for X", "open a new tab" are not launches.
-        let notApps: Set<String> = ["it", "this", "that", "file", "files", "folder", "link", "tab", "window", "menu", "settings", "preferences", "a new tab", "new tab", "new window"]
-        guard !notApps.contains(name.lowercased()), !name.lowercased().contains(" and "), !name.lowercased().contains(" then ") else { return nil }
-        return name
+        AppLaunchIntent.appName(in: goal)
     }
 
-    /// True only when `name` is EXACTLY an installed or running application
-    /// (case-insensitive). The fast lanes above must not rely on the executor's
-    /// prefix match: "write hello world in swift" would otherwise launch Swift
-    /// Playgrounds and the model would never see the goal.
+    /// Use the same exact name/alias/bundle-ID resolution as the native launcher.
+    /// Prefix guesses remain limited to the model's explicit computer tool.
     nonisolated static func isExactInstalledApp(_ name: String) -> Bool {
-        let lowered = name.lowercased()
-        if NSWorkspace.shared.runningApplications.contains(where: { $0.localizedName?.lowercased() == lowered }) {
-            return true
-        }
-        let fm = FileManager.default
-        let folders = [
-            "/Applications", "/Applications/Utilities",
-            "/System/Applications", "/System/Applications/Utilities",
-            NSHomeDirectory() + "/Applications"
-        ]
-        for folder in folders {
-            guard let entries = try? fm.contentsOfDirectory(atPath: folder) else { continue }
-            if entries.contains(where: { $0.lowercased() == lowered + ".app" }) { return true }
-        }
-        return false
+        AppLauncher.resolve(named: name) != nil
     }
 
     /// A hosted model can read dozens of MCP tool schemas per turn; a local 4B
