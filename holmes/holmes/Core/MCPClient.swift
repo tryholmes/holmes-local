@@ -287,12 +287,19 @@ final class MCPHTTPConnection: MCPTransport {
     private var sessionID: String?
     private var negotiatedVersion = MCPProtocol.version
 
+    /// Upper bound on one JSON-RPC exchange, headers to response. The URLRequest
+    /// timeout only fires when the connection goes quiet, so a stream that keeps
+    /// sending keepalive comments but never answers would otherwise wait forever.
+    /// Matches the stdio transport's per-request timeout.
+    var requestTimeout: TimeInterval = 120
+
     enum MCPError: LocalizedError {
-        case http(Int, String), badResponse(String)
+        case http(Int, String), badResponse(String), timeout
         var errorDescription: String? {
             switch self {
             case .http(let code, let body): return "HTTP \(code): \(body.prefix(200))"
             case .badResponse(let m):       return m
+            case .timeout:                  return "MCP request timed out"
             }
         }
     }
@@ -352,10 +359,20 @@ final class MCPHTTPConnection: MCPTransport {
         let id = nextRequestID()
         let payload: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
         let body = try JSONSerialization.data(withJSONObject: payload)
+        let request = buildRequest(body: body)
 
+        let obj = try await withDeadline { [self] in try await exchange(request, id: id) }
+        if let error = obj["error"] as? [String: Any] {
+            throw MCPError.badResponse(error["message"] as? String ?? "MCP error")
+        }
+        return obj["result"] as? [String: Any] ?? [:]
+    }
+
+    /// One POST and its reply: the JSON-RPC response object for request `id`.
+    private func exchange(_ request: URLRequest, id: Int) async throws -> [String: Any] {
         // bytes(for:) returns once the headers are in, so an SSE reply can be consumed
         // incrementally instead of waiting for the server to close the connection.
-        let (bytes, response) = try await URLSession.shared.bytes(for: buildRequest(body: body))
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
         // Once the response is in hand the rest of an open SSE stream is of no use;
         // tearing the task down frees the connection instead of leaving it to idle out.
         defer { bytes.task.cancel() }
@@ -369,20 +386,30 @@ final class MCPHTTPConnection: MCPTransport {
         }
 
         let ctype = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
-        let obj: [String: Any]
         if ctype.contains("text/event-stream") {
-            obj = try await Self.firstResponse(matching: id, in: bytes)
-        } else {
-            let data = try await Self.collect(bytes)
-            guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                throw MCPError.badResponse("no JSON-RPC object in response")
+            return try await Self.firstResponse(matching: id, in: bytes)
+        }
+        let data = try await Self.collect(bytes)
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw MCPError.badResponse("no JSON-RPC object in response")
+        }
+        return obj
+    }
+
+    /// Runs `operation` and fails with `.timeout` if it outlives `requestTimeout`.
+    /// Cancelling the group cancels the URLSession task behind a stalled stream.
+    private func withDeadline<T>(_ operation: @escaping () async throws -> T) async throws -> T {
+        let timeout = requestTimeout
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw MCPError.timeout
             }
-            obj = parsed
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw MCPError.timeout }
+            return first
         }
-        if let error = obj["error"] as? [String: Any] {
-            throw MCPError.badResponse(error["message"] as? String ?? "MCP error")
-        }
-        return obj["result"] as? [String: Any] ?? [:]
     }
 
     /// Reads a whole body: a plain JSON reply or an error page.
