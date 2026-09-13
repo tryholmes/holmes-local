@@ -167,6 +167,7 @@ struct MCPHTTPTransportTests {
         defer { URLProtocol.unregisterClass(ScriptedMCPServer.self) }
 
         try await streamedReplyOnOpenConnection()
+        try await contentTypeCaseIsIgnored()
         try await eventsSplitAcrossChunksWithCRLF()
         try await otherMessagesOnTheStreamAreSkipped()
         try await jsonReplyAndSessionHeader()
@@ -193,6 +194,19 @@ struct MCPHTTPTransportTests {
         expect(elapsed < 10, "Reply must not wait for the connection to close (took \(elapsed)s)")
         await eventually("connection release") { ScriptedMCPServer.released == ["tools/call"] }
         expect(ScriptedMCPServer.released == ["tools/call"], "The open stream is cancelled once the response is read")
+    }
+
+    // TEST: contentTypeCaseIsIgnored
+    /// Media types are case insensitive; a cased header must still take the SSE path.
+    static func contentTypeCaseIsIgnored() async throws {
+        ScriptedMCPServer.reset()
+        ScriptedMCPServer.script("tools/call", .init(
+            headers: ["Content-Type": "Text/Event-Stream; charset=utf-8"],
+            steps: [.chunk(toolResponse("cased")), .hold]))
+        let started = Date()
+        let result = try await connection().callTool("echo", arguments: [:])
+        expect(result.text == "cased", "A differently cased event stream content type is parsed as SSE")
+        expect(Date().timeIntervalSince(started) < 10, "It completes without waiting for the connection to close")
     }
 
     // TEST: eventsSplitAcrossChunksWithCRLF
