@@ -1,6 +1,4 @@
 import SwiftUI
-import Speech
-import AVFoundation
 import Observation
 
 enum SearchState {
@@ -15,18 +13,13 @@ enum SearchState {
 class SearchViewModel {
     var searchText: String = ""
     var state: SearchState = .idle
-    var isListening: Bool = false
-    var audioLevel: CGFloat = 0
+    var isListening: Bool { VoiceInputController.shared.isListening }
+    var partialTranscript: String { VoiceInputController.shared.partialTranscript }
     var suggestions: [String] = []
     var showResponse: Bool = false
     var responseText: String = ""
     var responseSubtitle: String = ""
 
-    private var audioEngine: AVAudioEngine?
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-    
     init() {
         setupDefaultSuggestions()
     }
@@ -67,95 +60,9 @@ class SearchViewModel {
         responseSubtitle = ""
     }
     
-    func startListening() {
-        guard !isListening else { return }
-        
-        SFSpeechRecognizer.requestAuthorization { [weak self] status in
-            DispatchQueue.main.async {
-                guard status == .authorized else { return }
-                self?.beginRecording()
-            }
-        }
-    }
-    
-    private func beginRecording() {
-        isListening = true
-        state = .listening
-        
-        audioEngine = AVAudioEngine()
-        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        
-        guard let audioEngine = audioEngine,
-              let recognitionRequest = recognitionRequest,
-              let speechRecognizer = speechRecognizer else {
-            return
-        }
-        
-        recognitionRequest.shouldReportPartialResults = true
-        
-        let inputNode = audioEngine.inputNode
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-        
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
-            self?.recognitionRequest?.append(buffer)
-            
-            let level = self?.calculateAudioLevel(buffer: buffer) ?? 0
-            DispatchQueue.main.async {
-                self?.audioLevel = level
-            }
-        }
-        
-        audioEngine.prepare()
-        try? audioEngine.start()
-        
-        recognitionTask = speechRecognizer.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-            if let result = result {
-                DispatchQueue.main.async {
-                    self?.searchText = result.bestTranscription.formattedString
-                }
-            }
-            
-            if error != nil || (result?.isFinal ?? false) {
-                DispatchQueue.main.async {
-                    self?.stopListening()
-                }
-            }
-        }
-    }
-    
-    private func calculateAudioLevel(buffer: AVAudioPCMBuffer) -> CGFloat {
-        guard let channelData = buffer.floatChannelData?[0] else { return 0 }
-        let frameLength = Int(buffer.frameLength)
-        
-        var sum: Float = 0
-        for i in 0..<frameLength {
-            sum += abs(channelData[i])
-        }
-        
-        let average = sum / Float(frameLength)
-        return CGFloat(min(average * 10, 1.0))
-    }
-    
-    func stopListening() {
-        audioEngine?.stop()
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
-        
-        audioEngine = nil
-        recognitionRequest = nil
-        recognitionTask = nil
-        
-        isListening = false
-        state = searchText.isEmpty ? .idle : .results
-        audioLevel = 0
-    }
-    
     func reset() {
         searchText = ""
         state = .idle
-        isListening = false
-        audioLevel = 0
         showResponse = false
         responseText = ""
         responseSubtitle = ""
