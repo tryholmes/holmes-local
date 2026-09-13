@@ -168,6 +168,7 @@ struct MCPHTTPTransportTests {
 
         try await streamedReplyOnOpenConnection()
         try await eventsSplitAcrossChunksWithCRLF()
+        try await otherMessagesOnTheStreamAreSkipped()
         print("Passed \(checks) MCP HTTP transport regression checks")
     }
 
@@ -199,5 +200,19 @@ struct MCPHTTPTransportTests {
         ]))
         let result = try await connection().callTool("echo", arguments: [:])
         expect(result.text == "pieces", "Multi line data across chunk boundaries with CRLF is reassembled")
+    }
+
+    // TEST: otherMessagesOnTheStreamAreSkipped
+    /// Notifications, server requests and replies to other ids share the stream.
+    static func otherMessagesOnTheStreamAreSkipped() async throws {
+        ScriptedMCPServer.reset()
+        ScriptedMCPServer.script("tools/call", .init(steps: [
+            .chunk(event(["jsonrpc": "2.0", "method": "notifications/message", "params": ["level": "info", "data": "hi"]])),
+            .chunk(event(["jsonrpc": "2.0", "id": 900, "method": "sampling/createMessage", "params": [:]])),
+            .chunk(event(["jsonrpc": "2.0", "id": 901, "result": ["content": [["type": "text", "text": "not mine"]]]])),
+            .chunk(toolResponse("mine")), .hold
+        ]))
+        let result = try await connection().callTool("echo", arguments: [:])
+        expect(result.text == "mine", "Only the response echoing our id completes the call")
     }
 }
