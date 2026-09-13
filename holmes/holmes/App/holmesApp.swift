@@ -604,6 +604,8 @@ struct PrivacySettingsView: View {
     @State private var mcpServerEnabled = MCPServer.isEnabledByUser
     @State private var bridge = BrowserBridge.shared
     @State private var copiedToken = false
+    @State private var copiedExtensionPath = false
+    @State private var extensionError: String?
     // Read straight from the backing default (a plain `static let` key, not the
     // @MainActor engine) so the initializer touches no isolated state.
     @State private var computerUseEnabled = UserDefaults.standard.bool(forKey: ComputerUseEngine.enabledDefaultsKey)
@@ -617,130 +619,150 @@ struct PrivacySettingsView: View {
     @State private var screenRecordingGranted: Bool? = nil
 
     var body: some View {
-        Form {
-            LabeledContent("Screen Recording") {
-                HStack {
-                    Image(systemName: screenRecordingGranted == true ? "checkmark.circle.fill"
-                          : screenRecordingGranted == false ? "xmark.circle.fill" : "hourglass.circle")
-                        .foregroundColor(screenRecordingGranted == true ? .green
-                                         : screenRecordingGranted == false ? .red : .secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                browserExtensionSetup
 
-                    Button("Open Settings") {
-                        PermissionManager.openScreenRecordingSettings()
-                    }
-                }
-            }
-            .task {
-                let granted = await Task.detached(priority: .userInitiated) {
-                    PermissionManager.checkScreenRecordingPermission()
-                }.value
-                screenRecordingGranted = granted
-            }
+                Divider()
 
-            LabeledContent("Accessibility") {
-                HStack {
-                    Image(systemName: PermissionManager.checkAccessibilityPermission() ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundColor(PermissionManager.checkAccessibilityPermission() ? .green : .red)
+                LabeledContent("Screen Recording") {
+                    HStack {
+                        Image(systemName: screenRecordingGranted == true ? "checkmark.circle.fill"
+                              : screenRecordingGranted == false ? "xmark.circle.fill" : "hourglass.circle")
+                            .foregroundColor(screenRecordingGranted == true ? .green
+                                             : screenRecordingGranted == false ? .red : .secondary)
 
-                    Button("Open Settings") {
-                        PermissionManager.openAccessibilitySettings()
-                    }
-                }
-            }
-
-            LabeledContent("Calendar") {
-                HStack {
-                    Image(systemName: PermissionManager.checkCalendarPermission() ? "checkmark.circle.fill" : "xmark.circle.fill")
-                        .foregroundColor(PermissionManager.checkCalendarPermission() ? .green : .orange)
-
-                    Button("Open Settings") {
-                        PermissionManager.openCalendarSettings()
-                    }
-                }
-            }
-
-            Divider()
-
-            // Computer control (OpenClicky-derived pixel mouse/keyboard). Off by
-            // default; only reachable on user-initiated runs, never playbooks.
-            Toggle("Computer control", isOn: $computerUseEnabled)
-                .onChange(of: computerUseEnabled) { _, newValue in
-                    ComputerUseEngine.shared.isEnabled = newValue
-                }
-            Text("Lets Holmes click and type on your Mac when you ask it to. Off by default. Irreversible actions like Send/Delete still ask first. Stop any run instantly with ⌘⌥Esc.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            // Stale-grant banner: macOS evaluates Accessibility trust when a
-            // process LAUNCHES, so a grant made while Holmes is running is not
-            // seen by this process until it relaunches — the #1 cause of "I
-            // granted it but clicks do nothing". `computerUseEnabled` (the
-            // @State) is in the condition so flipping the toggle re-renders
-            // this immediately; the helper re-probes AXIsProcessTrusted().
-            if computerUseEnabled && PermissionManager.needsRelaunchForAccessibility() {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.orange)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("You granted Accessibility, but macOS applies it only on relaunch — click Relaunch and Holmes will come back able to click and type. (If you haven't granted it yet, do that first via Open Settings above.)")
-                            .font(.caption)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Button("Relaunch Holmes") {
-                            PermissionManager.relaunchApp()
+                        Button("Open Settings") {
+                            PermissionManager.openScreenRecordingSettings()
                         }
                     }
                 }
-                .padding(10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.orange.opacity(0.12))
-                )
-            }
+                .task {
+                    let granted = await Task.detached(priority: .userInitiated) {
+                        PermissionManager.checkScreenRecordingPermission()
+                    }.value
+                    screenRecordingGranted = granted
+                }
 
-            // Clicky self-test — proves each layer independently: it flashes the
-            // on-screen pointer ring (drawing), speaks a line (voice), and posts one
-            // harmless real keystroke via ComputerUseEngine (Accessibility/CGEvent),
-            // then reports exactly which layers worked and why any didn't.
-            HStack(spacing: 8) {
-                Button(isTestingClicky ? "Testing…" : "Test Holmes") {
-                    Task { @MainActor in
-                        isTestingClicky = true
-                        clickyTestResult = nil
-                        clickyTestResult = await runClickyTest()
-                        isTestingClicky = false
+                LabeledContent("Accessibility") {
+                    HStack {
+                        Image(systemName: PermissionManager.checkAccessibilityPermission() ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundColor(PermissionManager.checkAccessibilityPermission() ? .green : .red)
+
+                        Button("Open Settings") {
+                            PermissionManager.openAccessibilitySettings()
+                        }
                     }
                 }
-                .controlSize(.small)
-                .disabled(isTestingClicky)
-                Text("Flashes the pointer ring, speaks a line, and posts one harmless keystroke.")
-                    .font(.caption)
+
+                LabeledContent("Calendar") {
+                    HStack {
+                        Image(systemName: PermissionManager.checkCalendarPermission() ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundColor(PermissionManager.checkCalendarPermission() ? .green : .orange)
+
+                        Button("Open Settings") {
+                            PermissionManager.openCalendarSettings()
+                        }
+                    }
+                }
+
+                Divider()
+
+                // Computer control (OpenClicky-derived pixel mouse/keyboard). Off by
+                // default; only reachable on user-initiated runs, never playbooks.
+                Toggle("Computer control", isOn: $computerUseEnabled)
+                    .onChange(of: computerUseEnabled) { _, newValue in
+                        ComputerUseEngine.shared.isEnabled = newValue
+                    }
+                Text("Lets Holmes click and type on your Mac when you ask it to. Off by default. Irreversible actions like Send/Delete still ask first. Stop any run instantly with ⌘⌥Esc.")
+                    .font(NoirFonts.caption())
                     .foregroundColor(.secondary)
-            }
-            if let clickyTestResult {
-                Text(clickyTestResult)
-                    .font(.caption)
-                    .foregroundColor(clickyTestResult.hasPrefix("\u{2713}") ? .green : .orange)
-                    .textSelection(.enabled)
+
+                // Stale-grant banner: macOS evaluates Accessibility trust when a
+                // process LAUNCHES, so a grant made while Holmes is running is not
+                // seen by this process until it relaunches — the #1 cause of "I
+                // granted it but clicks do nothing". `computerUseEnabled` (the
+                // @State) is in the condition so flipping the toggle re-renders
+                // this immediately; the helper re-probes AXIsProcessTrusted().
+                if computerUseEnabled && PermissionManager.needsRelaunchForAccessibility() {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("You granted Accessibility, but macOS applies it only on relaunch — click Relaunch and Holmes will come back able to click and type. (If you haven't granted it yet, do that first via Open Settings above.)")
+                                .font(NoirFonts.caption())
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button("Relaunch Holmes") {
+                                PermissionManager.relaunchApp()
+                            }
+                        }
+                    }
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.orange.opacity(0.12))
+                    )
+                }
+
+                // Clicky self-test — proves each layer independently: it flashes the
+                // on-screen pointer ring (drawing), speaks a line (voice), and posts one
+                // harmless real keystroke via ComputerUseEngine (Accessibility/CGEvent),
+                // then reports exactly which layers worked and why any didn't.
+                HStack(spacing: 8) {
+                    Button(isTestingClicky ? "Testing…" : "Test Holmes") {
+                        Task { @MainActor in
+                            isTestingClicky = true
+                            clickyTestResult = nil
+                            clickyTestResult = await runClickyTest()
+                            isTestingClicky = false
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(isTestingClicky)
+                    Text("Flashes the pointer ring, speaks a line, and posts one harmless keystroke.")
+                        .font(NoirFonts.caption())
+                        .foregroundColor(.secondary)
+                }
+                if let clickyTestResult {
+                    Text(clickyTestResult)
+                        .font(NoirFonts.caption())
+                        .foregroundColor(clickyTestResult.hasPrefix("\u{2713}") ? .green : .orange)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Divider()
+
+                Toggle("Share screen context with local MCP clients", isOn: $mcpServerEnabled)
+                    .onChange(of: mcpServerEnabled) { _, newValue in
+                        UserDefaults.standard.set(newValue, forKey: MCPServer.enabledDefaultsKey)
+                        if newValue {
+                            MCPServer.shared.start()
+                        } else {
+                            MCPServer.shared.stop()
+                        }
+                    }
+                Text("Off by default. When on, any process on this Mac can read what's on your screen through Holmes's MCP server at 127.0.0.1:5767 — enable only if you use a local MCP client like Claude Desktop.")
+                    .font(NoirFonts.caption())
+                    .foregroundColor(.secondary)
+
+                Divider()
+
+                // Holmes Local's privacy story in one place: the model is on this
+                // Mac, so there is no "sent to produce that result" clause any more.
+                Text("Everything runs on this Mac by default. Screen context, the goal behind it, the replies Holmes drafts, and the commands it runs are all produced by the local model through Ollama on this machine. ElevenLabs is the only cloud service Holmes itself calls, and it stays off until you enter a key under Voice. Anything you connect yourself (an MCP server such as Composio, or an Ollama host on another machine) receives what the README's Privacy section describes.")
+                    .font(NoirFonts.caption())
+                    .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+        }
+        .scrollIndicators(.visible)
+    }
 
-            Divider()
-
-            Toggle("Share screen context with local MCP clients", isOn: $mcpServerEnabled)
-                .onChange(of: mcpServerEnabled) { _, newValue in
-                    UserDefaults.standard.set(newValue, forKey: MCPServer.enabledDefaultsKey)
-                    if newValue {
-                        MCPServer.shared.start()
-                    } else {
-                        MCPServer.shared.stop()
-                    }
-                }
-            Text("Off by default. When on, any process on this Mac can read what's on your screen through Holmes's MCP server at 127.0.0.1:5767 — enable only if you use a local MCP client like Claude Desktop.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            Divider()
-
+    private var browserExtensionSetup: some View {
+        VStack(alignment: .leading, spacing: 12) {
             // The browser bridge carries the full contents of every page the
             // extension reads, so its state is privacy state — the user should
             // never have to guess whether something is connected to this port.
@@ -749,11 +771,11 @@ struct PrivacySettingsView: View {
                     Image(systemName: bridgeIcon)
                         .foregroundColor(bridgeColor)
                     Text(bridgeStatus)
-                        .font(.caption)
+                        .font(NoirFonts.caption())
                 }
             }
             Text(bridgeDetail)
-                .font(.caption)
+                .font(NoirFonts.caption())
                 .foregroundColor(.secondary)
             // Pairing is a deliberate act. The extension mints its own secret, and
             // Holmes will not adopt one on its own initiative — a loopback port is
@@ -775,14 +797,45 @@ struct PrivacySettingsView: View {
                         Text("No Chromium browser found")
                     }
                     ForEach(browsers) { b in
-                        Button(b.name) { try? ExtensionInstaller.beginGuidedInstall(in: b) }
+                        Button(b.name) {
+                            performExtensionAction { try ExtensionInstaller.beginGuidedInstall(in: b) }
+                        }
                     }
-                    Divider()
-                    Button("Show extension folder") { ExtensionInstaller.revealInstalledFolder() }
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("Copies the bundled extension to a folder, opens the browser's Extensions page for Load unpacked, and opens the pairing window.")
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(ExtensionInstaller.displayPath)
+                    .font(NoirFonts.font(size: 12, design: .monospaced))
+                    .textSelection(.enabled)
+                HStack(spacing: 10) {
+                    Button("Open extension folder") {
+                        performExtensionAction { try ExtensionInstaller.revealInstalledFolder() }
+                    }
+                    Button(copiedExtensionPath ? "Path copied" : "Copy folder path") {
+                        performExtensionAction {
+                            try ExtensionInstaller.copyInstalledFolderPath()
+                            copiedExtensionPath = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copiedExtensionPath = false }
+                        }
+                    }
+                }
+                Text("In Chrome: Extensions → Developer mode → Load unpacked → Downloads/Holmes Extension. Keep this folder here; Chrome reads the extension from it.")
+                    .font(NoirFonts.caption())
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let extensionError {
+                    Text(extensionError)
+                        .font(NoirFonts.caption())
+                        .foregroundColor(NoirColors.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            HStack(spacing: 8) {
                 Button(copiedToken ? "Copied" : "Copy token") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(BrowserBridge.shared.token, forType: .string)
@@ -790,23 +843,19 @@ struct PrivacySettingsView: View {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copiedToken = false }
                 }
                 Text(BrowserBridge.tokenFileURL.path)
-                    .font(.caption2)
+                    .font(NoirFonts.font(size: 10))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-
-            Divider()
-
-            // Holmes Local's privacy story in one place: the model is on this
-            // Mac, so there is no "sent to produce that result" clause any more.
-            Text("Everything runs on this Mac by default. Screen context, the goal behind it, the replies Holmes drafts, and the commands it runs are all produced by the local model through Ollama on this machine. ElevenLabs is the only cloud service Holmes itself calls, and it stays off until you enter a key under Voice. Anything you connect yourself (an MCP server such as Composio, or an Ollama host on another machine) receives what the README's Privacy section describes.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        .scrollContentBackground(.hidden)
-        .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func performExtensionAction(_ action: () throws -> Void) {
+        extensionError = nil
+        do { try action() }
+        catch { extensionError = error.localizedDescription }
     }
 
     // MARK: Clicky self-test

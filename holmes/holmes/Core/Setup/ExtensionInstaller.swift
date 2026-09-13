@@ -134,8 +134,9 @@ enum ExtensionInstaller {
         try? p.run()
     }
 
-    static func revealInstalledFolder() {
-        NSWorkspace.shared.activateFileViewerSelecting([installedFolder])
+    static func revealInstalledFolder() throws {
+        let folder = try installUnpacked()
+        NSWorkspace.shared.activateFileViewerSelecting([folder])
     }
 
     static func copyInstalledFolderPath() throws {

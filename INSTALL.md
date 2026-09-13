@@ -27,7 +27,7 @@ finished later from Settings.
 |---|---|---|
 | Permissions | Screen Recording and Accessibility, so Holmes can see and act | Settings ▸ Privacy |
 | Local model | Finds or installs [Ollama](https://ollama.com), starts it, downloads the default vision model | Settings ▸ Local Model |
-| Connect your browser | Copies the bundled extension to disk, opens your browser's Extensions page, opens a two minute pairing window | Settings ▸ Privacy ▸ Install extension in… |
+| Connect your browser | Automatically prepares or refreshes `~/Downloads/Holmes Extension` each time the step opens; choosing a browser opens its Extensions page and a two minute pairing window | Settings ▸ Privacy ▸ Install extension in… |
 | Connect your tools | Optional. Paste your Composio MCP URL and key. Holmes writes `mcp.json` and shows how many read only tools came back | Settings, or edit `mcp.json` |
 | Ready | Hotkeys and a summary | |
 
@@ -36,15 +36,24 @@ finished later from Settings.
 Chromium browsers do not allow an app to install an extension for you. Holmes
 does everything around that one gesture:
 
-1. Pick your browser (Chrome, Arc, Brave, Edge, Comet, Vivaldi, Opera).
-2. Holmes opens the browser's Extensions page and a Finder window at
-   `~/Library/Application Support/Holmes/extension`.
-3. In the browser: turn on **Developer mode**, press **Load unpacked**, choose
-   that folder.
+1. Opening **Connect Your Browser** automatically prepares or refreshes the
+   bundled extension at **`~/Downloads/Holmes Extension`**. No button click is
+   needed. This happens every time the step opens, including recreating the
+   folder if it was removed.
+2. Pick your browser (Chrome, Arc, Brave, Edge, Comet, Vivaldi, Opera). Holmes
+   opens both the extension folder in Finder and the browser's Extensions page.
+3. In Chrome: turn on **Developer mode**, press **Load unpacked**, then choose
+   **Downloads → Holmes Extension**. Other Chromium browsers use the same flow.
 4. Click the Holmes puzzle piece in the toolbar and press **Pair with Holmes**.
 
 The status line in Holmes turns green when the first page arrives. The pairing
 window is open for two minutes; the button reopens it.
+
+You can always find the folder again with **Open extension folder** in onboarding
+or **Holmes ▸ Settings ▸ Privacy**. **Copy folder path** copies the full path for
+the browser's file picker. Both buttons also prepare or refresh the folder.
+Keep **Holmes Extension** in Downloads after loading it: Chrome reads the extension
+from that folder.
 
 ### The tools step in detail
 
@@ -91,5 +100,5 @@ DMG to a draft release. Add the secrets named in
 ## Uninstall
 
 Quit Holmes, delete `/Applications/Holmes.app`, and optionally remove
-`~/Library/Application Support/Holmes` (extension copy, memory database,
-playbooks, `mcp.json`) and the extension from your browser.
+`~/Library/Application Support/Holmes` (memory database, playbooks, `mcp.json`).
+Remove the extension from your browser before deleting `~/Downloads/Holmes Extension`.

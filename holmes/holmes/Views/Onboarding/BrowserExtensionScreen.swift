@@ -14,6 +14,7 @@ struct BrowserExtensionScreen: View {
     @State private var chosen: ExtensionInstaller.Browser?
     @State private var started = false
     @State private var errorText: String?
+    @State private var copiedFolderPath = false
 
     private var bridge: BrowserBridge { BrowserBridge.shared }
     private var isPaired: Bool { bridge.pairedToken != nil }
@@ -69,6 +70,8 @@ struct BrowserExtensionScreen: View {
                     instructions
                 }
 
+                folderAccess
+
                 if let errorText {
                     Text(errorText)
                         .font(NoirFonts.caption())
@@ -93,6 +96,9 @@ struct BrowserExtensionScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
+            // Prepare the bundled extension for every user on every visit to
+            // this step, including when a previous Downloads copy was removed.
+            performFolderAction { _ = try ExtensionInstaller.installUnpacked() }
             browsers = ExtensionInstaller.installedBrowsers()
             bridge.start()
             withAnimation(.easeOut(duration: 0.5).delay(0.1)) { contentOpacity = 1.0 }
@@ -130,11 +136,10 @@ struct BrowserExtensionScreen: View {
                 .font(NoirFonts.caption())
                 .foregroundColor(NoirColors.textSecondary)
             step(1, "Turn on **Developer mode** (top right of the Extensions page).")
-            step(2, "Press **Load unpacked** and choose the folder Holmes just opened in Finder.")
+            step(2, "Click **Load unpacked**, then choose **Downloads → Holmes Extension**.")
             step(3, "Click the Holmes puzzle icon and press **Pair with Holmes**.")
             HStack(spacing: 10) {
                 Button("Open Extensions page again") { if let c = chosen { ExtensionInstaller.openExtensionsPage(in: c) } }
-                Button("Show folder") { ExtensionInstaller.revealInstalledFolder() }
                 if !bridge.isPairing && !isPaired {
                     Button("Re-open pairing window") { bridge.beginPairing() }
                 }
@@ -145,10 +150,43 @@ struct BrowserExtensionScreen: View {
         .frame(maxWidth: 440, alignment: .leading)
     }
 
+    private var folderAccess: some View {
+        VStack(spacing: 8) {
+            Text(ExtensionInstaller.displayPath)
+                .font(NoirFonts.font(size: 12, design: .monospaced))
+                .foregroundColor(NoirColors.textPrimary)
+                .textSelection(.enabled)
+            HStack(spacing: 12) {
+                Button("Open extension folder") {
+                    performFolderAction { try ExtensionInstaller.revealInstalledFolder() }
+                }
+                Button(copiedFolderPath ? "Path copied" : "Copy folder path") {
+                    performFolderAction {
+                        try ExtensionInstaller.copyInstalledFolderPath()
+                        copiedFolderPath = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) { copiedFolderPath = false }
+                    }
+                }
+            }
+            .controlSize(.small)
+            Text("Keep this folder here after loading it. Chrome reads the extension from it.")
+                .font(NoirFonts.font(size: 11))
+                .foregroundColor(NoirColors.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: 440)
+    }
+
+    private func performFolderAction(_ action: () throws -> Void) {
+        errorText = nil
+        do { try action() }
+        catch { errorText = error.localizedDescription }
+    }
+
     private func step(_ n: Int, _ text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Text("\(n)")
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 11, weight: .bold, design: .monospaced))
                 .foregroundColor(NoirColors.accent)
                 .frame(width: 16)
             Text(.init(text))

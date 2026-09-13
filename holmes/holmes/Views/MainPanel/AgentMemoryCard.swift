@@ -232,7 +232,7 @@ struct AgentMemoryCard: View {
             Image(systemName: "tray")
                 .font(.system(size: 11, weight: .regular))
                 .foregroundColor(NoirColors.textPlaceholder)
-            Text("No memories yet — Holmes records what you work on once the Comet extension is connected.")
+            Text("No memories yet — Holmes records what you work on once the browser extension is connected.")
                 .font(NoirFonts.font(size: 11, weight: .regular, design: .default))
                 .foregroundColor(NoirColors.textTertiary)
                 .lineSpacing(2)
@@ -556,13 +556,13 @@ struct ExtensionStatusRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(connected ? "●" : "○")
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                 .foregroundColor(connected ? NoirColors.success : memoryAmber)
 
             Text(connected
-                 ? "Comet extension connected"
-                 : "Comet extension not connected — context is OCR-guessed")
-                .font(.system(size: 10, weight: .regular, design: .default))
+                 ? "Browser extension connected"
+                 : "Browser extension not connected — context is OCR-guessed")
+                .font(NoirFonts.font(size: 10, weight: .regular, design: .default))
                 .foregroundColor(connected ? NoirColors.textSecondary : memoryAmber.opacity(0.85))
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -591,9 +591,10 @@ struct ExtensionStatusRow: View {
     Nothing has posted to localhost:5766 recently, so Holmes is falling back to \
     OCR of your screen and will hedge instead of quoting specifics.
 
-    To connect: open Comet ▸ Extensions ▸ enable Developer mode ▸ "Load unpacked", \
-    then select the holmes-extension folder inside the Holmes project. \
-    Reload the tab you want Holmes to read.
+    To connect: in Holmes Settings ▸ Privacy, click "Open extension folder". \
+    In Chrome, open Extensions ▸ Developer mode ▸ "Load unpacked" and choose \
+    Downloads/Holmes Extension. Keep the folder there; Chrome uses it. \
+    Pair the extension in Holmes, then reload the tab you want Holmes to read.
     """
 }
 
