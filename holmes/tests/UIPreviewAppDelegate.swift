@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windows: [NSWindow] = []
     private var report: [[String: Any]] = []
     private var outputDirectory: URL!
+    private let glassMode = ProcessInfo.processInfo.environment["HOLMES_UI_PREVIEW_GLASS"] == "1"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let path = ProcessInfo.processInfo.environment["HOLMES_UI_PREVIEW_OUTPUT"],
@@ -72,6 +73,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func renderFixtures() async throws {
+        if glassMode {
+            try await render("glass-surfaces", size: CGSize(width: 720, height: 420), view:
+                ZStack {
+                    AppleGlassBackground(cornerRadius: 18)
+                    VStack(alignment: .leading, spacing: 24) {
+                        Text("holmes").font(NoirFonts.brand(size: 36))
+                        Text("Window glass").font(NoirFonts.title())
+                        Text("The colored backdrop should remain visible through every surface.")
+                            .font(NoirFonts.body())
+                        HStack(spacing: 20) {
+                            GlassCard {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("Approval card").font(NoirFonts.title())
+                                    Text("Readable text over frosted glass.").font(NoirFonts.body())
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 120)
+                                .padding(16)
+                            }
+                            ZStack {
+                                HeavyGlassBackground(cornerRadius: 12)
+                                Text("Elevated glass").font(NoirFonts.title())
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 152)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(NoirColors.textPrimary)
+                    .padding(24)
+                })
+        }
         // Viewing this pane only synchronizes fields; no refresh/download button
         // is invoked. The disconnected initial status is intentional fixture data.
         try await render("settings-local-model", size: CGSize(width: 680, height: 620), view: SettingsView())
@@ -82,8 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try await render("settings-advanced-bottom", size: CGSize(width: 680, height: 620),
                              view: SettingsView(), scrollOffset: 780)
         }
-        try await render("local-model-compact", size: CGSize(width: 450, height: 460),
-                         view: LocalModelSettingsView(compact: true))
+        if !glassMode {
+            try await render("local-model-compact", size: CGSize(width: 450, height: 460),
+                             view: LocalModelSettingsView(compact: true))
+        }
 
         let bus = ConfirmationBus.shared
         // Assign directly: propose()/proposeDraft() would show real controller
@@ -120,6 +153,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         try await render("reply-unsourced", size: CGSize(width: 420, height: 540),
                          view: ScrollView { ReplyReadyCard(draft: unsourced, incoming: incoming) })
 
+        // The notch intentionally stays black to match the physical cutout.
+        // Its offscreen geometry previews are independent of desktop glass.
+        if glassMode { return }
         let geometry = NotchGeometry.layout(
             screenFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
             visibleFrame: CGRect(x: 0, y: 40, width: 1512, height: 910),
@@ -141,21 +177,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func render<V: View>(_ name: String, size: CGSize, view: V,
                                  scrollOffset: CGFloat? = nil) async throws {
-        // A real host window lets TextEditor, NSVisualEffectView, and ProgressView
-        // render through AppKit. It lives outside every display, cannot activate,
-        // and ignores input, so preview buttons cannot perform their real actions.
+        // Default mode keeps the existing offscreen layout/font snapshots.
+        // Glass mode needs the WindowServer compositor: an opaque synthetic
+        // backdrop covers the entire captured area behind a clear fixture host.
+        // Both windows ignore input and cannot activate; no controls are clicked.
         let farEdge = NSScreen.screens.map(\.frame.maxX).max() ?? 2000
-        let window = UIPreviewWindow(contentRect: CGRect(x: farEdge + 4096, y: 0, width: size.width, height: size.height),
+        var frame = CGRect(x: farEdge + 4096, y: 0, width: size.width, height: size.height)
+        let margin: CGFloat = glassMode ? 24 : 0
+        if glassMode {
+            guard let screen = NSScreen.screens.max(by: {
+                $0.visibleFrame.width * $0.visibleFrame.height < $1.visibleFrame.width * $1.visibleFrame.height
+            }), screen.visibleFrame.width >= size.width + margin * 2,
+                screen.visibleFrame.height >= size.height + margin * 2 else {
+                throw PreviewError.screenTooSmall(name)
+            }
+            frame.origin = CGPoint(x: (screen.visibleFrame.midX - size.width / 2).rounded(),
+                                   y: (screen.visibleFrame.midY - size.height / 2).rounded())
+        }
+        let window = UIPreviewWindow(contentRect: frame,
                                      styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.ignoresMouseEvents = true
         window.isOpaque = false
-        window.backgroundColor = NSColor(hex: "060606")
+        window.backgroundColor = glassMode ? .clear : NSColor(hex: "060606")
         window.hasShadow = false
         window.appearance = NSAppearance(named: .darkAqua)
+        var backdrop: UIPreviewWindow?
+        if glassMode {
+            let backing = UIPreviewWindow(contentRect: frame.insetBy(dx: -margin, dy: -margin),
+                                          styleMask: [.borderless], backing: .buffered, defer: false)
+            backing.isReleasedWhenClosed = false
+            backing.ignoresMouseEvents = true
+            backing.isOpaque = true
+            backing.backgroundColor = .black
+            backing.hasShadow = false
+            backing.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 10)
+            backing.contentView = UIPreviewBackdropView(frame: CGRect(origin: .zero, size: backing.frame.size))
+            backing.orderFrontRegardless()
+            backdrop = backing
+            window.level = NSWindow.Level(rawValue: backing.level.rawValue + 1)
+        }
         let host = NSHostingView(rootView:
             ZStack(alignment: .top) {
-                Color(hex: "060606")
+                if !glassMode { Color(hex: "060606") }
                 view
             }
             .frame(width: size.width, height: size.height, alignment: .top)
@@ -164,10 +228,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         host.frame = CGRect(origin: .zero, size: size)
         window.contentView = host
         windows.append(window)
+        defer {
+            window.orderOut(nil)
+            window.contentView = nil
+            backdrop?.orderOut(nil)
+            backdrop?.contentView = nil
+            windows.removeAll { $0 === window }
+        }
         window.orderFrontRegardless()
         // Settle SwiftUI onAppear and native subview layout without running a
         // blocking sleep on the main thread.
-        try await Task.sleep(for: .milliseconds(250))
+        try await Task.sleep(for: .milliseconds(glassMode ? 500 : 250))
         host.layoutSubtreeIfNeeded()
         host.displayIfNeeded()
         if let scrollOffset, let scroll = descendantScrollView(in: host), let document = scroll.documentView {
@@ -179,18 +250,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             host.layoutSubtreeIfNeeded()
             host.displayIfNeeded()
         }
-        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
-            throw PreviewError.render(name)
+        let destination = outputDirectory.appendingPathComponent(name + ".png")
+        let bitmap: NSBitmapImageRep
+        if glassMode {
+            bitmap = try await captureComposited(frame: frame.insetBy(dx: -margin, dy: -margin), to: destination)
+        } else {
+            guard let cached = host.bitmapImageRepForCachingDisplay(in: host.bounds) else {
+                throw PreviewError.render(name)
+            }
+            host.cacheDisplay(in: host.bounds, to: cached)
+            guard let png = cached.representation(using: .png, properties: [:]) else { throw PreviewError.render(name) }
+            try png.write(to: destination)
+            bitmap = cached
         }
-        host.cacheDisplay(in: host.bounds, to: bitmap)
-        guard let png = bitmap.representation(using: .png, properties: [:]) else { throw PreviewError.render(name) }
-        try png.write(to: outputDirectory.appendingPathComponent(name + ".png"))
         report.append(["name": name, "pointsWide": host.bounds.width, "pointsHigh": host.bounds.height,
-                       "pixelsWide": bitmap.pixelsWide, "pixelsHigh": bitmap.pixelsHigh])
-        window.orderOut(nil)
-        window.contentView = nil
-        windows.removeAll { $0 === window }
+                       "pixelsWide": bitmap.pixelsWide, "pixelsHigh": bitmap.pixelsHigh,
+                       "capture": glassMode ? "composited-screen" : "view-bitmap",
+                       "backdropMargin": margin])
         print("Rendered \(name): \(bitmap.pixelsWide)×\(bitmap.pixelsHigh)")
+    }
+
+    private func captureComposited(frame: CGRect, to destination: URL) async throws -> NSBitmapImageRep {
+        // screencapture uses top-left coordinates relative to the primary screen;
+        // AppKit uses a bottom-left origin. Capture only our synthetic backdrop.
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        let requestURL = outputDirectory.appendingPathComponent(".glass-capture-request.json")
+        let resultURL = outputDirectory.appendingPathComponent(".glass-capture-result.json")
+        try? FileManager.default.removeItem(at: resultURL)
+        let request: [String: Any] = [
+            "rect": [Int(frame.minX), Int(primaryTop - frame.maxY), Int(frame.width), Int(frame.height)],
+            "file": destination.lastPathComponent
+        ]
+        // The CLI driver owns screen capture so it can use the terminal's
+        // existing access. The unique, offline preview app never asks for a new
+        // privacy grant. Keep its run loop alive while the compositor captures.
+        try JSONSerialization.data(withJSONObject: request).write(to: requestURL, options: .atomic)
+        defer {
+            try? FileManager.default.removeItem(at: requestURL)
+            try? FileManager.default.removeItem(at: resultURL)
+        }
+        let deadline = Date().addingTimeInterval(20)
+        while !FileManager.default.fileExists(atPath: resultURL.path), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        guard let resultData = try? Data(contentsOf: resultURL),
+              let result = try JSONSerialization.jsonObject(with: resultData) as? [String: Any] else {
+            throw PreviewError.screenCaptureUnavailable("CLI capture driver timed out")
+        }
+        guard result["status"] as? Int == 0,
+              let data = try? Data(contentsOf: destination),
+              let bitmap = NSBitmapImageRep(data: data) else {
+            throw PreviewError.screenCaptureUnavailable(result["error"] as? String ?? "No image produced")
+        }
+        return bitmap
     }
 
     private func descendantScrollView(in view: NSView) -> NSScrollView? {
@@ -206,12 +318,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         exit(1)
     }
 
-    enum PreviewError: Error { case render(String) }
+    enum PreviewError: Error {
+        case render(String)
+        case screenTooSmall(String)
+        case screenCaptureUnavailable(String)
+    }
 }
 
 private final class UIPreviewWindow: NSWindow {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+}
+
+/// Broad colored bands remain identifiable through blur, while the visible
+/// border gives a reference for the unblurred desktop behind each fixture.
+private final class UIPreviewBackdropView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let colors = ["286C87", "A96642", "758955", "70629E"]
+        for (index, color) in colors.enumerated() {
+            NSColor(hex: color).setFill()
+            NSRect(x: bounds.width * CGFloat(index) / CGFloat(colors.count), y: 0,
+                   width: bounds.width / CGFloat(colors.count) + 1, height: bounds.height).fill()
+        }
+        NSColor.white.withAlphaComponent(0.28).setFill()
+        NSRect(x: 0, y: bounds.height * 0.44, width: bounds.width, height: bounds.height * 0.12).fill()
+    }
 }
 
 private extension NSColor {

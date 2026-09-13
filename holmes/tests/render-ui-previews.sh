@@ -1,6 +1,10 @@
 #!/bin/bash
 # Build/render fixture UI from a temporary copy. The production app is never
 # launched, and the source checkout's AppDelegate is never modified.
+# HOLMES_UI_PREVIEW_GLASS=1 briefly shows noninteractive fixtures over a synthetic
+# colored backdrop and captures the real compositor to verify transparency.
+# Default mode renders offscreen layout/font snapshots. Glass mode requires
+# existing screen-capture access; it never changes system privacy settings.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -68,8 +72,73 @@ cat > "$preview_dir/offline.sb" <<'PROFILE'
 (deny network*)
 PROFILE
 preview_app="$preview_dir/DerivedData/Build/Products/Debug/holmes.app/Contents/MacOS/holmes"
-if ! HOLMES_UI_PREVIEW_OUTPUT="$preview_output" /usr/bin/sandbox-exec -f "$preview_dir/offline.sb" \
-    "$preview_app" > "$preview_dir/render.log" 2>&1; then
+export HOLMES_UI_PREVIEW_OUTPUT="$preview_output"
+export HOLMES_UI_PREVIEW_GLASS="${HOLMES_UI_PREVIEW_GLASS:-0}"
+export HOLMES_UI_PREVIEW_EXPAND_ADVANCED="${HOLMES_UI_PREVIEW_EXPAND_ADVANCED:-0}"
+
+run_preview() {
+    if [ "$HOLMES_UI_PREVIEW_GLASS" != "1" ]; then
+        /usr/bin/sandbox-exec -f "$preview_dir/offline.sb" "$preview_app"
+        return
+    fi
+    # Capture from the CLI's existing permission context, rather than asking for
+    # a privacy grant for each unique fixture bundle. The app only displays
+    # synthetic content and runs under the same network-denying sandbox.
+    python3 - "$preview_app" "$preview_dir/offline.sb" "$preview_output" <<'PYGLASS'
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+app, profile, output_arg = sys.argv[1:]
+output = pathlib.Path(output_arg)
+request = output / ".glass-capture-request.json"
+result = output / ".glass-capture-result.json"
+for stale in (request, result):
+    stale.unlink(missing_ok=True)
+preview = subprocess.Popen(["/usr/bin/sandbox-exec", "-f", profile, app])
+deadline = time.monotonic() + 120
+try:
+    while preview.poll() is None:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("Glass preview exceeded its two-minute render deadline")
+        if not request.exists():
+            time.sleep(0.05)
+            continue
+        job = json.loads(request.read_text())
+        request.unlink()
+        name, rect = job["file"], job["rect"]
+        if (pathlib.Path(name).name != name or not name.endswith(".png")
+                or len(rect) != 4 or not all(isinstance(value, int) for value in rect)
+                or rect[2] <= 0 or rect[3] <= 0):
+            raise ValueError("Invalid fixture capture request")
+        try:
+            capture = subprocess.run(
+                ["/usr/sbin/screencapture", "-x", "-R" + ",".join(map(str, rect)), str(output / name)],
+                capture_output=True, text=True, timeout=10)
+            response = {"status": capture.returncode, "error": capture.stderr.strip()}
+        except subprocess.TimeoutExpired:
+            response = {"status": 1, "error": "Screen capture timed out"}
+        temporary = result.with_suffix(".tmp")
+        temporary.write_text(json.dumps(response))
+        os.replace(temporary, result)
+    sys.exit(preview.returncode)
+finally:
+    if preview.poll() is None:
+        preview.terminate()
+        try:
+            preview.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            preview.kill()
+            preview.wait(timeout=5)
+    request.unlink(missing_ok=True)
+    result.unlink(missing_ok=True)
+PYGLASS
+}
+
+if ! run_preview > "$preview_dir/render.log" 2>&1; then
     cat "$preview_dir/render.log"
     exit 1
 fi

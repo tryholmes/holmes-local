@@ -78,7 +78,6 @@ struct ReplyReadyCard: View {
         .background(
             ZStack {
                 VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
-                NoirColors.panelBackground.opacity(0.94)
                 NoirColors.glassSurface
             }
         )
