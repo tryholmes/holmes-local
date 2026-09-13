@@ -504,110 +504,23 @@ final class ComputerUseEngine {
         guard !name.isEmpty else {
             return .error("Missing 'name'. Call open_app as {\"action\":\"open_app\",\"name\":\"Finder\"}.")
         }
-        guard let url = resolveAppURL(named: name) else {
-            Self.diag("action=open_app FAILED — nothing installed resolves from '\(name)'")
-            return .error("No installed app matches '\(name)'. Use the exact app name (e.g. \"Safari\", \"Finder\") or its bundle identifier.")
+        let result = await AppLauncher.launch(named: name, allowPrefixMatch: true)
+        guard result.succeeded else {
+            Self.diag("action=open_app FAILED — \(result.message)")
+            return .error(result.message)
         }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        do {
-            let app = try await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
-            // Finder wrinkle: if Finder is already running (it always is),
-            // "opening" it merely activates it — with zero windows open the next
-            // screenshot would show no change and the model would flounder. Open
-            // the home folder so a window reliably appears.
-            if app.bundleIdentifier == "com.apple.finder" {
-                NSWorkspace.shared.open(URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true))
-            }
-            Self.diag("action=open_app OK name=\(name) url=\(url.path)")
-            // Clicky "opens it": draw a clicking ring where the app's window is
-            // about to appear (center of the active display) + a notch banner, so
-            // the user WATCHES Holmes open the thing rather than it just popping up.
-            let appLabel = app.localizedName ?? name
-            let openScreen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main
-            if let openScreen {
-                await flashClickyPointer(
-                    at: CGPoint(x: openScreen.frame.midX, y: openScreen.frame.midY),
-                    label: "Opening \(appLabel)")
-            }
-            NotchWindowController.shared.flashAction(
-                "Opening \(appLabel)",
-                subtitle: "Holmes is launching the app",
-                symbol: "cursorarrow.click.2")
-            return .ok("Opened \(appLabel). Take a screenshot to see its window before clicking anything in it.")
-        } catch {
-            Self.diag("action=open_app FAILED — \(error.localizedDescription)")
-            return .error("Failed to launch '\(name)': \(error.localizedDescription)")
+        Self.diag("action=open_app OK name=\(result.appName)")
+        let openScreen = NSScreen.screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) }) ?? NSScreen.main
+        if let openScreen {
+            await flashClickyPointer(
+                at: CGPoint(x: openScreen.frame.midX, y: openScreen.frame.midY),
+                label: "Opening \(result.appName)")
         }
-    }
-
-    /// App name → bundle URL, tried cheapest-first: bundle-id form, a table of
-    /// well-known aliases (system apps live outside /Applications), then a
-    /// case-insensitive scan of the standard app folders (exact "<name>.app"
-    /// first, prefix match as a last resort).
-    private func resolveAppURL(named name: String) -> URL? {
-        let workspace = NSWorkspace.shared
-        // 1) Bundle-identifier form ("com.apple.Safari") — has dots, resolve directly.
-        if name.contains("."), let url = workspace.urlForApplication(withBundleIdentifier: name) {
-            return url
-        }
-        // 2) Well-known names → bundle ids. Covers the system apps whose bundles
-        //    live in /System/... and whose marketing name differs from the bundle.
-        let aliases: [String: String] = [
-            "finder": "com.apple.finder",
-            "safari": "com.apple.Safari",
-            "mail": "com.apple.mail",
-            "messages": "com.apple.MobileSMS",
-            "notes": "com.apple.Notes",
-            "calendar": "com.apple.iCal",
-            "reminders": "com.apple.reminders",
-            "music": "com.apple.Music",
-            "photos": "com.apple.Photos",
-            "maps": "com.apple.Maps",
-            "facetime": "com.apple.FaceTime",
-            "preview": "com.apple.Preview",
-            "textedit": "com.apple.TextEdit",
-            "terminal": "com.apple.Terminal",
-            "app store": "com.apple.AppStore",
-            "system settings": "com.apple.systempreferences",
-            "system preferences": "com.apple.systempreferences",
-            "settings": "com.apple.systempreferences",
-            "activity monitor": "com.apple.ActivityMonitor",
-            "disk utility": "com.apple.DiskUtility",
-            "xcode": "com.apple.dt.Xcode",
-            "chrome": "com.google.Chrome",
-            "google chrome": "com.google.Chrome"
-        ]
-        let lowered = name.lowercased()
-        if let bundleID = aliases[lowered], let url = workspace.urlForApplication(withBundleIdentifier: bundleID) {
-            return url
-        }
-        // 3) Scan the standard app folders. Exact (case-insensitive) match first
-        //    across ALL folders, then a prefix match ("open activity" → Activity
-        //    Monitor.app) so a near-name still resolves.
-        let fm = FileManager.default
-        let folders = [
-            "/Applications", "/Applications/Utilities",
-            "/System/Applications", "/System/Applications/Utilities",
-            NSHomeDirectory() + "/Applications"
-        ]
-        for folder in folders {
-            let exact = URL(fileURLWithPath: folder).appendingPathComponent(name + ".app")
-            if fm.fileExists(atPath: exact.path) { return exact }
-        }
-        for folder in folders {
-            guard let entries = try? fm.contentsOfDirectory(atPath: folder) else { continue }
-            if let hit = entries.first(where: { $0.lowercased() == lowered + ".app" }) {
-                return URL(fileURLWithPath: folder).appendingPathComponent(hit)
-            }
-        }
-        for folder in folders {
-            guard let entries = try? fm.contentsOfDirectory(atPath: folder) else { continue }
-            if let hit = entries.first(where: { $0.lowercased().hasSuffix(".app") && $0.lowercased().hasPrefix(lowered) }) {
-                return URL(fileURLWithPath: folder).appendingPathComponent(hit)
-            }
-        }
-        return nil
+        NotchWindowController.shared.flashAction(
+            "Opening \(result.appName)",
+            subtitle: "Holmes is launching the app",
+            symbol: "cursorarrow.click.2")
+        return .ok("\(result.message) Take a screenshot to see its window before clicking anything in it.")
     }
 
     private func doType(_ input: [String: Any]) async -> ComputerActionOutcome {

@@ -7,7 +7,7 @@ import Observation
 struct PendingAction: Identifiable {
     let id = UUID()
     let title: String           // e.g. "Reply to Imda on Discord"
-    let preview: String         // The text/action Holmes will perform
+    var preview: String         // The text/action Holmes will perform
     let appName: String         // Target app
     let actionType: ActionType
     var isExecuting: Bool = false
@@ -28,7 +28,9 @@ struct PendingAction: Identifiable {
             switch self {
             case .openMeeting:   return "Join Now"
             case .agentToolCall: return "Approve"
-            default:             return "Send it"
+            case .typeMessage:   return "Insert"
+            case .openURL:       return "Open Link"
+            case .runScript:     return "Approve"
             }
         }
     }
@@ -282,8 +284,17 @@ final class ConfirmationBus {
             }
 
             DispatchQueue.main.async {
-                ConfirmationBus.shared.pendingAction?.result = success ? "✓ Joining \(action.appName)" : "Failed"
+                guard ConfirmationBus.shared.pendingAction?.id == action.id else { return }
+                let completed: String
+                switch action.actionType {
+                case .typeMessage: completed = "✓ Inserted in \(action.appName)"
+                case .openMeeting: completed = "✓ Opening meeting"
+                case .openURL: completed = "✓ Opened link"
+                default: completed = "✓ Completed"
+                }
+                ConfirmationBus.shared.pendingAction?.result = success ? completed : "Couldn’t complete this action"
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    guard ConfirmationBus.shared.pendingAction?.id == action.id else { return }
                     ConfirmationBus.shared.dismiss()
                 }
             }
@@ -307,236 +318,216 @@ struct ConfirmationView: View {
     @State private var draftIsExecuting: Bool = false
 
     var body: some View {
-        // The auto-drafted reply first: propose() clears the flag, so this can
-        // only win when nothing more urgent is on screen — and when it does win,
-        // an answer to a waiting person outranks a speculative draft.
-        if bus.isShowingReply,
-           let reply = agent.pendingReplyDraft,
-           let incoming = agent.pendingReplyTo {
-            replyContent(draft: reply, incoming: incoming)
-        } else if let draft = bus.pendingDraft {
-            draftContent(draft: draft)
-        } else if let action = bus.pendingAction {
-            content(action: action)
-        } else {
-            Color.clear.frame(width: 1, height: 1)
-        }
-    }
-
-    // MARK: - Auto-drafted reply card
-    //
-    // ReplyReadyCard brings its own glass background, border and shadow, so it
-    // is hosted bare. Its Insert button goes through ActionExecutor.stageTextInApp
-    // — types at the cursor and stops. Nothing here sends.
-
-    @ViewBuilder private func replyContent(draft: ReplyComposer.DraftedReply,
-                                           incoming: ReplyComposer.IncomingMessage) -> some View {
-        ReplyReadyCard(
-            draft: draft,
-            incoming: incoming,
-            // Edits go back to the one owner, so the MainPanel card shows the
-            // user's wording rather than the model's.
-            onEdit: { agent.notePendingReplyEdit($0) },
-            // Closes the popup only — the reply stays in the panel, the same way
-            // a dismissed playbook draft stays in the Drafts list.
-            onDismiss: { bus.hideReplyCard() })
-    }
-
-    // Decomposed into sub-builders so the SwiftUI type-checker doesn't time out.
-    @ViewBuilder private func content(action: PendingAction) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header(action: action)
-            Divider().background(Color(hex: "1E2D38"))
-            VStack(alignment: .leading, spacing: 12) {
-                titleSection(action: action)
-                previewSection(action: action)
-                footer(action: action)
+        Group {
+            if bus.isShowingReply,
+               let reply = agent.pendingReplyDraft,
+               let incoming = agent.pendingReplyTo {
+                ReplyReadyCard(
+                    draft: reply, incoming: incoming,
+                    onEdit: { agent.notePendingReplyEdit($0) },
+                    onDismiss: { bus.hideReplyCard() })
+            } else if let draft = bus.pendingDraft {
+                draftContent(draft: draft)
+            } else if let action = bus.pendingAction {
+                content(action: action)
+            } else {
+                Color.clear
             }
-            .padding(16)
         }
-        .background(Color(hex: "111820"))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(hex: "B8881C").opacity(0.3), lineWidth: 1))
-        .shadow(color: Color(hex: "B8881C").opacity(0.15), radius: 20, x: 0, y: 4)
-        .onAppear {
-            editedText = action.preview
-        }
-        // propose() can REPLACE pendingAction while this card is showing; the
-        // view identity does not change, so onAppear will not re-run and the
-        // previous action's text would be sent under the new title.
-        .onChange(of: action.preview) { _, newPreview in
-            editedText = newPreview
-        }
+        .font(NoirFonts.body())
+        .preferredColorScheme(.dark)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    @ViewBuilder private func header(action: PendingAction) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: action.actionType == .openMeeting ? "video.fill" : "bolt.fill")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(action.actionType == .openMeeting ? Color(hex: "5DBB7A") : Color(hex: "B8881C"))
-            Text(action.actionType == .openMeeting ? "MEETING STARTING SOON" : "HOLMES WANTS TO ACT")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(Color(hex: "5A7A8A"))
-                .tracking(2)
-            Spacer()
-            Button(action: { bus.dismiss() }) {
+    private func reviewHeader(_ title: String, icon: String, dismiss: @escaping () -> Void) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(NoirColors.iconPrimary)
+                .frame(width: 28, height: 28)
+                .background(NoirColors.glassElevated, in: Circle())
+            Text(title)
+                .font(NoirFonts.font(size: 11, weight: .semibold))
+                .foregroundStyle(NoirColors.textSecondary)
+                .tracking(1.2)
+            Spacer(minLength: 8)
+            Button(action: dismiss) {
                 Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "3D5A6A"))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(NoirColors.iconSecondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss review")
+            .keyboardShortcut(.cancelAction)
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 11)
-        .background(Color(hex: "0D1318"))
+        .padding(.vertical, 12)
+        .background(NoirColors.glassChrome)
     }
 
-    @ViewBuilder private func titleSection(action: PendingAction) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(action.title)
-                .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                .foregroundColor(Color(hex: "E8D5A3"))
-
-            HStack(spacing: 6) {
-                Image(systemName: "app.badge")
-                    .font(.system(size: 10))
-                    .foregroundColor(Color(hex: "5A7A8A"))
-                Text(action.appName)
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
-                    .foregroundColor(Color(hex: "5A7A8A"))
+    private func content(action: PendingAction) -> some View {
+        GlassCard(cornerRadius: 18) {
+            VStack(alignment: .leading, spacing: 0) {
+                reviewHeader(action.actionType == .openMeeting ? "MEETING READY" : "REVIEW ACTION",
+                             icon: action.actionType == .openMeeting ? "video" : "checkmark.shield") {
+                    bus.dismiss()
+                }
+                Divider().overlay(NoirColors.glassDivider)
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(action.title)
+                            .font(NoirFonts.brand(size: 24))
+                            .foregroundStyle(NoirColors.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Label(action.appName, systemImage: "app")
+                            .font(NoirFonts.caption())
+                            .foregroundStyle(NoirColors.textSecondary)
+                    }
+                    previewSection(action: action)
+                    footer(action: action)
+                }
+                .padding(16)
             }
         }
+        .onAppear { syncAction(action) }
+        .onChange(of: action.id) { _, _ in syncAction(action) }
+        .onChange(of: action.preview) { _, newValue in editedText = newValue }
     }
 
-    @ViewBuilder private func previewSection(action: PendingAction) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("PREVIEW")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(hex: "3D5A6A"))
-                    .tracking(2)
-                Spacer()
-                Button(action: { isEditing.toggle() }) {
-                    Text(isEditing ? "DONE" : "EDIT")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(hex: "B8881C"))
-                }
-                .buttonStyle(.plain)
-            }
+    private func syncAction(_ action: PendingAction) {
+        editedText = action.preview
+        isEditing = false
+    }
 
-            if isEditing {
-                TextEditor(text: $editedText)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .foregroundColor(Color(hex: "BDD0D8"))
-                    .scrollContentBackground(.hidden)
-                    .background(Color(hex: "0A0F14"))
-                    .frame(minHeight: 60, maxHeight: 120)
-                    .padding(8)
-                    .background(Color(hex: "0A0F14"))
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
-                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "B8881C").opacity(0.5), lineWidth: 1))
-            } else {
-                Text(editedText.isEmpty ? action.preview : editedText)
-                    .font(.system(size: 12, weight: .regular, design: .monospaced))
-                    .foregroundColor(Color(hex: "BDD0D8"))
-                    .lineSpacing(3)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(hex: "0A0F14"))
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
-                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "1E2D38"), lineWidth: 1))
+    private func previewSection(action: PendingAction) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                sectionLabel("PREVIEW")
+                Spacer()
+                if action.actionType != .openMeeting && !action.isExecuting && action.result == nil {
+                    Button(isEditing ? "Done" : "Edit") { isEditing.toggle() }
+                        .font(NoirFonts.caption())
+                        .buttonStyle(.plain)
+                        .foregroundStyle(NoirColors.accent)
+                }
             }
+            Group {
+                if isEditing {
+                    TextEditor(text: $editedText)
+                        .scrollContentBackground(.hidden)
+                        .accessibilityLabel("Action preview")
+                } else {
+                    ScrollView {
+                        Text(editedText)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .font(NoirFonts.body())
+            .foregroundStyle(NoirColors.textPrimary)
+            .lineSpacing(4)
+            .frame(height: 140)
+            .padding(12)
+            .background(NoirColors.glassInput, in: RoundedRectangle(cornerRadius: 10))
+            .glassBorder(cornerRadius: 10)
         }
     }
 
     @ViewBuilder private func footer(action: PendingAction) -> some View {
         if let result = action.result {
-            HStack(spacing: 6) {
-                Image(systemName: result.hasPrefix("✓") ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .foregroundColor(result.hasPrefix("✓") ? Color(hex: "5DBB7A") : Color(hex: "E05252"))
-                Text(result)
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(result.hasPrefix("✓") ? Color(hex: "5DBB7A") : Color(hex: "E05252"))
-            }
+            resultLabel(result)
         } else if action.isExecuting {
-            HStack(spacing: 8) {
-                ProgressView().scaleEffect(0.6).tint(Color(hex: "B8881C"))
-                Text("Sending...")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(Color(hex: "5A7A8A"))
-            }
+            progressLabel(action.actionType == .typeMessage ? "Inserting…" : "Working…")
         } else {
             HStack(spacing: 8) {
-                Button(action: {
-                    if action.actionType != .openMeeting,
-                       !editedText.isEmpty, editedText != action.preview {
-                        bus.pendingAction = PendingAction(
-                            title: action.title,
-                            preview: editedText,
-                            appName: action.appName,
-                            actionType: action.actionType
-                        )
+                NoirButton(action.actionType.primaryButtonTitle,
+                           icon: action.actionType == .openMeeting ? "video" : "checkmark") {
+                    guard bus.pendingAction?.id == action.id else { return }
+                    if action.actionType != .openMeeting {
+                        bus.pendingAction?.preview = editedText
                     }
                     bus.execute()
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: action.actionType == .openMeeting ? "video.fill" : "checkmark")
-                            .font(.system(size: 11, weight: .bold))
-                        Text(action.actionType.primaryButtonTitle)
-                            .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    }
-                    .foregroundColor(Color(hex: "0A0F14"))
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(action.actionType == .openMeeting ? Color(hex: "4A9EDB") : Color(hex: "5DBB7A"))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
-                .buttonStyle(.plain)
-
-                Button(action: { bus.dismiss() }) {
-                    Text(action.actionType == .openMeeting ? "Skip" : "Dismiss")
-                        .font(.system(size: 13, weight: .regular, design: .monospaced))
-                        .foregroundColor(Color(hex: "5A7A8A"))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Color(hex: "0D1318"))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: "1E2D38"), lineWidth: 1))
+                .disabled(editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                NoirButton(action.actionType == .openMeeting ? "Skip" : "Dismiss", style: .secondary) {
+                    bus.dismiss()
                 }
-                .buttonStyle(.plain)
+                Spacer(minLength: 0)
             }
         }
     }
 
-    // MARK: - Draft review card (proactive playbooks — draft-never-send)
+    private func sectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(NoirFonts.font(size: 10, weight: .semibold))
+            .foregroundStyle(NoirColors.textSecondary)
+            .tracking(1.2)
+    }
 
-    @ViewBuilder private func draftContent(draft: ProactiveDraft) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            draftHeader(draft: draft)
-            Divider().background(Color(hex: "1E2D38"))
-            VStack(alignment: .leading, spacing: 12) {
-                draftTitleSection(draft: draft)
-                draftBodySection(draft: draft)
-                draftFooter(draft: draft)
-            }
-            .padding(16)
+    private func resultLabel(_ result: String) -> some View {
+        Label(result, systemImage: result.hasPrefix("✓") ? "checkmark.circle.fill" : "exclamationmark.circle")
+            .font(NoirFonts.caption())
+            .foregroundStyle(result.hasPrefix("✓") ? NoirColors.success : NoirColors.error)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func progressLabel(_ title: String) -> some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text(title).font(NoirFonts.caption()).foregroundStyle(NoirColors.textSecondary)
         }
-        // Apple-glass backdrop matching the Holmes panel / login windows, instead
-        // of a flat opaque fill.
-        .background(
-            ZStack {
-                VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
-                Color(hex: "111820").opacity(0.55)
+        .frame(height: 36)
+    }
+
+    // MARK: - Draft review
+
+    private func draftContent(draft: ProactiveDraft) -> some View {
+        GlassCard(cornerRadius: 18) {
+            VStack(alignment: .leading, spacing: 0) {
+                reviewHeader("REVIEW DRAFT", icon: "square.and.pencil") { bus.dismiss() }
+                Divider().overlay(NoirColors.glassDivider)
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        sectionLabel(kindLabel(draft.kind))
+                        Text(draft.title)
+                            .font(NoirFonts.brand(size: 24))
+                            .foregroundStyle(NoirColors.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(draft.contextSummary)
+                            .font(NoirFonts.caption())
+                            .foregroundStyle(NoirColors.textSecondary)
+                            .lineLimit(2)
+                        if let stagedNote = draft.stagedNote {
+                            Label(stagedNote, systemImage: "envelope.badge.person.crop")
+                                .font(NoirFonts.caption())
+                                .foregroundStyle(NoirColors.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        sectionLabel("DRAFT · EDITABLE")
+                        TextEditor(text: $draftBody)
+                            .font(NoirFonts.body())
+                            .foregroundStyle(NoirColors.textPrimary)
+                            .scrollContentBackground(.hidden)
+                            .lineSpacing(4)
+                            .frame(height: 170)
+                            .padding(10)
+                            .background(NoirColors.glassInput, in: RoundedRectangle(cornerRadius: 10))
+                            .glassBorder(cornerRadius: 10)
+                            .accessibilityLabel("Draft text")
+                    }
+                    draftFooter(draft: draft)
+                }
+                .padding(16)
             }
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(hex: "B8881C").opacity(0.3), lineWidth: 1))
-        .shadow(color: Color.black.opacity(0.35), radius: 24, x: 0, y: 6)
+        }
         .onAppear { syncDraftState(draft) }
-        .onChange(of: draft.id) { syncDraftState(draft) }
-        // Persist edits into the bus's copy so a preempting approval card
-        // (propose() re-queues pendingDraft) carries them when the draft returns.
-        .onChange(of: draftBody) { bus.updatePendingDraftBody(draftBody) }
+        .onChange(of: draft.id) { _, _ in syncDraftState(draft) }
+        .onChange(of: draftBody) { _, body in bus.updatePendingDraftBody(body) }
     }
 
     private func syncDraftState(_ draft: ProactiveDraft) {
@@ -545,121 +536,22 @@ struct ConfirmationView: View {
         draftIsExecuting = false
     }
 
-    @ViewBuilder private func draftHeader(draft: ProactiveDraft) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "square.and.pencil")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundColor(Color(hex: "B8881C"))
-            Text("HOLMES DRAFTED — REVIEW")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(Color(hex: "5A7A8A"))
-                .tracking(2)
-            Spacer()
-            Button(action: { bus.dismiss() }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(Color(hex: "3D5A6A"))
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 11)
-        .background(Color(hex: "0D1318").opacity(0.4))
-    }
-
-    @ViewBuilder private func draftTitleSection(draft: ProactiveDraft) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 8) {
-                Text(kindLabel(draft.kind))
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .tracking(1)
-                    .foregroundColor(Color(hex: "0A0F14"))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Color(hex: "B8881C"))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                Text(draft.title)
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                    .foregroundColor(Color(hex: "E8D5A3"))
-                    .lineLimit(1)
-            }
-            Text(draft.contextSummary)
-                .font(.system(size: 11, weight: .regular, design: .monospaced))
-                .foregroundColor(Color(hex: "5A7A8A"))
-                .lineLimit(2)
-            // Ground truth about the staged Gmail draft (recipient/subject from
-            // the actual tool call, never model prose) — the user must see where
-            // an unattended draft is addressed before opening Gmail.
-            if let stagedNote = draft.stagedNote {
-                HStack(alignment: .top, spacing: 5) {
-                    Image(systemName: "envelope.badge.person.crop")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(Color(hex: "B8881C"))
-                    Text(stagedNote)
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundColor(Color(hex: "E8D5A3"))
-                        .lineLimit(3)
-                }
-                .padding(.top, 2)
-            }
-        }
-    }
-
-    @ViewBuilder private func draftBodySection(draft: ProactiveDraft) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("DRAFT — EDITABLE")
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                .foregroundColor(Color(hex: "3D5A6A"))
-                .tracking(2)
-
-            // Taller editable body so long drafts are readable without clipping;
-            // TextEditor scrolls internally past the max height, and the draft
-            // window (see ConfirmationWindowController) is sized to keep the
-            // Copy/Insert/Dismiss row visible below it.
-            TextEditor(text: $draftBody)
-                .font(.system(size: 12, weight: .regular, design: .monospaced))
-                .foregroundColor(Color(hex: "BDD0D8"))
-                .scrollContentBackground(.hidden)
-                .background(Color(hex: "0A0F14"))
-                .frame(minHeight: 120, maxHeight: 200)
-                .padding(8)
-                .background(Color(hex: "0A0F14"))
-                .clipShape(RoundedRectangle(cornerRadius: 5))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color(hex: "B8881C").opacity(0.5), lineWidth: 1))
-        }
-    }
-
     @ViewBuilder private func draftFooter(draft: ProactiveDraft) -> some View {
         if let result = draftResult {
-            HStack(spacing: 6) {
-                Image(systemName: result.hasPrefix("✓") ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .foregroundColor(result.hasPrefix("✓") ? Color(hex: "5DBB7A") : Color(hex: "E05252"))
-                Text(result)
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(result.hasPrefix("✓") ? Color(hex: "5DBB7A") : Color(hex: "E05252"))
-            }
+            resultLabel(result)
         } else if draftIsExecuting {
-            HStack(spacing: 8) {
-                ProgressView().scaleEffect(0.6).tint(Color(hex: "B8881C"))
-                Text("Staging...")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(Color(hex: "5A7A8A"))
-            }
+            progressLabel("Inserting…")
         } else {
             HStack(spacing: 8) {
                 draftPrimaryControl(draft: draft)
-                draftSecondaryCopyButton(draft: draft)
-                Button(action: { bus.dismiss() }) {
-                    Text("Dismiss")
-                        .font(.system(size: 13, weight: .regular, design: .monospaced))
-                        .foregroundColor(Color(hex: "5A7A8A"))
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(Color(hex: "0D1318"))
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: "1E2D38"), lineWidth: 1))
+                if case .clipboard = draft.target { } else {
+                    NoirButton("Copy", style: .secondary) {
+                        copyDraftBody()
+                        finishDraft(draft, result: "✓ Copied to clipboard")
+                    }
                 }
-                .buttonStyle(.plain)
+                NoirButton("Dismiss", style: .ghost) { bus.dismiss() }
+                Spacer(minLength: 0)
             }
         }
     }
@@ -667,73 +559,25 @@ struct ConfirmationView: View {
     @ViewBuilder private func draftPrimaryControl(draft: ProactiveDraft) -> some View {
         switch draft.target {
         case .typeIntoApp(let appName):
-            draftPrimaryButton(title: "Insert", icon: "text.insert") {
-                insertDraft(draft, appName: appName)
-            }
+            NoirButton("Insert", icon: "text.insert") { insertDraft(draft, appName: appName) }
+                .disabled(draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         case .remoteDraft(let urlString):
             if let urlString, let url = URL(string: urlString) {
-                draftPrimaryButton(title: "Open Draft", icon: "arrow.up.forward.app") {
+                NoirButton("Open Draft", icon: "arrow.up.forward.app") {
                     NSWorkspace.shared.open(url)
                     finishDraft(draft, result: "✓ Opened draft")
                 }
             } else {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(Color(hex: "5DBB7A"))
-                    Text("Saved in Gmail Drafts")
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(hex: "5DBB7A"))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                Label("Saved in Gmail Drafts", systemImage: "checkmark.circle.fill")
+                    .font(NoirFonts.caption())
+                    .foregroundStyle(NoirColors.success)
             }
         case .clipboard:
-            draftPrimaryButton(title: "Copy", icon: "doc.on.doc") {
+            NoirButton("Copy", icon: "doc.on.doc") {
                 copyDraftBody()
                 finishDraft(draft, result: "✓ Copied to clipboard")
             }
         }
-    }
-
-    /// Secondary Copy — always offered unless the primary action is already Copy.
-    @ViewBuilder private func draftSecondaryCopyButton(draft: ProactiveDraft) -> some View {
-        switch draft.target {
-        case .clipboard:
-            EmptyView()
-        default:
-            Button(action: {
-                copyDraftBody()
-                finishDraft(draft, result: "✓ Copied to clipboard")
-            }) {
-                Text("Copy")
-                    .font(.system(size: 13, weight: .regular, design: .monospaced))
-                    .foregroundColor(Color(hex: "5A7A8A"))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color(hex: "0D1318"))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(hex: "1E2D38"), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    @ViewBuilder private func draftPrimaryButton(title: String, icon: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .font(.system(size: 11, weight: .bold))
-                Text(title)
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-            }
-            .foregroundColor(Color(hex: "0A0F14"))
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
-            .background(Color(hex: "5DBB7A"))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: Draft actions

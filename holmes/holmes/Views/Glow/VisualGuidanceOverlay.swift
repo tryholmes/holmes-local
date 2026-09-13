@@ -645,7 +645,7 @@ private struct GuidanceCaption: View {
                 .frame(width: 6, height: 6)
                 .shadow(color: GuidancePalette.accent.opacity(0.9), radius: 4)
             Text(text)
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .font(NoirFonts.font(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(NoirColors.textPrimary)
                 .lineLimit(3)
                 .multilineTextAlignment(.leading)

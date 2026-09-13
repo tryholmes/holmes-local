@@ -15,10 +15,10 @@
 //    • HolmesBrain           — the existing computer-control agent (the DO path).
 //    • ScreenGlowController   — the ambient thinking/ready edge glow + haptics.
 //
-//  The router has Clicky's two modes: ASK/TEACH (answer + draw, never clicks) and
-//  AGENT (HolmesBrain drives the Mac). Only the AGENT branch touches computer
-//  control, and that path self-enforces the ComputerUseEngine master switch — the
-//  ASK/TEACH branch needs only Screen Recording for the screenshot.
+//  Explicit app-opening requests use macOS's native launcher. Other requests
+//  use ASK/TEACH (answer + draw) or AGENT (HolmesBrain drives the Mac). Mouse and
+//  keyboard actions remain behind ComputerUseEngine's master switch; ASK/TEACH
+//  needs Screen Recording for the screenshot.
 //
 //  ── Attribution ────────────────────────────────────────────────────
 //  The companion loop this orchestrates — global hotkey → dictate → decide
@@ -31,13 +31,8 @@ import AVFoundation
 import Foundation
 import Speech
 
-/// The Clicky loop. `start()` (called once from `AppDelegate`) wires voice input
-/// into the router and warms up permissions. Push-to-talk is true hold-to-talk:
-/// holding the Fn (globe) key calls `beginPushToTalk()` on key-down and
-/// `endPushToTalk()` on key-up (see HotkeyManager's `.function`-flag monitor).
-/// `togglePushToTalk()` remains for any press-to-start / press-to-stop caller
-/// (e.g. a UI button). Typed input calls `handle(query:)` directly, so the whole
-/// experience works with or without voice.
+/// The Clicky loop. Startup only wires the transcript router. Capture requires
+/// a current physical Fn hold; typed questions use the same answer/action router.
 @MainActor
 final class ClickyController {
     static let shared = ClickyController()
@@ -83,8 +78,7 @@ final class ClickyController {
 
     // MARK: - Lifecycle
 
-    /// Wires voice input into the router and requests mic/speech permission once,
-    /// so the first hold doesn't silently no-op on a not-yet-determined grant.
+    /// Wires voice input without creating audio hardware or prompting permissions.
     /// Idempotent — safe to call more than once.
     func start() {
         guard !isConfigured else { return }
@@ -96,8 +90,6 @@ final class ClickyController {
             Task { @MainActor in await self.handle(query: transcript) }
         }
 
-        // Warm up permission up front (no-op if already granted / denied).
-        Task { @MainActor in _ = await VoiceInputController.shared.requestPermission() }
     }
 
     /// Requests microphone + speech-recognition permission. Exposed so the Settings
@@ -117,31 +109,21 @@ final class ClickyController {
 
     // MARK: - Push-to-talk
 
-    /// Key-DOWN: begin capturing. Ducks any answer currently being spoken (so the
-    /// mic doesn't hear Holmes and the user isn't talked over) and clears a stale
-    /// guidance overlay from a previous answer. Live state is observable via
-    /// `VoiceInputController.shared.isListening` / `.partialTranscript` for any UI
-    /// that wants to mirror the "listening…" indicator.
-    func beginPushToTalk() {
+    /// Only the physical hold that raised this callback may open the mic.
+    /// Recheck after the AppDelegate's main-actor hop: the key may already be up.
+    func beginPushToTalk(holdID: UUID) {
+        guard HotkeyManager.shared.isPushToTalkHeld(holdID) else { return }
         SpeechSynthesizer.shared.stop()
         VisualGuidanceOverlay.shared.hide()
-        VoiceInputController.shared.startListening()
+        VoiceInputController.shared.beginListening(holdID: holdID)
     }
 
-    /// Key-UP: end capture. `stopListening()` fires `onFinalTranscript`, which
-    /// routes the transcript into `handle(query:)`.
-    func endPushToTalk() {
-        VoiceInputController.shared.stopListening()
+    func endPushToTalk(holdID: UUID) {
+        VoiceInputController.shared.stopListening(holdID: holdID)
     }
 
-    /// Press-to-start / press-to-stop, for a hotkey layer that only sees key-down
-    /// (Carbon `RegisterEventHotKey`). First press begins, second press ends.
-    func togglePushToTalk() {
-        if VoiceInputController.shared.isListening {
-            endPushToTalk()
-        } else {
-            beginPushToTalk()
-        }
+    func cancelPushToTalk(holdID: UUID? = nil) {
+        VoiceInputController.shared.cancelListening(holdID: holdID)
     }
 
     // MARK: - Text entry (works without voice)
@@ -154,12 +136,25 @@ final class ClickyController {
 
     // MARK: - Router (Clicky's two modes)
 
-    /// Routes a query to either the ASK/TEACH pipeline (answer aloud + draw on
-    /// screen) or the AGENT pipeline (HolmesBrain drives the Mac). This is the one
-    /// place voice and text converge.
+    /// Handles explicit native app launches first, then routes questions to
+    /// ASK/TEACH and other action requests to the AGENT pipeline.
     func handle(query: String) async {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
+        // Opening an explicitly requested app is a native macOS operation. It
+        // needs neither the model nor permission to post mouse/keyboard events.
+        // Do this before the question heuristic, so "can you open Spotify?"
+        // actually opens Spotify instead of asking the model to describe it.
+        if let appName = AppLaunchIntent.appName(in: trimmed) {
+            ScreenGlowController.shared.set(state: .thinking)
+            let result = await AppLauncher.launch(named: appName)
+            ScreenGlowController.shared.set(state: result.succeeded ? .ready : .off)
+            NotchWindowController.shared.flashAction(
+                result.message, subtitle: "", symbol: result.succeeded ? "app" : "exclamationmark.circle")
+            await speakIfEnabled(result.message)
+            return
+        }
 
         if Self.isAgentIntent(trimmed) {
             await runAgent(goal: trimmed)
@@ -242,11 +237,10 @@ final class ClickyController {
         switch result {
         case .notConfigured:
             await speakIfEnabled(Self.notReadySpoken)
-        case .text:
-            // A short confirmation, not the whole transcript. If computer control
-            // was off, HolmesBrain already narrated that in-run; this just closes
-            // the loop.
-            await speakIfEnabled("All done.")
+        case .text(let message):
+            // A refusal or launch failure is still a text result. Read the actual
+            // outcome instead of claiming every completed request succeeded.
+            await speakIfEnabled(String(message.prefix(400)))
         }
     }
 

@@ -3,9 +3,8 @@
 //  holmes
 //
 //  Push-to-talk (hold-to-talk) speech input using Apple's on-device Speech
-//  framework. No API key, no network round-trip: SFSpeechRecognizer runs the
-//  transcription on-device whenever the model supports it, streaming live
-//  partial results while the user holds the hotkey and delivering the best
+//  framework. Unsupported on-device recognizers are refused. It streams live
+//  partial results while the user holds the hotkey and delivers the best
 //  final transcript on release.
 //
 //  The push-to-talk dictation approach here — live SFSpeechAudioBufferRecognition
@@ -23,13 +22,91 @@ import Foundation
 import Observation
 import Speech
 
-/// Hold-to-talk microphone dictation, driven entirely by the Speech framework.
-///
-/// The hotkey wiring is the integrator's job — this type only exposes
-/// `startListening()` / `stopListening()` / `toggle()` for a shortcut monitor to
-/// call on key-down / key-up. `isListening` and `partialTranscript` are
-/// observable so a SwiftUI overlay can mirror the live transcription; the
-/// finished text arrives once through `onFinalTranscript`.
+/// State carried across permission waits and asynchronous recognition callbacks.
+/// Every physical hold has its own ID; a released/cancelled/previous hold cannot
+/// start, finish, or overwrite the next one.
+struct VoiceHoldSession {
+    enum Phase { case waitingForPermission, recording, awaitingRelease, finalizing }
+    private(set) var holdID: UUID?
+    private(set) var phase: Phase?
+
+    mutating func begin(_ id: UUID) {
+        holdID = id
+        phase = .waitingForPermission
+    }
+
+    mutating func authorize(_ id: UUID, isHeld: Bool, permissionGranted: Bool) -> Bool {
+        guard holdID == id, phase == .waitingForPermission else { return false }
+        guard isHeld, permissionGranted else { cancel(id); return false }
+        phase = .recording
+        return true
+    }
+
+    /// Returns true only when there is captured speech to finalize.
+    mutating func release(_ id: UUID) -> Bool {
+        guard holdID == id else { return false }
+        switch phase {
+        case .recording, .awaitingRelease:
+            phase = .finalizing
+            return true
+        case .waitingForPermission:
+            cancel(id)
+            return false
+        default:
+            return false
+        }
+    }
+
+    func acceptsRecognition(_ id: UUID) -> Bool {
+        holdID == id && (phase == .recording || phase == .finalizing)
+    }
+
+    /// The recognizer can finish early; keep its transcript until Fn is released.
+    mutating func recognitionEnded(_ id: UUID) {
+        guard holdID == id, phase == .recording else { return }
+        phase = .awaitingRelease
+    }
+
+    mutating func finish(_ id: UUID) -> Bool {
+        guard holdID == id, phase == .finalizing else { return false }
+        cancel(id)
+        return true
+    }
+
+    mutating func cancel(_ id: UUID? = nil) {
+        if let id, holdID != id { return }
+        holdID = nil
+        phase = nil
+    }
+}
+
+/// The audio callback runs outside the main actor. Closing this gate and checking
+/// the hardware key for EVERY buffer prevent queued audio entering recognition
+/// after release, even while the main run loop is occupied.
+final class VoiceAudioGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = true
+    private let isHeld: () -> Bool
+
+    init(isHeld: @escaping () -> Bool) { self.isHeld = isHeld }
+
+    func whileHeld(_ consume: () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isOpen else { return }
+        guard isHeld() else { isOpen = false; return }
+        consume()
+    }
+
+    func close() {
+        lock.lock()
+        isOpen = false
+        lock.unlock()
+    }
+}
+
+/// One microphone owner. Only a current physical Fn hold can request capture;
+/// the UI observes its state and never creates another recorder.
 @Observable
 @MainActor
 final class VoiceInputController {
@@ -40,43 +117,24 @@ final class VoiceInputController {
 
     // MARK: Observable state
 
-    /// True from the moment `startListening()` begins capturing until the
-    /// session ends (either `stopListening()` finalizes or an error tears it
-    /// down). Flips to false the instant capture stops, before the final
-    /// transcript is delivered, so UI can react on key-release without waiting
-    /// for SFSpeech to flush.
+    /// True only while the microphone engine is capturing a physical Fn hold.
     private(set) var isListening = false
-
-    /// The most recent partial transcription, updated live while listening.
-    /// Cleared to empty when a session ends.
     private(set) var partialTranscript = ""
+    @ObservationIgnored var onFinalTranscript: ((String) -> Void)?
 
-    /// Fired exactly once per session with the final, non-empty transcript.
-    /// Not fired when nothing intelligible was said.
-    @ObservationIgnored
-    var onFinalTranscript: ((String) -> Void)?
-
-    // MARK: Private machinery
-
-    @ObservationIgnored private let recognizer: SFSpeechRecognizer? =
-        SFSpeechRecognizer(locale: Locale(identifier: "en-US")) ?? SFSpeechRecognizer()
-    @ObservationIgnored private let audioEngine = AVAudioEngine()
+    // Hardware is created lazily after an authorized hold, never at app launch.
+    @ObservationIgnored private var audioEngine: AVAudioEngine?
+    @ObservationIgnored private var recognizer: SFSpeechRecognizer?
     @ObservationIgnored private var request: SFSpeechAudioBufferRecognitionRequest?
     @ObservationIgnored private var task: SFSpeechRecognitionTask?
     @ObservationIgnored private var hasInstalledTap = false
-
-    /// Set while `stopListening()` waits for SFSpeech to emit the final result.
-    @ObservationIgnored private var isFinalizing = false
-    /// Guards `deliverFinal(_:)` so the final transcript fires at most once,
-    /// whether it arrives via `isFinal`, an error, or the fallback timer.
-    @ObservationIgnored private var hasDeliveredFinal = false
+    @ObservationIgnored private var audioGate: VoiceAudioGate?
+    @ObservationIgnored private var session = VoiceHoldSession()
+    @ObservationIgnored private var permissionTask: Task<Void, Never>?
+    @ObservationIgnored private var permissionRequest: Task<Bool, Never>?
     @ObservationIgnored private var latestTranscript = ""
-    /// Guarantees delivery if SFSpeech never emits `isFinal` after `endAudio()`.
-    @ObservationIgnored private var finalizeFallback: DispatchWorkItem?
-
-    /// How long to wait after `endAudio()` for a real `isFinal` result before
-    /// falling back to the latest partial transcript.
-    @ObservationIgnored private let finalTranscriptFallbackDelay: TimeInterval = 1.5
+    @ObservationIgnored private var finalizeFallback: Task<Void, Never>?
+    private let finalTranscriptFallbackDelay: UInt64 = 1_500_000_000
 
     private init() {}
 
@@ -86,8 +144,15 @@ final class VoiceInputController {
     /// only when BOTH are granted. Safe to call repeatedly; already-granted
     /// permissions resolve immediately without re-prompting.
     func requestPermission() async -> Bool {
-        guard await requestMicrophoneAccess() else { return false }
-        return await requestSpeechRecognitionAccess()
+        if let permissionRequest { return await permissionRequest.value }
+        let request = Task { @MainActor in
+            guard await self.requestMicrophoneAccess() else { return false }
+            return await self.requestSpeechRecognitionAccess()
+        }
+        permissionRequest = request
+        let granted = await request.value
+        permissionRequest = nil
+        return granted
     }
 
     private func requestMicrophoneAccess() async -> Bool {
@@ -131,160 +196,152 @@ final class VoiceInputController {
 
     // MARK: Control
 
-    /// Begins live on-device transcription from the microphone. Idempotent
-    /// against double-start (a second call while already listening is ignored).
-    /// Returns silently — never crashes — if permissions are missing, the
-    /// recognizer is unavailable, or there is no usable audio input.
-    func startListening() {
-        guard !isListening else { return }
+    /// A permission dialog can outlive the key press. Authorize this exact hold
+    /// again after the await, before creating an engine or accessing its input.
+    func beginListening(holdID: UUID) {
+        guard HotkeyManager.shared.isPushToTalkHeld(holdID) else { return }
+        guard session.holdID != holdID else { return }
+        cancelListening()
+        session.begin(holdID)
+        permissionTask = Task { @MainActor in
+            let granted = await requestPermission()
+            guard !Task.isCancelled else { return }
+            guard session.authorize(holdID,
+                                    isHeld: HotkeyManager.shared.isPushToTalkHeld(holdID),
+                                    permissionGranted: granted) else { return }
+            startCapture(holdID: holdID)
+        }
+    }
 
-        // Clear any session still finalizing from a previous release so its
-        // fallback timer / task can't bleed into this one.
-        finalizeFallback?.cancel()
-        finalizeFallback = nil
-        teardownAudioAndTask()
-
-        guard hasRequiredPermissions else {
-            // Integrator is expected to call requestPermission() up front.
-            print("VoiceInputController: microphone or speech-recognition permission not granted; ignoring start.")
+    private func startCapture(holdID: UUID) {
+        guard session.holdID == holdID, hasRequiredPermissions,
+              HotkeyManager.shared.isPushToTalkHeld(holdID) else {
+            cancelListening(holdID: holdID)
             return
         }
-
-        guard let recognizer, recognizer.isAvailable else {
-            print("VoiceInputController: speech recognizer unavailable; ignoring start.")
+        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
+              recognizer.isAvailable, recognizer.supportsOnDeviceRecognition else {
+            print("VoiceInputController: on-device speech recognition unavailable; capture refused.")
+            cancelListening(holdID: holdID)
             return
         }
-
-        // Fresh session state.
+        self.recognizer = recognizer
         latestTranscript = ""
         partialTranscript = ""
-        hasDeliveredFinal = false
-        isFinalizing = false
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.taskHint = .dictation
-        if recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
+        request.requiresOnDeviceRecognition = true
         self.request = request
 
-        let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        // A zero sample-rate means there is no usable input device; installing a
-        // tap with that format would throw an ObjC exception, so bail cleanly.
-        guard format.sampleRate > 0, format.channelCount > 0 else {
-            print("VoiceInputController: no usable audio input device; ignoring start.")
-            self.request = nil
+        let engine = AVAudioEngine()
+        audioEngine = engine
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0,
+              HotkeyManager.shared.isPushToTalkHeld(holdID) else {
+            cancelListening(holdID: holdID)
             return
         }
 
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            // Runs on the realtime audio thread. `append` is thread-safe and we
-            // touch no actor-isolated state here.
-            request.append(buffer)
+        let gate = VoiceAudioGate { HotkeyManager.isPhysicalFnDown }
+        audioGate = gate
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            gate.whileHeld { request.append(buffer) }
         }
         hasInstalledTap = true
-
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-        } catch {
-            print("VoiceInputController: failed to start audio engine: \(error.localizedDescription)")
-            inputNode.removeTap(onBus: 0)
-            hasInstalledTap = false
-            self.request = nil
+        engine.prepare()
+        guard HotkeyManager.shared.isPushToTalkHeld(holdID) else {
+            cancelListening(holdID: holdID)
             return
         }
-
+        do {
+            try engine.start()
+        } catch {
+            print("VoiceInputController: failed to start audio engine: \(error.localizedDescription)")
+            cancelListening(holdID: holdID)
+            return
+        }
+        guard HotkeyManager.shared.isPushToTalkHeld(holdID) else {
+            cancelListening(holdID: holdID)
+            return
+        }
+        isListening = true
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            // Called on an arbitrary queue. Extract Sendable values here, then
-            // hop to the main actor to mutate observable state.
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
             let errored = error != nil
             Task { @MainActor in
-                self?.handleRecognition(text: text, isFinal: isFinal, errored: errored)
+                self?.handleRecognition(holdID: holdID, text: text, isFinal: isFinal, errored: errored)
             }
         }
-
-        isListening = true
     }
 
-    /// Ends capture and fires `onFinalTranscript` with the best final text.
-    /// Idempotent: a call when not listening is ignored.
-    func stopListening() {
-        guard isListening else { return }
-
-        isListening = false
-        isFinalizing = true
-
-        // Stop feeding audio, then close the request so SFSpeech emits its final
-        // result. Keep the recognition task alive to flush that result.
-        if audioEngine.isRunning {
-            audioEngine.stop()
+    /// Release stops the hardware immediately. Recognition may flush already
+    /// captured speech, but can neither receive new buffers nor reopen capture.
+    func stopListening(holdID: UUID) {
+        guard session.holdID == holdID else { return }
+        let recognitionAlreadyEnded = session.phase == .awaitingRelease
+        guard session.release(holdID) else {
+            if session.holdID == nil { cancelListening() }
+            return
         }
-        removeTapIfNeeded()
+        stopAudio()
         request?.endAudio()
-
-        // Guarantee delivery even if `isFinal` never arrives.
-        finalizeFallback?.cancel()
-        let fallback = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            Task { @MainActor in
-                self.deliverFinal(self.latestTranscript)
-            }
+        if recognitionAlreadyEnded {
+            deliverFinal(latestTranscript, holdID: holdID)
+            return
         }
-        finalizeFallback = fallback
-        DispatchQueue.main.asyncAfter(deadline: .now() + finalTranscriptFallbackDelay, execute: fallback)
+        finalizeFallback?.cancel()
+        finalizeFallback = Task { @MainActor in
+            do { try await Task.sleep(nanoseconds: finalTranscriptFallbackDelay) }
+            catch { return }
+            deliverFinal(latestTranscript, holdID: holdID)
+        }
     }
 
-    /// Push-to-talk convenience: start if idle, stop if listening.
-    func toggle() {
-        if isListening {
-            stopListening()
-        } else {
-            startListening()
-        }
+    /// Sleep, termination, or a superseding hold discards the old transcript.
+    func cancelListening(holdID: UUID? = nil) {
+        if let holdID, session.holdID != holdID { return }
+        session.cancel(holdID)
+        permissionTask?.cancel()
+        permissionTask = nil
+        finalizeFallback?.cancel()
+        finalizeFallback = nil
+        teardownAudioAndTask()
+        latestTranscript = ""
+        partialTranscript = ""
     }
 
     // MARK: Recognition handling
 
-    private func handleRecognition(text: String?, isFinal: Bool, errored: Bool) {
-        // Ignore callbacks from a session we've already torn down.
-        guard task != nil else { return }
-
+    private func handleRecognition(holdID: UUID, text: String?, isFinal: Bool, errored: Bool) {
+        guard session.acceptsRecognition(holdID), task != nil else { return }
         if let text {
             latestTranscript = text
             partialTranscript = text
         }
-
-        if isFinal {
-            deliverFinal(latestTranscript)
-            return
-        }
-
-        if errored {
-            // An error can arrive as the natural end-of-stream after endAudio(),
-            // or mid-session (e.g. the recognizer dropped). Either way, finish
-            // gracefully with whatever we have rather than leaving a live tap.
-            deliverFinal(latestTranscript)
+        guard isFinal || errored else { return }
+        stopAudio()
+        if session.phase == .finalizing {
+            deliverFinal(latestTranscript, holdID: holdID)
+        } else {
+            // No action is submitted before the physical hold is released.
+            session.recognitionEnded(holdID)
+            task?.cancel()
+            task = nil
+            request = nil
         }
     }
 
-    private func deliverFinal(_ text: String) {
-        guard !hasDeliveredFinal else { return }
-        hasDeliveredFinal = true
-
+    private func deliverFinal(_ text: String, holdID: UUID) {
+        guard session.finish(holdID) else { return }
         finalizeFallback?.cancel()
         finalizeFallback = nil
-
         teardownAudioAndTask()
-
-        isListening = false
-        isFinalizing = false
         partialTranscript = ""
-
+        latestTranscript = ""
         let finalText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !finalText.isEmpty else { return }
         onFinalTranscript?(finalText)
@@ -292,19 +349,24 @@ final class VoiceInputController {
 
     // MARK: Teardown
 
-    private func teardownAudioAndTask() {
-        if audioEngine.isRunning {
-            audioEngine.stop()
+    private func stopAudio() {
+        audioGate?.close()
+        audioGate = nil
+        if let audioEngine {
+            if audioEngine.isRunning { audioEngine.stop() }
+            if hasInstalledTap { audioEngine.inputNode.removeTap(onBus: 0) }
         }
-        removeTapIfNeeded()
+        hasInstalledTap = false
+        audioEngine = nil
+        isListening = false
+    }
+
+    private func teardownAudioAndTask() {
+        stopAudio()
+        request?.endAudio()
         task?.cancel()
         task = nil
         request = nil
-    }
-
-    private func removeTapIfNeeded() {
-        guard hasInstalledTap else { return }
-        audioEngine.inputNode.removeTap(onBus: 0)
-        hasInstalledTap = false
+        recognizer = nil
     }
 }

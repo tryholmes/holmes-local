@@ -33,13 +33,10 @@ final class SettingsWindowController: NSObject {
     }
 
     private func createWindow() {
-        // SettingsView pins itself to 640×520 (room for the seven tabs and the
-        // Local Model pane); match it. Transparent titlebar + full-size content
-        // so the glass background runs edge to edge like the Holmes login/panel
-        // windows.
+        // The model list and advanced controls scroll inside a resizable shell.
         let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 520),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 620),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -49,13 +46,14 @@ final class SettingsWindowController: NSObject {
         w.isMovableByWindowBackground = true
         w.isOpaque = false
         w.backgroundColor = .clear
+        w.contentMinSize = NSSize(width: 640, height: 520)
         w.center()
 
         // We hold a strong reference to `window`; without this, clicking the red
         // close button would over-release the window and crash on next open.
         w.isReleasedWhenClosed = false
 
-        w.contentView = NSHostingView(rootView: SettingsView())
+        w.contentView = NSHostingView(rootView: SettingsView().preferredColorScheme(.dark))
         self.window = w
     }
 }

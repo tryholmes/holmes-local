@@ -191,11 +191,11 @@ struct LottieCharacterView: View {
         HStack(spacing: 40) {
             VStack {
                 SideIconView(state: .constant(.dormant), isExpanded: .constant(false)) {}
-                Text("Dormant").font(.caption)
+                Text("Dormant").font(NoirFonts.caption())
             }
             VStack {
                 SideIconView(state: .constant(.listening), isExpanded: .constant(false)) {}
-                Text("Listening").font(.caption)
+                Text("Listening").font(NoirFonts.caption())
             }
         }
     }

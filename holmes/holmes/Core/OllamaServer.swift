@@ -96,29 +96,29 @@ final class OllamaServer {
     /// Minimum spacing between automatic `ollama serve` spawns from the
     /// monitor, so a permanently broken install isn't relaunched every 30 s.
     private static let autoStartBackoff: TimeInterval = 300
-    private let session: URLSession = {
-        let c = URLSessionConfiguration.ephemeral
-        c.timeoutIntervalForRequest = 8
-        return URLSession(configuration: c)
-    }()
+    private let session: URLSession
     /// Used while an agent session is generating: the server is alive but may
     /// take a while to answer even /api/version on a swapping laptop.
-    private let patientSession: URLSession = {
-        let c = URLSessionConfiguration.ephemeral
-        c.timeoutIntervalForRequest = 30
-        return URLSession(configuration: c)
-    }()
-    private var probeSession: URLSession = {
-        let c = URLSessionConfiguration.ephemeral
-        c.timeoutIntervalForRequest = 8
-        return URLSession(configuration: c)
-    }()
+    private let patientSession: URLSession
+    private var probeSession: URLSession
 
-    private init() {
+    /// An injected session lets transport/state regressions run without a live
+    /// Ollama installation. The app uses the default ephemeral sessions.
+    init(session injectedSession: URLSession? = nil) {
+        let normal = URLSessionConfiguration.ephemeral
+        normal.timeoutIntervalForRequest = 8
+        let patient = URLSessionConfiguration.ephemeral
+        patient.timeoutIntervalForRequest = 30
+        session = injectedSession ?? URLSession(configuration: normal)
+        patientSession = injectedSession ?? URLSession(configuration: patient)
+        probeSession = session
         OllamaConfig.onSettingsChanged = { [weak self] in
-            Task { @MainActor in
-                await OllamaClient.shared.forgetCapabilities()
-                await self?.refresh()
+            // Settings controls call on the main thread: close the readiness
+            // gate in that same turn, before an old probe can publish success.
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self?.configurationDidChange() }
+            } else {
+                Task { @MainActor in self?.configurationDidChange() }
             }
         }
     }
@@ -172,18 +172,58 @@ final class OllamaServer {
     // MARK: - Probe
 
     private var probeInFlight = false
+    private var configurationGeneration: UInt64 = 0
+    private var reprobeRequested = false
+    private var capabilitiesNeedReset = false
+    private var configuredHost = OllamaConfig.host
+
+    private func configurationDidChange() {
+        configurationGeneration &+= 1
+        reprobeRequested = true
+        capabilitiesNeedReset = true
+        consecutiveFailures = 0
+        lastProbe = nil
+        if configuredHost != OllamaConfig.host {
+            configuredHost = OllamaConfig.host
+            serverVersion = nil
+            versionWarning = nil
+            installedModels = []
+            pullError = nil
+        }
+        set(.unknown, problem: "Checking Ollama…")
+        Task { await refresh() }
+    }
 
     func refresh() async {
-        // Six suspension points and callers from the monitor, the pane, the
-        // onboarding step and failure hooks: overlapping probes would publish
-        // stale states over fresh ones. One at a time.
+        // Keep probes serial, but coalesce settings changes into another pass.
+        // Returning from an overlapping refresh must never lose a changed host
+        // or model until the next 30-second monitor tick.
         if probeInFlight { return }
         probeInFlight = true
         defer { probeInFlight = false }
-        lastProbe = Date()
+        repeat {
+            reprobeRequested = false
+            let generation = configurationGeneration
+            if capabilitiesNeedReset {
+                capabilitiesNeedReset = false
+                // Wait for the old probe to finish before clearing its cache.
+                await OllamaClient.shared.forgetCapabilities()
+                guard generation == configurationGeneration else { continue }
+            }
+            await probe(generation: generation)
+        } while reprobeRequested
+    }
+
+    private func probe(generation: UInt64) async {
+        defer {
+            if generation == configurationGeneration { lastProbe = Date() }
+        }
         probeSession = await OllamaClient.shared.isAgentSessionActive ? patientSession : session
+        guard generation == configurationGeneration else { return }
         // 1. Server up?
-        guard let version = await fetchVersion() else {
+        let fetchedVersion = await fetchVersion()
+        guard generation == configurationGeneration else { return }
+        guard let version = fetchedVersion else {
             consecutiveFailures += 1
             if case .starting = status {
                 // keep "starting" while a spawn is in flight
@@ -213,7 +253,9 @@ final class OllamaServer {
         // 2. Models. A transport failure on /api/tags (nil) is NOT "no models":
         // apply the same hysteresis as /api/version instead of flipping every
         // gate to "model missing" because the GPU was busy for one probe.
-        guard let fetched = await fetchInstalledModels() else {
+        let fetchedModels = await fetchInstalledModels()
+        guard generation == configurationGeneration else { return }
+        guard let fetched = fetchedModels else {
             consecutiveFailures += 1
             if status.isReady, consecutiveFailures < 2 {
                 print("[Holmes] OllamaServer: /api/tags failed once; keeping ready until a second miss")
@@ -230,6 +272,7 @@ final class OllamaServer {
             // the adoption was never a choice, so the recommendation wins.
             OllamaConfig.clearAdoptedModel()
             await OllamaClient.shared.forgetCapabilities()
+            guard generation == configurationGeneration else { return }
         }
         var wanted = OllamaConfig.model
         var isInstalled = installedModels.contains { Self.sameTag($0.name, wanted) }
@@ -241,7 +284,9 @@ final class OllamaServer {
             // Nobody picked a model yet and the recommended one isn't here: use
             // any installed model that can see AND act, instead of demanding a
             // multi-GB download the user may not need.
-            if let usable = await firstUsableInstalledModel() {
+            let usable = await firstUsableInstalledModel(generation: generation)
+            guard generation == configurationGeneration else { return }
+            if let usable {
                 OllamaConfig.adoptModelSilently(usable)
                 wanted = usable
                 isInstalled = true
@@ -255,6 +300,7 @@ final class OllamaServer {
         // 3. Capabilities of the chosen model
         do {
             let caps = try await OllamaClient.shared.capabilities(for: wanted)
+            guard generation == configurationGeneration else { return }
             var missing: [String] = []
             if !caps.tools { missing.append("tool calling") }
             if !caps.vision { missing.append("vision") }
@@ -264,6 +310,7 @@ final class OllamaServer {
                 return
             }
         } catch {
+            guard generation == configurationGeneration else { return }
             consecutiveFailures += 1
             if status.isReady, consecutiveFailures < 2 {
                 print("[Holmes] OllamaServer: /api/show failed once (\(error.localizedDescription)); keeping ready until a second miss")
@@ -316,14 +363,16 @@ final class OllamaServer {
 
     /// First installed model advertising both `tools` and `vision`, preferring
     /// non-thinking ("instruct") tags, then smaller downloads.
-    private func firstUsableInstalledModel() async -> String? {
+    private func firstUsableInstalledModel(generation: UInt64) async -> String? {
         let ordered = installedModels.sorted {
             let a = $0.name.lowercased().contains("instruct"), b = $1.name.lowercased().contains("instruct")
             if a != b { return a }
             return $0.sizeBytes < $1.sizeBytes
         }
         for m in ordered.prefix(8) {
-            if let caps = try? await OllamaClient.shared.capabilities(for: m.name), caps.tools, caps.vision {
+            let capabilities = try? await OllamaClient.shared.capabilities(for: m.name)
+            guard generation == configurationGeneration else { return nil }
+            if let caps = capabilities, caps.tools, caps.vision {
                 return m.name
             }
         }
@@ -378,7 +427,10 @@ final class OllamaServer {
         if serverStartInFlight { return false }
         serverStartInFlight = true
         defer { serverStartInFlight = false }
-        if await fetchVersion() != nil { await refresh(); return true }
+        let generation = configurationGeneration
+        let version = await fetchVersion()
+        guard generation == configurationGeneration else { return false }
+        if version != nil { await refresh(); return true }
         guard let binary = Self.findBinary() else {
             set(.notInstalled, problem: "Ollama is not installed")
             return false
@@ -421,7 +473,10 @@ final class OllamaServer {
         set(.starting, problem: "Starting Ollama…")
         for _ in 0..<40 {
             try? await Task.sleep(nanoseconds: 500_000_000)
-            if await fetchVersion() != nil {
+            guard generation == configurationGeneration, !Task.isCancelled else { return false }
+            let version = await fetchVersion()
+            guard generation == configurationGeneration else { return false }
+            if version != nil {
                 await refresh()
                 return status.isReady || !isUnreachable(status)
             }

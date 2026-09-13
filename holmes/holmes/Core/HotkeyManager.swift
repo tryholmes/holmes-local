@@ -2,6 +2,46 @@ import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 
+/// A hold starts only on the physical Fn key's own flagsChanged event. Other
+/// keys may carry .function (including navigation/function keys); that flag alone
+/// is never permission to open the microphone.
+struct FnHoldState {
+    enum Transition: Equatable {
+        case began(UUID)
+        case ended(UUID)
+        case cancelled(UUID)
+    }
+
+    private(set) var activeID: UUID?
+
+    mutating func handle(keyCode: UInt16, functionFlag: Bool, physicalFnDown: Bool) -> Transition? {
+        if !physicalFnDown { return release() }
+        guard keyCode == UInt16(kVK_Function) else { return nil }
+        guard functionFlag else { return release() }
+        guard activeID == nil else { return nil }
+        let id = UUID()
+        activeID = id
+        return .began(id)
+    }
+
+    /// Polling only ends a hold; it must never start one on launch or wake.
+    mutating func reconcile(physicalFnDown: Bool) -> Transition? {
+        physicalFnDown ? nil : release()
+    }
+
+    mutating func cancel() -> Transition? {
+        guard let id = activeID else { return nil }
+        activeID = nil
+        return .cancelled(id)
+    }
+
+    private mutating func release() -> Transition? {
+        guard let id = activeID else { return nil }
+        activeID = nil
+        return .ended(id)
+    }
+}
+
 class HotkeyManager {
     static let shared = HotkeyManager()
 
@@ -17,27 +57,31 @@ class HotkeyManager {
     // while another app is frontmost mid-run.
     private var commandOptionEscapeID = EventHotKeyID(signature: OSType(0x484F4C4D), id: 4)
 
-    // Clicky push-to-talk — HOLD the Fn (globe) key. The Fn key is a modifier FLAG,
-    // not a keycode, so Carbon's RegisterEventHotKey can't bind it. Instead we watch
-    // NSEvent .flagsChanged for the .function flag and drive true hold-to-talk:
-    // Fn-down begins listening, Fn-up ends it and delivers the transcript. Both a
-    // global monitor (works while another app is frontmost — needs Accessibility
-    // trust, which Holmes already has) and a local monitor (works when Holmes is
-    // frontmost) are installed; their tokens are stored so teardown can remove them.
     private var fnMonitors: [Any] = []
-    /// Tracks the .function flag across events so `begin` fires only on a genuine
-    /// false→true edge and `end` only on a genuine true→false edge (guards against
-    /// duplicate .flagsChanged events that keep the flag in the same state).
-    private var fnKeyIsDown = false
+    private var fnHold = FnHoldState()
+    private var fnReleaseWatchdog: Timer?
+    private var fnLifecycleObservers: [NSObjectProtocol] = []
+
+    /// Hardware state, rather than the flags on an unrelated/synthetic event.
+    static var isPhysicalFnDown: Bool {
+        CGEventSource.keyState(.hidSystemState, key: CGKeyCode(kVK_Function))
+    }
+
+    func isPushToTalkHeld(_ id: UUID) -> Bool {
+        fnHold.activeID == id && Self.isPhysicalFnDown
+    }
 
     var onControlSpace: (() -> Void)?
     var onOptionSpace: (() -> Void)?
     var onCommandBackslash: (() -> Void)?
     var onCommandOptionEscape: (() -> Void)?
     /// Fn pressed (false→true edge) — begin push-to-talk.
-    var onPushToTalkDown: (() -> Void)?
+    var onPushToTalkDown: ((UUID) -> Void)?
     /// Fn released (true→false edge) — end push-to-talk and route the transcript.
-    var onPushToTalkUp: (() -> Void)?
+    var onPushToTalkUp: ((UUID) -> Void)?
+    /// A nil ID also cancels speech still finalizing after the key was released.
+    /// Invoked on the main thread; lifecycle cancellation must be synchronous.
+    var onPushToTalkCancel: ((UUID?) -> Void)?
 
     private init() {}
 
@@ -63,9 +107,14 @@ class HotkeyManager {
         if let handler = commandOptionEscapeHandler {
             UnregisterEventHotKey(handler)
         }
+        cancelPushToTalk()
+        fnReleaseWatchdog?.invalidate()
+        fnReleaseWatchdog = nil
         fnMonitors.forEach { NSEvent.removeMonitor($0) }
         fnMonitors.removeAll()
-        fnKeyIsDown = false
+        let center = NSWorkspace.shared.notificationCenter
+        fnLifecycleObservers.forEach { center.removeObserver($0) }
+        fnLifecycleObservers.removeAll()
     }
     
     private func registerControlSpace() {
@@ -124,28 +173,13 @@ class HotkeyManager {
         )
     }
 
-    /// Installs the Fn (globe) hold-to-talk detector. Unlike the Carbon hotkeys
-    /// above, the Fn key isn't a keycode — it's the `.function` modifier flag — so
-    /// we observe `.flagsChanged` via NSEvent monitors and track the flag's edges.
-    ///
-    /// Both monitors are installed on purpose:
-    ///   • the GLOBAL monitor sees events while another app is frontmost (this is
-    ///     the common case for push-to-talk), but requires Accessibility trust;
-    ///   • the LOCAL monitor sees events when Holmes itself is frontmost.
-    /// The same `handleFnFlagsChanged(_:)` de-dupes across both via `fnKeyIsDown`,
-    /// so a single physical press never double-fires.
-    ///
-    /// macOS caveat: depending on System Settings ▸ Keyboard ▸ "Press 🌐 key to",
-    /// the Fn/globe key may ALSO surface the emoji/dictation picker or change the
-    /// input source. A monitor cannot suppress that (global monitors are passive —
-    /// they observe but never consume events), and we intentionally don't try to.
-    /// Starting/stopping listening on the flag edge still works alongside it.
+    /// Both monitors are passive: macOS still handles the user's Globe-key
+    /// preference. The keycode and hardware state distinguish a real hold from
+    /// unrelated .function flags. No recording or permission prompt starts here.
     private func installFnPushToTalkMonitor() {
-        // The global monitor only receives keyboard/flag events when the process is
-        // Accessibility-trusted. Holmes already is (it posts CGEvents for computer
-        // control), but log clearly if that ever isn't the case.
+        guard fnMonitors.isEmpty else { return }
         if !AXIsProcessTrusted() {
-            print("HotkeyManager: Accessibility is not trusted — the global Fn hold-to-talk monitor won't receive events while another app is frontmost. Grant access in System Settings ▸ Privacy & Security ▸ Accessibility.")
+            print("HotkeyManager: Accessibility is not trusted — grant it to use Fn hold-to-talk while another app is frontmost.")
         }
 
         let global = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -155,26 +189,65 @@ class HotkeyManager {
             self?.handleFnFlagsChanged(event)
             return event
         }
-
         if let global { fnMonitors.append(global) }
         if let local { fnMonitors.append(local) }
-    }
 
-    /// Fires begin/end push-to-talk on genuine transitions of the Fn (`.function`)
-    /// flag only. `.flagsChanged` can arrive repeatedly for one physical press (and
-    /// once from each of the two monitors), so we ignore any event that doesn't flip
-    /// `fnKeyIsDown`. Invoked on the main thread by NSEvent.
-    private func handleFnFlagsChanged(_ event: NSEvent) {
-        let fnDown = event.modifierFlags.contains(.function)
-        guard fnDown != fnKeyIsDown else { return }
-        fnKeyIsDown = fnDown
-        if fnDown {
-            onPushToTalkDown?()
-        } else {
-            onPushToTalkUp?()
+        let center = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
+                     NSWorkspace.sessionDidResignActiveNotification] {
+            fnLifecycleObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                self.cancelPushToTalk()
+            })
         }
     }
 
+    /// A released key no longer has a hotkey ID, but its recognizer can still
+    /// be flushing speech. Always notify the voice owner on sleep/lock/teardown.
+    /// Active holds retain their ID so their cancellation cannot affect a newer
+    /// hold. A nil cancellation is delivered synchronously by AppDelegate.
+    func cancelPushToTalk() {
+        if let transition = fnHold.cancel() {
+            publishFnTransition(transition)
+        } else {
+            fnReleaseWatchdog?.invalidate()
+            fnReleaseWatchdog = nil
+            onPushToTalkCancel?(nil)
+        }
+    }
+
+    private func handleFnFlagsChanged(_ event: NSEvent) {
+        let transition = fnHold.handle(keyCode: event.keyCode,
+                                       functionFlag: event.modifierFlags.contains(.function),
+                                       physicalFnDown: Self.isPhysicalFnDown)
+        publishFnTransition(transition)
+    }
+
+    private func publishFnTransition(_ transition: FnHoldState.Transition?) {
+        guard let transition else { return }
+        switch transition {
+        case .began(let id):
+            // Common modes also run while a menu or permission sheet is open.
+            // Only an active hold pays for polling; a missed key-up cannot leave
+            // capture running until some unrelated keyboard event arrives.
+            fnReleaseWatchdog?.invalidate()
+            let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.publishFnTransition(self.fnHold.reconcile(physicalFnDown: Self.isPhysicalFnDown))
+            }
+            fnReleaseWatchdog = timer
+            RunLoop.main.add(timer, forMode: .common)
+            onPushToTalkDown?(id)
+        case .ended(let id):
+            fnReleaseWatchdog?.invalidate()
+            fnReleaseWatchdog = nil
+            onPushToTalkUp?(id)
+        case .cancelled(let id):
+            fnReleaseWatchdog?.invalidate()
+            fnReleaseWatchdog = nil
+            onPushToTalkCancel?(id)
+        }
+    }
 
     private func installEventHandler() {
         var eventSpec = EventTypeSpec(

@@ -17,10 +17,9 @@ struct WelcomeScreen: View {
                     .opacity(iconOpacity)
 
                 VStack(spacing: 10) {
-                    Text("HOLMES")
-                        .font(.system(size: 40, weight: .bold, design: .monospaced))
+                    Text("holmes")
+                        .font(NoirFonts.brand(size: 60))
                         .foregroundStyle(NoirColors.charcoalDark)
-                        .tracking(6)
 
                     Text("Zero Prompt AI for macOS")
                         .font(NoirFonts.body())

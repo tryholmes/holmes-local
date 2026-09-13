@@ -26,40 +26,43 @@ extension Color {
     }
 }
 
-// Apple Glass palette — pure white accents, black CTAs
+// Shared native palette sampled from try-holmes.com.
 struct NoirColors {
+    static let canvas          = Color(hex: "060606")
+    static let panelBackground = Color(hex: "121212")
+    static let surface         = Color(hex: "1E1E1E")
+    static let cream           = Color(hex: "EBE2D1")
     // Glass surface layers (layered over NSVisualEffectView blur)
-    static let glassSurface    = Color.white.opacity(0.08)
-    static let glassElevated   = Color.white.opacity(0.13)
+    static let glassSurface    = Color.white.opacity(0.035)
+    static let glassElevated   = Color.white.opacity(0.07)
     static let glassChrome     = Color.white.opacity(0.05)
     static let glassInput      = Color.white.opacity(0.07)
 
     // Borders
-    static let glassBorder     = Color.white.opacity(0.18)
+    static let glassBorder     = Color.white.opacity(0.12)
     static let glassDivider    = Color.white.opacity(0.10)
-    static let glassStroke     = Color.white.opacity(0.25)
+    static let glassStroke     = Color.white.opacity(0.16)
     static let glassInner      = Color.white.opacity(0.06)
 
     // Text
-    static let textPrimary     = Color.white.opacity(0.92)
-    static let textSecondary   = Color.white.opacity(0.60)
-    static let textTertiary    = Color.white.opacity(0.38)
-    static let textPlaceholder = Color.white.opacity(0.25)
+    static let textPrimary     = Color(hex: "F6F0E9")
+    static let textSecondary   = Color.white.opacity(0.65)
+    static let textTertiary    = Color.white.opacity(0.48)
+    static let textPlaceholder = Color.white.opacity(0.38)
 
     // Icons
-    static let iconPrimary     = Color.white.opacity(0.88)
+    static let iconPrimary     = cream
     static let iconSecondary   = Color.white.opacity(0.45)
 
-    // Accent — pure white (replaces amber)
-    static let accent          = Color.white.opacity(0.90)
+    // Warm neutral accent, matching the website's labels and controls.
+    static let accent          = cream
     static let accentDim       = Color.white.opacity(0.10)
 
-    // CTA — bold black button with white label
-    static let ctaBackground   = Color(hex: "0E0E0E")
-    static let ctaForeground   = Color.white
+    static let ctaBackground   = Color(hex: "2B1717")
+    static let ctaForeground   = cream
 
     // Semantic
-    static let success         = Color(hex: "4CD97A")
+    static let success         = Color(hex: "8FA661")
     static let error           = Color(hex: "FF5E5E")
     static let calendarBlue    = Color(hex: "5EB5FF")
 

@@ -135,7 +135,7 @@ struct AgentMemoryCard: View {
                 }
 
                 Text("AGENT MEMORY")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textTertiary)
                     .tracking(2)
 
@@ -145,7 +145,7 @@ struct AgentMemoryCard: View {
                 // number that makes the card believable as persisted SQL.
                 if feed.totalCount > 0 {
                     Text("\(MemoryFormat.count(feed.totalCount)) · \(feed.todayCount) today")
-                        .font(.system(size: 9, weight: .regular, design: .monospaced))
+                        .font(NoirFonts.font(size: 9, weight: .regular, design: .monospaced))
                         .foregroundColor(NoirColors.textTertiary)
                         .lineLimit(1)
                 }
@@ -198,7 +198,7 @@ struct AgentMemoryCard: View {
                 HStack {
                     Spacer()
                     Text("more ↓")
-                        .font(.system(size: 9, weight: .regular, design: .monospaced))
+                        .font(NoirFonts.font(size: 9, weight: .regular, design: .monospaced))
                         .foregroundColor(NoirColors.textPlaceholder)
                 }
                 .padding(.horizontal, 12)
@@ -232,8 +232,8 @@ struct AgentMemoryCard: View {
             Image(systemName: "tray")
                 .font(.system(size: 11, weight: .regular))
                 .foregroundColor(NoirColors.textPlaceholder)
-            Text("No memories yet — Holmes records what you work on once the Comet extension is connected.")
-                .font(.system(size: 11, weight: .regular, design: .default))
+            Text("No memories yet — Holmes records what you work on once the browser extension is connected.")
+                .font(NoirFonts.font(size: 11, weight: .regular, design: .default))
                 .foregroundColor(NoirColors.textTertiary)
                 .lineSpacing(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -251,7 +251,7 @@ struct AgentMemoryCard: View {
                 .font(.system(size: 8, weight: .regular))
                 .foregroundColor(NoirColors.textPlaceholder)
             Text("SQLite · ~/Library/Application Support/Holmes/memory.db")
-                .font(.system(size: 8, weight: .regular, design: .monospaced))
+                .font(NoirFonts.font(size: 8, weight: .regular, design: .monospaced))
                 .foregroundColor(NoirColors.textPlaceholder)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -267,10 +267,10 @@ struct AgentMemoryCard: View {
     private func sectionLabel(_ title: String) -> some View {
         HStack(spacing: 5) {
             Text("▸")
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                 .foregroundColor(NoirColors.textPlaceholder)
             Text(title)
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                 .foregroundColor(NoirColors.textTertiary)
                 .tracking(1.5)
             Spacer(minLength: 0)
@@ -335,15 +335,15 @@ struct ReferencedMemoryBanner: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 5) {
                 Text("▸")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.textPlaceholder)
                 Text("REFERENCED NOW")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.accent.opacity(0.75))
                     .tracking(1.5)
                 Spacer(minLength: 0)
                 Text("(\(events.count))")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(NoirColors.accent.opacity(0.55))
             }
 
@@ -394,10 +394,10 @@ struct ReferencedMemoryBanner: View {
                 .font(.system(size: 7, weight: .bold))
                 .foregroundColor(NoirColors.textPlaceholder)
             Text("recalled for:")
-                .font(.system(size: 8, weight: .regular, design: .monospaced))
+                .font(NoirFonts.font(size: 8, weight: .regular, design: .monospaced))
                 .foregroundColor(NoirColors.textPlaceholder)
             Text(topicsLabel)
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                 .foregroundColor(NoirColors.accent.opacity(0.85))
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -436,14 +436,14 @@ struct MemoryRowView: View {
                     .padding(.top, 2)
 
                 Text(timeLabel)
-                    .font(.system(size: 9, weight: .regular, design: .monospaced))
+                    .font(NoirFonts.font(size: 9, weight: .regular, design: .monospaced))
                     .foregroundColor(NoirColors.textTertiary)
                     .frame(width: 34, alignment: .leading)
                     .padding(.top, 1)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(event.summary)
-                        .font(.system(size: 11, weight: .semibold, design: .default))
+                        .font(NoirFonts.font(size: 11, weight: .semibold, design: .default))
                         .foregroundColor(isHovered ? NoirColors.textPrimary : NoirColors.textSecondary)
                         .lineLimit(isReferenced ? 2 : 1)
                         .multilineTextAlignment(.leading)
@@ -457,17 +457,17 @@ struct MemoryRowView: View {
                     HStack(spacing: 4) {
                         if !matchedOn.isEmpty {
                             Text(matchedOn)
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                                 .foregroundColor(RecallReason.isWeak(matchedOn)
                                                  ? memoryAmber
                                                  : NoirColors.accent.opacity(0.7))
                                 .lineLimit(1)
                             Text("·")
-                                .font(.system(size: 9, weight: .regular, design: .monospaced))
+                                .font(NoirFonts.font(size: 9, weight: .regular, design: .monospaced))
                                 .foregroundColor(NoirColors.textPlaceholder)
                         }
                         Text(facts.provenanceLine)
-                            .font(.system(size: 9, weight: .regular, design: .monospaced))
+                            .font(NoirFonts.font(size: 9, weight: .regular, design: .monospaced))
                             .foregroundColor(NoirColors.textPlaceholder)
                             .lineLimit(1)
                             .truncationMode(.middle)
@@ -478,7 +478,7 @@ struct MemoryRowView: View {
 
                 if copied {
                     Text("copied")
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
+                        .font(NoirFonts.font(size: 8, weight: .bold, design: .monospaced))
                         .foregroundColor(NoirColors.success)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
@@ -556,13 +556,13 @@ struct ExtensionStatusRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(connected ? "●" : "○")
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                 .foregroundColor(connected ? NoirColors.success : memoryAmber)
 
             Text(connected
-                 ? "Comet extension connected"
-                 : "Comet extension not connected — context is OCR-guessed")
-                .font(.system(size: 10, weight: .regular, design: .default))
+                 ? "Browser extension connected"
+                 : "Browser extension not connected — context is OCR-guessed")
+                .font(NoirFonts.font(size: 10, weight: .regular, design: .default))
                 .foregroundColor(connected ? NoirColors.textSecondary : memoryAmber.opacity(0.85))
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -591,9 +591,10 @@ struct ExtensionStatusRow: View {
     Nothing has posted to localhost:5766 recently, so Holmes is falling back to \
     OCR of your screen and will hedge instead of quoting specifics.
 
-    To connect: open Comet ▸ Extensions ▸ enable Developer mode ▸ "Load unpacked", \
-    then select the holmes-extension folder inside the Holmes project. \
-    Reload the tab you want Holmes to read.
+    To connect: in Holmes Settings ▸ Privacy, click "Open extension folder". \
+    In Chrome, open Extensions ▸ Developer mode ▸ "Load unpacked" and choose \
+    Downloads/Holmes Extension. Keep the folder there; Chrome uses it. \
+    Pair the extension in Holmes, then reload the tab you want Holmes to read.
     """
 }
 

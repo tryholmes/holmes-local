@@ -7,12 +7,13 @@ struct NoirButton: View {
     let action: () -> Void
 
     @State private var isPressed = false
+    @Environment(\.isEnabled) private var isEnabled
     @FocusState private var isFocused: Bool
 
     enum ButtonStyle {
-        case primary    // teal fill, cream text
-        case secondary  // cream fill, teal text
-        case ghost      // transparent, dark border
+        case primary    // website brown with cream text
+        case secondary  // charcoal surface
+        case ghost      // transparent surface
     }
 
     init(_ title: String, icon: String? = nil, style: ButtonStyle = .primary, action: @escaping () -> Void) {
@@ -36,14 +37,15 @@ struct NoirButton: View {
             .padding(.vertical, 10)
             .background(backgroundColor)
             .foregroundColor(foregroundColor)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .glassBorder(cornerRadius: 8)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .glassBorder(cornerRadius: 6)
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: 6)
                     .stroke(NoirColors.goldAccent, lineWidth: 1.5)
                     .opacity(isFocused ? 1 : 0)
             )
             .scaleEffect(isPressed ? 0.97 : 1.0)
+            .opacity(isEnabled ? 1 : 0.4)
         }
         .buttonStyle(.plain)
         .focused($isFocused)

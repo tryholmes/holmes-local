@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var warmedUpModel: String? = nil
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NoirFonts.registerBundledFonts()
         // A write into the stdin pipe of an MCP server that has already exited
         // raises SIGPIPE, which terminates the process silently. Ignore it;
         // FileHandle.write then throws EPIPE, which MCPClient already handles.
@@ -17,6 +18,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated {
+            ClickyController.shared.cancelPushToTalk()
+        }
         HotkeyManager.shared.unregisterHotkeys()
     }
 
@@ -38,9 +42,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // monitor starts so the first probe can't slip past it.
             startLocalModel()
 
-            // Clicky loop: wire push-to-talk transcripts into the router and warm
-            // up mic/speech permission once, so the first hold doesn't silently
-            // no-op on a not-yet-determined grant.
+            // Wire voice routing without opening the microphone. Permissions
+            // and capture begin only in response to a physical Fn hold.
             ClickyController.shared.start()
             await handleAuthAndLaunch()
         }
@@ -123,14 +126,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // off to the agent). The monitor callbacks are nonisolated closures (NSEvent
         // invokes them on the main thread), so hop onto the MainActor to reach the
         // @MainActor-isolated ClickyController — mirrors the ⌘⌥Esc handler.
-        HotkeyManager.shared.onPushToTalkDown = {
+        HotkeyManager.shared.onPushToTalkDown = { holdID in
             Task { @MainActor in
-                ClickyController.shared.beginPushToTalk()
+                ClickyController.shared.beginPushToTalk(holdID: holdID)
             }
         }
-        HotkeyManager.shared.onPushToTalkUp = {
+        HotkeyManager.shared.onPushToTalkUp = { holdID in
             Task { @MainActor in
-                ClickyController.shared.endPushToTalk()
+                ClickyController.shared.endPushToTalk(holdID: holdID)
+            }
+        }
+        HotkeyManager.shared.onPushToTalkCancel = { holdID in
+            // Lifecycle notifications and monitor teardown arrive on the main
+            // thread. Cancel before returning: a queued nil-ID cancellation
+            // could otherwise discard a new hold started immediately after wake.
+            MainActor.assumeIsolated {
+                ClickyController.shared.cancelPushToTalk(holdID: holdID)
             }
         }
 

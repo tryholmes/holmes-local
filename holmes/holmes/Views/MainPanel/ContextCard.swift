@@ -16,7 +16,7 @@ struct ContextCard: View {
                         .foregroundColor(NoirColors.iconPrimary)
                 }
                 Text(context.appName.isEmpty ? "CONTEXT DETECTED" : context.appName.uppercased())
-                    .font(.system(size: 9, weight: .bold, design: .default))
+                    .font(NoirFonts.font(size: 9, weight: .bold, design: .default))
                     .foregroundColor(NoirColors.textTertiary)
                     .tracking(2)
 
@@ -37,7 +37,7 @@ struct ContextCard: View {
             }
 
             Text(context.description)
-                .font(.system(size: 13, weight: .regular, design: .default))
+                .font(NoirFonts.font(size: 13, weight: .regular, design: .default))
                 .foregroundColor(NoirColors.textSecondary)
                 .lineLimit(2)
                 .lineSpacing(3)

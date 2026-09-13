@@ -132,7 +132,11 @@ On first launch, grant:
 
 ### 5. Browser extension (exact page context) — recommended
 
-Load `holmes/holmes-extension/` as an unpacked extension (Chrome / Comet / Brave / Edge → Extensions → Developer mode → *Load unpacked*). It posts the structured contents of the page you're actually looking at to Holmes on `127.0.0.1:5766`, which is the only source Holmes trusts enough to quote.
+Whenever the **Connect Your Browser** onboarding step opens, Holmes automatically prepares or refreshes its bundled extension in **`~/Downloads/Holmes Extension`**. No button click is needed to create the folder; opening that step again also recreates it if it was removed.
+
+Click **Open extension folder** in onboarding or **Holmes ▸ Settings ▸ Privacy** to open it in Finder. **Copy folder path** copies its full path if you prefer to paste it into Chrome's file picker. Both controls also prepare or refresh the folder.
+
+In Chrome, open **Extensions → Developer mode → Load unpacked**, then choose **Downloads → Holmes Extension**. Keep that folder in place after loading it: Chrome reads the extension from there. Comet, Brave, Edge and other Chromium browsers use the same unpacked-extension flow. The extension posts the structured contents of the page you're actually looking at to Holmes on `127.0.0.1:5766`, which is the only source Holmes trusts enough to quote.
 
 The extension mints its own secret, so you have to authorize it once: **Holmes ▸ Settings ▸ Privacy ▸ Pair browser extension**. That opens a 2-minute window during which the next extension that posts is adopted and remembered; outside that window an unrecognized token is rejected. Nothing pairs itself silently — a loopback port is reachable by every process on your Mac, so first-contact trust is not something Holmes hands out on its own.
 
@@ -247,6 +251,12 @@ Holmes is mostly hands-off: it runs in the menu bar and acts on its own. But you
 | `Cmd + \` | Toggle the floating side icon |
 | **Hold Fn (globe)** | Push-to-talk: ask a question, Holmes answers out loud and points on screen |
 | `Cmd + Option + Esc` | Emergency stop for a computer-control run |
+
+Say **“open Spotify”** while holding Fn, or type it into the command bar. Explicit
+app-opening requests use the native macOS launcher immediately, including polite
+forms such as “can you open Spotify?”. They work without Ollama or the Computer
+control toggle; clicking and typing inside apps still require that toggle.
+Holmes reports the actual launch result, including when an app is not installed.
 
 - **Settings → Automations**: per-playbook on/off toggles.
 - **Settings → Local Model**: server status, model picker and download, and under Advanced the Context window, Keep model loaded, Let the model think before acting, Click coordinates and Start Ollama automatically controls.

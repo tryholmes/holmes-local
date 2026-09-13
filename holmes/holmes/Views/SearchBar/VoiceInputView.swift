@@ -5,12 +5,14 @@ struct VoiceInputView: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            AudioWaveform(level: viewModel.audioLevel)
-                .frame(height: 60)
-                .padding(.horizontal, 40)
+            Image(systemName: viewModel.isListening ? "waveform" : "mic")
+                .font(.system(size: 40, weight: .light))
+                .foregroundStyle(NoirColors.textSecondary)
 
-            Text(viewModel.searchText.isEmpty ? "Listening..." : viewModel.searchText)
-                .font(.system(size: 28, weight: .bold, design: .monospaced))
+            Text(viewModel.isListening
+                 ? (viewModel.partialTranscript.isEmpty ? "Listening…" : viewModel.partialTranscript)
+                 : "Hold Fn to talk")
+                .font(NoirFonts.font(size: 28, weight: .bold, design: .monospaced))
                 .foregroundStyle(NoirColors.charcoalDark)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
@@ -44,11 +46,9 @@ struct AudioWaveform: View {
 
 struct ListenButton: View {
     let isListening: Bool
-    let action: () -> Void
     
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
+        HStack(spacing: 6) {
                 if isListening {
                     Circle()
                         .fill(Color.red)
@@ -57,7 +57,7 @@ struct ListenButton: View {
                 } else {
                     Image(systemName: "waveform")
                         .font(.system(size: 12, weight: .medium))
-                    Text("Listen")
+                    Text("Hold Fn to talk")
                 }
             }
             .font(NoirFonts.button())
@@ -67,8 +67,6 @@ struct ListenButton: View {
             .background(isListening ? NoirColors.orangeAccent.opacity(0.15) : NoirColors.deepTeal)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .pixelBevel(cornerRadius: 6)
-        }
-        .buttonStyle(.plain)
     }
 }
 
@@ -78,8 +76,8 @@ struct ListenButton: View {
         VStack(spacing: 40) {
             VoiceInputView(viewModel: SearchViewModel())
             HStack {
-                ListenButton(isListening: false) {}
-                ListenButton(isListening: true) {}
+                ListenButton(isListening: false)
+                ListenButton(isListening: true)
             }
         }
         .padding()

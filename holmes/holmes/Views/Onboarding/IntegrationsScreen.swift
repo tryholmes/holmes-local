@@ -67,7 +67,7 @@ struct IntegrationsScreen: View {
                     }
 
                     Text("You can also add any MCP server later in ~/Library/Application Support/Holmes/mcp.json or with the holmes-sdk CLI.")
-                        .font(.system(size: 10))
+                        .font(NoirFonts.font(size: 10))
                         .foregroundColor(NoirColors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -99,7 +99,7 @@ struct IntegrationsScreen: View {
     private func field(_ label: String, text: Binding<String>, placeholder: String, secure: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
+                .font(NoirFonts.font(size: 10, weight: .semibold))
                 .foregroundColor(NoirColors.textSecondary)
             Group {
                 if secure {
@@ -109,7 +109,7 @@ struct IntegrationsScreen: View {
                 }
             }
             .textFieldStyle(.roundedBorder)
-            .font(.system(size: 12, design: .monospaced))
+            .font(NoirFonts.font(size: 12, design: .monospaced))
         }
     }
 

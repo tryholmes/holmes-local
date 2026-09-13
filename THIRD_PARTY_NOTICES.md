@@ -127,3 +127,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Bundled typography
+
+Holmes uses the typography from https://www.try-holmes.com/ locally, without
+loading fonts over the network:
+
+- **LT Remark Regular**, by Daniel Lyons / LyonsType: SIL Open Font License 1.0.
+- **Geist and Geist Mono**, by Vercel and Basement Studio, v1.7.2: SIL Open Font License 1.1.
+
+Original font files, complete license notices, upstream download references,
+and SHA-256 checksums are included in `holmes/holmes/Resources/Fonts/` and copied
+into the app bundle. See `LT-Remark-OFL.txt`, `Geist-OFL.txt`, and the accompanying
+`README.md` in that directory. The fonts are registered only within the Holmes
+process, not installed system-wide.
