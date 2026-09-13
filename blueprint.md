@@ -1,4 +1,4 @@
-<!-- ⚠️ This README has been generated from the file(s) "blueprint.md" ⚠️--><h1>
+<h1>
   <img src="holmes/assets/readmeicon.png" alt="Holmes" width="376">
 </h1>
 
@@ -14,10 +14,7 @@ You never open a chat box. You just work. When Holmes spots something it can hel
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#the-one-paragraph-mental-model)
-
-## ➤ The one-paragraph mental model
+## The one-paragraph mental model
 
 > **Structured reads are the eyes. The local model is the hands. Composio (optional) is the reach. You are the send button.**
 
@@ -25,10 +22,7 @@ Holmes reads your screen every few seconds from *structured* sources — the bro
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#how-it-works-step-by-step)
-
-## ➤ How it works, step by step
+## How it works, step by step
 
 Take the chat-reply example (every playbook follows the same shape):
 
@@ -43,10 +37,7 @@ Take the chat-reply example (every playbook follows the same shape):
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#what-holmes-does--the-five-golden-playbooks)
-
-## ➤ What Holmes does — the five golden playbooks
+## What Holmes does — the five golden playbooks
 
 Holmes used to ship 154 heuristic playbooks. They fired randomly, burned a full matcher sweep every tick, and eroded trust. This build ships **five** deliberately engineered automations, each chosen for deterministic, works-every-time execution, a high-precision trigger with near-zero false positives, and real daily value.
 
@@ -68,10 +59,7 @@ New automations must clear the same bar: a deterministic backend, and a matcher 
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#the-action-doctrine--the-school-of-agentic-actions)
-
-## ➤ The action doctrine — the "school of agentic actions"
+## The action doctrine — the "school of agentic actions"
 
 Every step Holmes takes runs on the **most deterministic backend that can do the job**:
 
@@ -83,10 +71,7 @@ The planner **never emits coordinates**. It cannot see the screen, so any coordi
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#the-safety-model--draft-never-send)
-
-## ➤ The safety model — draft-never-send
+## The safety model — draft-never-send
 
 This is the load-bearing guarantee, and it survived multiple rounds of adversarial review (~57 attack payloads across builds, all blocked):
 
@@ -98,10 +83,7 @@ This is the load-bearing guarantee, and it survived multiple rounds of adversari
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#requirements)
-
-## ➤ Requirements
+## Requirements
 
 - **An Apple Silicon Mac** (M1 or later). Intel Macs are not supported: the model runs on the GPU through Metal.
 - **macOS 14 (Sonoma) or later.**
@@ -114,10 +96,7 @@ There is no API key. Readiness means *"is the Ollama server reachable, and is th
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#install)
-
-## ➤ Install
+## Install
 
 ### 1. Install Ollama
 
@@ -184,10 +163,7 @@ Holmes works without any connected tools: the five playbooks read the screen and
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#models)
-
-## ➤ Models
+## Models
 
 Holmes uses **one** model for everything: it must support both `tools` and `vision`, because Holmes drives the screen from screenshots and acts through tool calls in the same loop (Ollama can't split those across two models without a 20 s+ reload on every alternation). Non-thinking `instruct` variants are preferred — on a laptop a thinking model spends minutes per step deliberating, which is unusable for a screenshot → act loop.
 
@@ -222,10 +198,7 @@ Under the hood, `OllamaClient` serializes every request through a single gate (t
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#what-runs-where)
-
-## ➤ What runs where
+## What runs where
 
 | | Where |
 |---|---|
@@ -240,10 +213,7 @@ Under the hood, `OllamaClient` serializes every request through a single gate (t
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#known-beta-limitations)
-
-## ➤ Known beta limitations
+## Known beta limitations
 
 Be honest with yourself about what a 4-billion-parameter model on a laptop can do:
 
@@ -257,10 +227,7 @@ Be honest with yourself about what a 4-billion-parameter model on a laptop can d
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#build-from-source)
-
-## ➤ Build from source
+## Build from source
 
 ```bash
 git clone <this repository>
@@ -277,10 +244,7 @@ CI builds exactly this command on `macos-14` — see [`.github/workflows/build.y
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#usage-and-hotkeys)
-
-## ➤ Usage and hotkeys
+## Usage and hotkeys
 
 Holmes is mostly hands-off: it runs in the menu bar and acts on its own. But you can reach in:
 
@@ -307,10 +271,7 @@ Holmes reports the actual launch result, including when an app is not installed.
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#troubleshooting)
-
-## ➤ Troubleshooting
+## Troubleshooting
 
 - **"Couldn't reach ollama.com" when downloading the model** — `registry.ollama.ai` is a separate host from `ollama.com` and is occasionally unreachable on some networks. On Ollama 0.33+ Holmes falls back automatically to the same weights from Hugging Face and registers them under the expected tag. To do it by hand:
   ```
@@ -332,10 +293,7 @@ Holmes reports the actual launch result, including when an app is not installed.
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#architecture)
-
-## ➤ Architecture
+## Architecture
 
 Everything lives under `holmes/holmes/`. The `Core/` layer is the engine; `Views/` is the UI; `Core/Playbooks/` and `Core/Autonomy/` are the autonomous brain.
 
@@ -385,10 +343,7 @@ Views/
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#privacy)
-
-## ➤ Privacy
+## Privacy
 
 **Everything stays on your Mac by default.** There is no account, no API key, no telemetry, and no analytics. Concretely:
 
@@ -402,19 +357,13 @@ Views/
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#contributing)
-
-## ➤ Contributing
+## Contributing
 
 Issue first, one focused branch per change, PRs into `main` that say what changed, why, and how it was tested — and keep the action doctrine. Details in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
-
-[![-----------------------------------------------------](https://raw.githubusercontent.com/andreasbm/readme/master/assets/lines/colored.png)](#license)
-
-## ➤ License
+## License
 
 Holmes Local is released under the **GNU General Public License, version 3.0** — see [`LICENSE`](LICENSE). Copyright © 2026 Holmes Local contributors.
 
