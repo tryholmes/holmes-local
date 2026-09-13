@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var warmedUpModel: String? = nil
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NoirFonts.registerBundledFonts()
         // A write into the stdin pipe of an MCP server that has already exited
         // raises SIGPIPE, which terminates the process silently. Ignore it;
         // FileHandle.write then throws EPIPE, which MCPClient already handles.

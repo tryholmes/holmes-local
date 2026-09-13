@@ -12,6 +12,7 @@
 		AA000001000000000000099 /* BrowserExtensionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000099 /* BrowserExtensionScreen.swift */; };
 		AA000001000000000000100 /* IntegrationsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000100 /* IntegrationsScreen.swift */; };
 		AA000001000000000000101 /* holmes-extension in Resources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000101 /* holmes-extension */; };
+		AA000001000000000000102 /* Fonts in Resources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000102 /* Fonts */; };
 		AA000001000000000000001 /* holmesApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000001 /* holmesApp.swift */; };
 		AA000001000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000002 /* AppDelegate.swift */; };
 		AA000001000000000000003 /* Permissions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000003 /* Permissions.swift */; };
@@ -110,6 +111,7 @@
 		AA000002000000000000099 /* BrowserExtensionScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserExtensionScreen.swift; sourceTree = "<group>"; };
 		AA000002000000000000100 /* IntegrationsScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntegrationsScreen.swift; sourceTree = "<group>"; };
 		AA000002000000000000101 /* holmes-extension */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "holmes-extension"; path = "holmes-extension"; sourceTree = SOURCE_ROOT; };
+		AA000002000000000000102 /* Fonts */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Fonts; sourceTree = "<group>"; };
 		AA000002000000000000001 /* holmesApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = holmesApp.swift; sourceTree = "<group>"; };
 		AA000002000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		AA000002000000000000003 /* Permissions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Permissions.swift; sourceTree = "<group>"; };
@@ -403,6 +405,7 @@
 		AA000005000000000000008 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				AA000002000000000000102 /* Fonts */,
 				AA000002000000000000034 /* Assets.xcassets */,
 				AA000002000000000000035 /* Info.plist */,
 				AA000002000000000000036 /* holmes.entitlements */,
@@ -538,6 +541,7 @@
 				AA000001000000000000034 /* Assets.xcassets in Resources */,
 				AA000001000000000000038 /* noireye.json in Resources */,
 				AA000001000000000000101 /* holmes-extension in Resources */,
+				AA000001000000000000102 /* Fonts in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
