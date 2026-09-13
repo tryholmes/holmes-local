@@ -205,6 +205,71 @@ final class MCPConnection: MCPTransport {
     }
 }
 
+// MARK: - MCPSSEParser
+// Incremental parser for a `text/event-stream` body (WHATWG Server-Sent Events).
+// Feed it bytes as they arrive off the wire; it hands back the `data` payload of
+// each event as soon as the event's terminating blank line has been seen, so the
+// caller never has to wait for the connection to close.
+
+struct MCPSSEParser {
+    private var line = Data()
+    private var dataLines: [String] = []
+    private var skipLineFeed = false
+
+    /// Feeds one byte. Returns the event payload when this byte completes an event.
+    mutating func feed(_ byte: UInt8) -> String? {
+        switch byte {
+        case 0x0D: // CR ends the line; a following LF belongs to the same terminator.
+            skipLineFeed = true
+            return endLine()
+        case 0x0A:
+            if skipLineFeed { skipLineFeed = false; return nil }
+            return endLine()
+        default:
+            skipLineFeed = false
+            line.append(byte)
+            return nil
+        }
+    }
+
+    /// Feeds a chunk. Returns every event payload completed within it, in order.
+    mutating func feed<S: Sequence>(_ bytes: S) -> [String] where S.Element == UInt8 {
+        var events: [String] = []
+        for byte in bytes {
+            if let event = feed(byte) { events.append(event) }
+        }
+        return events
+    }
+
+    private mutating func endLine() -> String? {
+        let text = String(decoding: line, as: UTF8.self)
+        line.removeAll(keepingCapacity: true)
+
+        // A blank line dispatches the pending event; a blank line with no data is a no-op.
+        if text.isEmpty {
+            guard !dataLines.isEmpty else { return nil }
+            let payload = dataLines.joined(separator: "\n")
+            dataLines.removeAll()
+            return payload
+        }
+        if text.hasPrefix(":") { return nil } // comment / keepalive
+
+        let field: Substring
+        var value: Substring
+        if let colon = text.firstIndex(of: ":") {
+            field = text[..<colon]
+            value = text[text.index(after: colon)...]
+            if value.hasPrefix(" ") { value = value.dropFirst() }
+        } else {
+            field = Substring(text)
+            value = ""
+        }
+        // Only `data` carries JSON-RPC; `event`, `id` and `retry` do not affect Holmes.
+        if field == "data" { dataLines.append(String(value)) }
+        return nil
+    }
+}
+
 // MARK: - MCPHTTPConnection (remote Streamable HTTP)
 // Talks to a hosted MCP server over HTTP. Each JSON-RPC request is a POST; the server
 // may reply with a single JSON body or an SSE stream — both are handled. Auth is via
