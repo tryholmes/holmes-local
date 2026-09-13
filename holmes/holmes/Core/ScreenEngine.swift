@@ -64,12 +64,14 @@ struct ScreenReading {
     // Native chat apps (Messages / WhatsApp / Discord / Slack / Telegram / Signal)
     var contact: String?        // conversation / chat title (the person or room)
     var lastMessage: String?    // text of the most recent visible bubble
+    var emailCompose: EmailComposeSnapshot?
 
     init(appName: String, windowTitle: String, bodyText: String = "", kind: Kind = .generic,
          documentPath: String? = nil, fileName: String? = nil, workspace: String? = nil,
          symbol: String? = nil, lineNumber: Int? = nil, selectedText: String? = nil,
          command: String? = nil, workingDir: String? = nil, url: String? = nil,
-         contact: String? = nil, lastMessage: String? = nil) {
+         contact: String? = nil, lastMessage: String? = nil,
+         emailCompose: EmailComposeSnapshot? = nil) {
         self.appName = appName
         self.windowTitle = windowTitle
         self.bodyText = bodyText
@@ -85,6 +87,7 @@ struct ScreenReading {
         self.url = url
         self.contact = contact
         self.lastMessage = lastMessage
+        self.emailCompose = emailCompose
     }
 
     /// True when the reading carries enough to describe the screen — either a
@@ -98,6 +101,7 @@ struct ScreenReading {
             || (workingDir?.isEmpty == false)
             || ((url?.count ?? 0) > 8)
             || lastMessage != nil       // a native chat transcript was read
+            || emailCompose != nil
     }
 }
 
@@ -160,6 +164,7 @@ final class ScreenEngine {
     private var lastKnownWindowTitle: String = ""
 
     private var timer: Timer?
+    private var lifecycleGeneration = 0
     private let interval: TimeInterval = 3
     private var cachedFilter: SCContentFilter?
     private var cachedConfig: SCStreamConfiguration?
@@ -175,6 +180,8 @@ final class ScreenEngine {
     private init() {}
 
     func start() async {
+        stop()
+        let generation = lifecycleGeneration
         // Force the Screen Recording prompt if we don't truly have access yet.
         // A rebuilt Xcode binary often has a STALE grant that returns black frames
         // instead of prompting — preflight catches that and re-requests.
@@ -187,10 +194,14 @@ final class ScreenEngine {
         }
 
         // Build SCK filter once — never triggers permission dialog again
-        await buildSCKCache()
+        await buildSCKCache(generation: generation)
+        guard generation == lifecycleGeneration, !Task.isCancelled else { return }
 
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.captureNow() }
+            Task { @MainActor in
+                guard let self, generation == self.lifecycleGeneration else { return }
+                self.captureNow()
+            }
         }
 
         // Instant context on app switch — a short beat lets the new app's
@@ -200,14 +211,14 @@ final class ScreenEngine {
             object: nil, queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, generation == self.lifecycleGeneration else { return }
                 self.appSwitchGeneration += 1
-                let generation = self.appSwitchGeneration
+                let switchGeneration = self.appSwitchGeneration
                 // 120ms: long enough for the new app's key window + AX tree to
                 // exist, short enough that context feels instant. (350ms was a
                 // third of a second of guaranteed staleness on every cmd-tab.)
                 try? await Task.sleep(nanoseconds: 120_000_000)
-                guard generation == self.appSwitchGeneration else { return }
+                guard generation == self.lifecycleGeneration, switchGeneration == self.appSwitchGeneration else { return }
                 self.captureNow()
             }
         }
@@ -215,10 +226,11 @@ final class ScreenEngine {
         captureNow()
     }
 
-    private func buildSCKCache() async {
+    private func buildSCKCache(generation: Int? = nil) async {
         guard #available(macOS 13.0, *) else { return }
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            guard !Task.isCancelled, generation == nil || generation == lifecycleGeneration else { return }
             // Pin to the MAIN display. SCShareableContent.displays ordering is not
             // guaranteed to lead with CGMainDisplayID, and WindowCapture derives the
             // computer-use coordinate geometry from CGMainDisplayID() — if the two
@@ -241,6 +253,8 @@ final class ScreenEngine {
     }
 
     func stop() {
+        lifecycleGeneration += 1
+        appSwitchGeneration += 1
         timer?.invalidate()
         timer = nil
         if let appSwitchObserver {
@@ -507,6 +521,12 @@ final class ScreenEngine {
         let focused = axElement(axApp, kAXFocusedUIElementAttribute as String)
 
         var reading = ScreenReading(appName: appName, windowTitle: windowTitle, kind: .generic)
+
+        if bundleID == "com.apple.mail", let compose = MailComposeReader.readCurrent() {
+            reading.emailCompose = compose
+            reading.bodyText = compose.body
+            return reading
+        }
 
         switch appFamily(name: appName, bundleID: bundleID) {
         case .xcode:          extractXcode(window: window, focused: focused, into: &reading)

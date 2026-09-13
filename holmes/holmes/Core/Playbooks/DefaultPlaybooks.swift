@@ -1,9 +1,9 @@
 import Foundation
 
 // MARK: - DefaultPlaybooks
-// THE FIVE. Holmes used to ship 154 heuristic playbooks; they fired randomly,
+// Focused built-ins. Holmes used to ship 154 heuristic playbooks; they fired randomly,
 // burned a full matcher sweep over 16KB of screen text every 3s tick, and eroded
-// trust. This is the deliberate replacement: five deeply-engineered automations
+// trust. This is the deliberate replacement: focused automations
 // chosen for (a) deterministic, works-every-time execution, (b) high-precision
 // triggers with near-zero false positives, (c) real daily value.
 //
@@ -11,6 +11,7 @@ import Foundation
 //   2. terminal-command-failed — a command failed → explain the fix out loud (teach).
 //   3. github-brief            — a repo is open → 5-line project brief (read-only draft).
 //   4. chat-reply              — a chat needs answering → draft the reply (never sends).
+//   6. email-compose           — stable verified email headers → editable body draft.
 //   5. finder-downloads-sort   — Downloads is a mess → sort it (file lane, undoable).
 //
 // The doctrine (the "school of agentic actions"): every automation runs on the
@@ -52,7 +53,20 @@ enum DefaultPlaybooks {
         githubBrief,
         chatReply,
         finderDownloadsSort,
+        emailCompose,
     ]
+
+    /// Listed in Automations for enable/disable and manual retry. Its automatic
+    /// trigger uses EmailComposeSnapshot in EmailDraftCoordinator, never OCR or
+    /// model-guessed entities from the general matcher loop.
+    static let emailCompose = Playbook(
+        id: "email-compose", name: "Email Draft", icon: "square.and.pencil",
+        summary: "Add recipients and a subject to an empty email. Holmes prepares the body for you to review and insert.",
+        autoTriggers: true, cooldownSeconds: 60, composioApps: [], usesDing: false, kind: .emailCompose,
+        matches: { _ in nil },
+        makeGoal: { _ in "Draft the current email." },
+        makeTitle: { _ in "Your email draft" },
+        makeTarget: { _ in .clipboard })
 
     // MARK: - Recognition helpers
 

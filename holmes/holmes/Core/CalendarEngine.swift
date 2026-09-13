@@ -21,6 +21,7 @@ final class CalendarEngine {
     private let calendarStore = CalendarStore()
     private var store: EKEventStore { calendarStore.store }
     private var timer: Timer?
+    private var lifecycleID: UUID?
     private var firedMeetingIDs: Set<String> = []  // prevent double-firing
 
     var isAuthorized: Bool = false
@@ -31,7 +32,10 @@ final class CalendarEngine {
     // MARK: - Start
 
     func start() async {
+        let lifecycle = UUID()
+        lifecycleID = lifecycle
         let granted = await requestAccess()
+        guard !Task.isCancelled, lifecycleID == lifecycle else { return }
         isAuthorized = granted
         guard granted else {
             print("[CalendarEngine] Calendar access denied")
@@ -42,6 +46,7 @@ final class CalendarEngine {
     }
 
     func stop() {
+        lifecycleID = nil
         timer?.invalidate()
         timer = nil
     }

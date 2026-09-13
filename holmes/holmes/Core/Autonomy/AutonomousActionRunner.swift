@@ -60,6 +60,47 @@ final class AutonomousActionRunner {
     /// Off the observation graph — closures aren't display state.
     @ObservationIgnored private var undoActionsForLastRun: [UndoAction] = []
     @ObservationIgnored private var notificationPermissionRequested = false
+    @ObservationIgnored private var runTask: Task<RunOutcome, Never>?
+    @ObservationIgnored private var runActivityID: UUID?
+
+    enum RunOutcome: Equatable {
+        case succeeded
+        case failed(String)
+        case cancelled
+
+        var succeeded: Bool { if case .succeeded = self { return true }; return false }
+        var summary: String {
+            switch self {
+            case .succeeded: return "Finished."
+            case .failed(let reason): return reason
+            case .cancelled: return "Stopped."
+            }
+        }
+        var activityOutcome: WorkActivityCenter.Outcome {
+            switch self {
+            case .succeeded: return .success
+            case .failed: return .failure
+            case .cancelled: return .cancelled
+            }
+        }
+    }
+
+    func cancelCurrentRun() {
+        guard let runTask else { return }
+        runTask.cancel()
+        ComputerUseEngine.shared.cancelRun()
+    }
+
+    private var workWasCancelled: Bool {
+        Task.isCancelled || WorkActivityScope.id.map { !WorkActivityCenter.shared.isActive($0) } == true
+    }
+
+    private var shouldStopRun: Bool { workWasCancelled || ComputerUseEngine.shared.isCancelled }
+
+    private func progress(_ detail: String, phase: WorkActivityCenter.Phase = .working, fraction: Double? = nil) {
+        guard let id = WorkActivityScope.id else { return }
+        WorkActivityCenter.shared.update(id, phase: phase, detail: detail, progress: fraction)
+    }
 
     var canUndoLastRun: Bool { !undoActionsForLastRun.isEmpty }
 
@@ -96,12 +137,53 @@ final class AutonomousActionRunner {
     /// (kind "action") with what + when + reversibility, fires a notification
     /// on completion, and collects undo closures for undoLast(). Sends can only
     /// pass through AutonomyGate.recipientGrounded + a confirmation surface.
-    func run(_ plan: ActionPlan, playbookId: String, level: AutonomyLevel) async {
+    @discardableResult
+    func run(_ plan: ActionPlan, playbookId: String, level: AutonomyLevel) async -> RunOutcome {
+        let inheritedID = WorkActivityScope.id
+        let id = inheritedID ?? WorkActivityCenter.shared.begin(title: shorten(plan.goal, max: 90))
         guard !isRunning, !isUndoing else {
-            print("[Holmes] Autonomy: skipped '\(playbookId)' — another run is in flight")
-            return
+            let reason = "Another automation is already running."
+            if inheritedID == nil { WorkActivityCenter.shared.finish(id, outcome: .failure, summary: reason) }
+            return .failed(reason)
         }
-        guard !plan.steps.isEmpty else { return }
+        // Own the single-flight slot before the first preflight/MCP await.
+        isRunning = true
+        runActivityID = id
+        WorkActivityCenter.shared.update(id, phase: .preparing, detail: "Checking the plan")
+        let task = Task { @MainActor in
+            await WorkActivityScope.$id.withValue(id) {
+                await self.execute(plan, playbookId: playbookId, level: level)
+            }
+        }
+        runTask = task
+        if inheritedID == nil {
+            WorkActivityCenter.shared.setCancellationHandler(id) { [weak self] in
+                guard self?.runActivityID == id else { return }
+                self?.cancelCurrentRun()
+            }
+        }
+        defer {
+            runTask = nil
+            runActivityID = nil
+            isRunning = false
+        }
+        let result = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        let outcome: RunOutcome = Task.isCancelled || !WorkActivityCenter.shared.isActive(id) ? .cancelled : result
+        if inheritedID == nil {
+            WorkActivityCenter.shared.finish(id, outcome: outcome.activityOutcome,
+                                            summary: outcome.succeeded ? "Completed: \(shorten(plan.goal, max: 100))" : outcome.summary)
+        }
+        statusLine = outcome.succeeded ? "Done: \(shorten(plan.goal, max: 80))" : outcome.summary
+        return outcome
+    }
+
+    private func execute(_ plan: ActionPlan, playbookId: String, level: AutonomyLevel) async -> RunOutcome {
+        guard !workWasCancelled else { return .cancelled }
+        guard !plan.steps.isEmpty else { return .failed("The plan contained no steps to run.") }
 
         // Observe: log the would-have plan for trust-building, execute nothing.
         // Allowed even while the master switch is off — observing is not an
@@ -117,20 +199,20 @@ final class AutonomousActionRunner {
                 summary: "Observed (not executed): \(shorten(plan.goal, max: 120))",
                 detail: "playbook=\(playbookId) level=observe steps=\(plan.steps.count)\n\(listing)")
             print("[Holmes] Autonomy: observe-only — logged plan for '\(playbookId)', nothing executed")
-            return
+            return .failed("This automation is set to observe; no actions were run.")
         }
 
         // Draft plans never reach the runner — that's PlaybookEngine's surface.
         if level == .draft {
             print("[Holmes] Autonomy: routing bug — draft-level plan for '\(playbookId)' sent to the runner; use the draft pipeline")
-            return
+            return .failed("This plan is a draft and cannot execute actions.")
         }
 
         // The entry gate: global master switch (default OFF), the playbook's
         // own enable, effective level ≥ .confirm, and the hourly rate budget.
         guard AutonomyGate.mayAct(playbookId: playbookId) else {
             print("[Holmes] Autonomy: refused '\(playbookId)' — AutonomyGate.mayAct said no (master switch, level, enable, or rate budget)")
-            return
+            return .failed("This automation is disabled or has reached its action limit.")
         }
 
         // Recipient grounding BEFORE anything runs: every structured recipient
@@ -141,10 +223,11 @@ final class AutonomousActionRunner {
             await recordRunNote(playbookId: playbookId, plan: plan,
                                 summary: "Autonomy run refused — ungrounded recipient",
                                 detail: "step '\(step.summary)' addresses someone not present in observed context")
+            guard !workWasCancelled else { return .cancelled }
             postNotification(title: "Holmes stopped an automation",
                              body: "A step addressed someone not present in what Holmes observed. Nothing was sent.")
             print("[Holmes] Autonomy: grounding refusal — '\(step.summary)'")
-            return
+            return .failed("A recipient was not present in the observed context. Nothing was sent.")
         }
 
         // ── PREFLIGHT ───────────────────────────────────────────────────────
@@ -153,23 +236,25 @@ final class AutonomousActionRunner {
         // "it keeps saying step failed". The refusal is user-visible with the
         // exact missing thing.
         if let reason = await preflightFailure(plan: plan) {
+            guard !workWasCancelled else { return .cancelled }
             await recordRunNote(playbookId: playbookId, plan: plan,
                                 summary: "Autonomy run refused — preflight",
                                 detail: reason)
+            guard !workWasCancelled else { return .cancelled }
             postNotification(title: "Holmes can't run this yet", body: String(reason.prefix(140)))
             print("[Holmes] Autonomy: preflight refusal — \(reason)")
-            return
+            return .failed(reason)
         }
+        guard !workWasCancelled else { return .cancelled }
 
         // Composio steps need the MCP host up before the router can resolve
         // tools (an unresolvable tool classifies as needs-confirm, fail closed).
         let composioApps = PlaybookRegistry.all.first(where: { $0.id == playbookId })?.composioApps ?? []
         if plan.steps.contains(where: { $0.backend.lowercased() == "composio" }) {
+            progress("Connecting the required tools", phase: .preparing)
             await MCPClient.shared.startAll() // no-op if already started
         }
-
-        isRunning = true
-        defer { isRunning = false }
+        guard !workWasCancelled else { return .cancelled }
         AutonomyGate.recordAct(playbookId: playbookId) // consume rate budget once per started run
         statusLine = "Running: \(shorten(plan.goal, max: 80))"
         // Fresh actuator session: clears a stale ⌘⌥Esc flag and the stale
@@ -180,17 +265,15 @@ final class AutonomousActionRunner {
         // Speak the opening intent — "On it — <goal>." — so the run announces
         // itself before the first action lands.
         narrate("On it — \(shorten(plan.goal, max: 90)).")
-        // Light up the notch HUD: WHAT Holmes is doing, over the live context.
-        NotchWindowController.shared.beginTask(shorten(plan.goal, max: 70))
+        progress("Starting the plan")
 
         // .confirm — the WHOLE plan on one card; that single approval covers
         // the run (BackendRouter's userConfirmed contract names this exact case).
         let wholePlanApproved: Bool
         if level == .confirm {
             guard await approveWholePlan(plan, playbookId: playbookId, composioApps: composioApps) else {
-                await finishRun(plan: plan, playbookId: playbookId, executed: 0,
+                return await finishRun(plan: plan, playbookId: playbookId, executed: 0,
                                 succeeded: false, note: "declined", notifyBody: nil)
-                return
             }
             wholePlanApproved = true
         } else {
@@ -203,11 +286,10 @@ final class AutonomousActionRunner {
 
         for segment in Self.segmentize(plan.steps) {
             // Kill switch between steps: ⌘⌥Esc aborts before the NEXT dispatch.
-            if ComputerUseEngine.shared.isCancelled {
-                await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+            if shouldStopRun {
+                return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
                                 succeeded: false, note: "cancelled (⌘⌥Esc)",
                                 notifyBody: "Stopped by the kill switch after \(executedCount) of \(plan.steps.count) steps.")
-                return
             }
 
             switch segment {
@@ -217,30 +299,42 @@ final class AutonomousActionRunner {
                 var confirmed = wholePlanApproved
                 if !confirmed, BackendRouter.requiresConfirmation(step, composioApps: composioApps) {
                     guard await approveStep(step) else {
-                        await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                        return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
                                         succeeded: false, note: "step declined",
                                         notifyBody: "You declined “\(shorten(step.summary, max: 60))”. The run stopped there.")
-                        return
                     }
                     confirmed = true
                 }
+                if shouldStopRun {
+                    return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                                           succeeded: false, note: "cancelled", notifyBody: nil)
+                }
                 // Narrate the step as it starts (after any confirm), one line.
                 narrateStep(step)
-                NotchWindowController.shared.stepProgress(
+                progress(
                     shorten(step.summary, max: 60),
                     fraction: Double(executedCount) / Double(max(1, plan.steps.count)))
                 var result = await BackendRouter.run(step, composioApps: composioApps, userConfirmed: confirmed)
+                if shouldStopRun {
+                    if result.ok { collectUndo(for: step, routerUndo: result.undo); executedCount += 1 }
+                    return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                                           succeeded: false, note: "cancelled", notifyBody: nil)
+                }
                 // The router's fail-closed backstop can flag a confirm the
                 // pre-check missed (dispatch-time knowledge). Honor its
                 // protocol: raise the card now and retry exactly once.
                 if !result.ok, result.text.hasPrefix(BackendRouter.confirmMarker), !confirmed {
                     guard await approveStep(step) else {
-                        await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                        return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
                                         succeeded: false, note: "step declined",
                                         notifyBody: "You declined “\(shorten(step.summary, max: 60))”. The run stopped there.")
-                        return
                     }
                     result = await BackendRouter.run(step, composioApps: composioApps, userConfirmed: true)
+                    if shouldStopRun {
+                        if result.ok { collectUndo(for: step, routerUndo: result.undo); executedCount += 1 }
+                        return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                                               succeeded: false, note: "cancelled", notifyBody: nil)
+                    }
                 }
                 // One flaky step must not kill the whole task. A transient miss (a
                 // slow UI, a stale coordinate, a control not yet on screen) usually
@@ -261,6 +355,11 @@ final class AutonomousActionRunner {
                 }
                 if !result.ok {
                     let retry = await BackendRouter.run(step, composioApps: composioApps, userConfirmed: confirmed)
+                    if shouldStopRun {
+                        if retry.ok { collectUndo(for: step, routerUndo: retry.undo); executedCount += 1 }
+                        return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                                               succeeded: false, note: "cancelled", notifyBody: nil)
+                    }
                     if retry.ok {
                         result = retry
                     } else {
@@ -284,16 +383,19 @@ final class AutonomousActionRunner {
                 if !wholePlanApproved {
                     for step in steps where BackendRouter.requiresConfirmation(step, composioApps: composioApps) {
                         guard await approveStep(step) else {
-                            await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                            return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
                                             succeeded: false, note: "step declined",
                                             notifyBody: "You declined “\(shorten(step.summary, max: 60))”. The run stopped there.")
-                            return
                         }
                     }
                 }
+                if shouldStopRun {
+                    return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                                           succeeded: false, note: "cancelled", notifyBody: nil)
+                }
                 // Narrate the visible on-screen work about to happen (high-level).
                 narrate(shorten(steps.first?.summary ?? "Working on the next steps.", max: 110))
-                NotchWindowController.shared.stepProgress(
+                progress(
                     shorten(steps.first?.summary ?? "Working…", max: 60),
                     fraction: Double(executedCount) / Double(max(1, plan.steps.count)))
                 let error = await executeModelSegment(steps, plan: plan, playbookId: playbookId)
@@ -302,18 +404,16 @@ final class AutonomousActionRunner {
                                           ok: error == nil, confirmed: wholePlanApproved, note: error)
                 }
                 if let error {
-                    await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                    return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
                                     succeeded: false, note: "segment failed: \(shorten(error, max: 120))",
                                     notifyBody: shorten(error, max: 120))
-                    return
                 }
                 // A ⌘⌥Esc that landed MID-loop surfaces here after the loop
                 // wound down — report honestly instead of counting the segment.
-                if ComputerUseEngine.shared.isCancelled {
-                    await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                if shouldStopRun {
+                    return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
                                     succeeded: false, note: "cancelled (⌘⌥Esc)",
                                     notifyBody: "Stopped by the kill switch mid-run.")
-                    return
                 }
                 executedCount += steps.count
             }
@@ -321,8 +421,8 @@ final class AutonomousActionRunner {
 
         let undoHint = undoActionsForLastRun.isEmpty ? "" : " Undo is available in the Holmes panel."
         let skipHint = failedStepCount == 0 ? "" : " \(failedStepCount) step\(failedStepCount == 1 ? "" : "s") skipped."
-        await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
-                        succeeded: true, note: failedStepCount == 0 ? "done" : "done (\(failedStepCount) skipped)",
+        return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
+                        succeeded: failedStepCount == 0, note: failedStepCount == 0 ? "done" : "\(failedStepCount) step(s) could not be completed",
                         notifyBody: "\(executedCount) of \(plan.steps.count) steps completed.\(skipHint)\(undoHint)")
     }
 
@@ -475,6 +575,10 @@ final class AutonomousActionRunner {
         switch result {
         case .notConfigured:
             return OllamaConfig.notReadyMessage
+        case .failed(let message):
+            return shorten(message, max: 160)
+        case .cancelled:
+            return "Stopped."
         case .text(let text):
             statusLine = shorten(text, max: 160)
             // Honest accounting: a local-model failure (Ollama down, model not
@@ -584,6 +688,8 @@ final class AutonomousActionRunner {
     /// the card shows a RENDERING of the steps, it is not the steps.
     private func approveWholePlan(_ plan: ActionPlan, playbookId: String,
                                   composioApps: [String]) async -> Bool {
+        guard !shouldStopRun else { return false }
+        progress("Review the plan to continue", phase: .waitingForUser)
         let listing = plan.steps.enumerated()
             .map { index, step in
                 let mark = BackendRouter.requiresConfirmation(step, composioApps: composioApps)
@@ -609,7 +715,7 @@ final class AutonomousActionRunner {
             appName: "your Mac",
             actionType: .agentToolCall)
         switch await ConfirmationBus.shared.decide(action) {
-        case .approved: return true
+        case .approved: return !shouldStopRun
         case .dismissed: return false
         }
     }
@@ -618,6 +724,8 @@ final class AutonomousActionRunner {
     /// just this step; Dismiss stops the whole run (later steps almost always
     /// depend on the declined one).
     private func approveStep(_ step: PlannedStep) async -> Bool {
+        guard !shouldStopRun else { return false }
+        progress(shorten(step.summary, max: 80), phase: .waitingForUser)
         let preview = """
         \(step.summary)
 
@@ -632,7 +740,7 @@ final class AutonomousActionRunner {
             appName: frontApp.isEmpty ? "your Mac" : frontApp,
             actionType: .agentToolCall)
         switch await ConfirmationBus.shared.decide(action) {
-        case .approved: return true
+        case .approved: return !shouldStopRun
         case .dismissed: return false
         }
     }
@@ -673,36 +781,40 @@ final class AutonomousActionRunner {
     /// Shared epilogue: records the outcome, fires the completion notification,
     /// publishes the CompletedRun for the panel, settles the glow.
     private func finishRun(plan: ActionPlan, playbookId: String, executed: Int,
-                           succeeded: Bool, note: String, notifyBody: String?) async {
+                           succeeded: Bool, note: String, notifyBody: String?) async -> RunOutcome {
+        let cancelled = shouldStopRun || note == "declined" || note == "step declined" || note.hasPrefix("cancelled")
+        let finalSucceeded = succeeded && !cancelled
+        let outcome: RunOutcome = cancelled ? .cancelled : (finalSucceeded ? .succeeded : .failed(note))
         lastRun = CompletedRun(
             goal: plan.goal,
             playbookId: playbookId,
             finishedAt: Date(),
             stepsExecuted: executed,
             stepsPlanned: plan.steps.count,
-            succeeded: succeeded,
+            succeeded: finalSucceeded,
             note: note)
-        statusLine = succeeded
+        statusLine = finalSucceeded
             ? "Done: \(shorten(plan.goal, max: 80))"
             : "Stopped (\(note)): \(shorten(plan.goal, max: 60))"
         await MemoryStore.shared.record(
             kind: "action",
             app: ScreenEngine.shared.latestActiveApp,
             activity: "autonomy",
-            summary: "\(succeeded ? "Completed" : "Stopped") autonomous run: \(shorten(plan.goal, max: 160))",
+            summary: "\(finalSucceeded ? "Completed" : "Stopped") autonomous run: \(shorten(plan.goal, max: 160))",
             detail: "playbook=\(playbookId) outcome=\(note) executed=\(executed)/\(plan.steps.count)")
+        // A sleep/stop can arrive during persistence. Keep the durable record,
+        // but never resurrect speech, glow or a result over the next request.
+        guard !workWasCancelled else { return .cancelled }
         if let notifyBody {
             postNotification(
-                title: succeeded
+                title: finalSucceeded
                     ? "Holmes finished: \(shorten(plan.goal, max: 50))"
                     : "Holmes stopped: \(shorten(plan.goal, max: 50))",
                 body: notifyBody)
         }
-        ScreenGlowController.shared.set(state: succeeded ? .ready : .off, origin: PlaybookEngine.shared.glowOrigin)
-        // Close out the notch HUD with a result banner (auto-returns to idle).
-        NotchWindowController.shared.endTask(success: succeeded, summary: shorten(plan.goal, max: 70))
+        ScreenGlowController.shared.set(state: finalSucceeded ? .ready : .off, origin: PlaybookEngine.shared.glowOrigin)
         // Speak the closing result. Quiet on a user decline (they just said no).
-        if succeeded {
+        if finalSucceeded {
             narrate("Done — \(shorten(plan.goal, max: 70)).")
         } else if note.hasPrefix("cancelled") {
             narrate("Stopped.")
@@ -710,6 +822,7 @@ final class AutonomousActionRunner {
             narrate("I had to stop. \(shorten(note, max: 60)).")
         }
         print("[Holmes] Autonomy: '\(playbookId)' \(succeeded ? "completed" : "stopped (\(note))") — \(executed)/\(plan.steps.count) steps")
+        return outcome
     }
 
     // Same UNUserNotificationCenter idiom as PlaybookEngine / MeetingJoinEngine:

@@ -169,7 +169,18 @@ actor OllamaClient {
     /// server more time to answer then, since the GPU is busy generating.
     var isAgentSessionActive: Bool { activeAgentSessions > 0 }
 
-    private func acquire(_ priority: Priority) async throws {
+    private func acquire(_ priority: Priority, activityID: UUID? = nil) async throws {
+        try Task.checkCancellation()
+        if let activityID {
+            let active = await MainActor.run {
+                let center = WorkActivityCenter.shared
+                guard center.isActive(activityID) else { return false }
+                center.update(activityID, phase: .queued, detail: "Your request is in line")
+                return true
+            }
+            guard active else { throw CancellationError() }
+            try Task.checkCancellation()
+        }
         if priority == .background && activeAgentSessions > 0 { throw AgentError.busy }
         if !gateHeld { gateHeld = true; return }
         if priority == .background, backgroundWaiters.count >= Self.maxBackgroundQueue { throw AgentError.busy }
@@ -217,6 +228,81 @@ actor OllamaClient {
 
     // MARK: - Agentic loop
 
+    /// Retains the caller's owner through actor hops and nested tool work. The
+    /// fallback covers model callers which have no higher-level activity yet.
+    /// Its completion never ends a parent's multi-stage task.
+    private func withModelActivity<T>(
+        title: String,
+        origin: WorkActivityCenter.Origin,
+        completion: (T) -> (WorkActivityCenter.Outcome, String),
+        operation: @escaping (UUID) async throws -> T
+    ) async throws -> T {
+        let inheritedID = WorkActivityScope.id
+        let id: UUID
+        if let inheritedID {
+            id = inheritedID
+        } else {
+            id = await WorkActivityCenter.shared.begin(title: title, origin: origin)
+        }
+        do {
+            try await checkActivity(id)
+            let result: T
+            if inheritedID == nil {
+                let requestTask = Task {
+                    try await WorkActivityScope.$id.withValue(id) {
+                        try await operation(id)
+                    }
+                }
+                await WorkActivityCenter.shared.setCancellationHandler(id) { requestTask.cancel() }
+                result = try await withTaskCancellationHandler {
+                    try await requestTask.value
+                } onCancel: {
+                    requestTask.cancel()
+                }
+            } else {
+                result = try await WorkActivityScope.$id.withValue(id) {
+                    try await operation(id)
+                }
+            }
+            try await checkActivity(id)
+            if inheritedID == nil {
+                let (outcome, summary) = completion(result)
+                if origin == .background, outcome == .success {
+                    await WorkActivityCenter.shared.cancel(id)
+                } else {
+                    await WorkActivityCenter.shared.finish(id, outcome: outcome, summary: summary)
+                }
+            }
+            return result
+        } catch {
+            if inheritedID == nil {
+                if error is CancellationError {
+                    await WorkActivityCenter.shared.cancel(id)
+                } else if origin == .background, case AgentError.busy = error {
+                    // A rejected optional background request is retried by its
+                    // owner when appropriate; it must not flash an error storm.
+                    await WorkActivityCenter.shared.cancel(id)
+                } else {
+                    await WorkActivityCenter.shared.finish(id, outcome: .failure,
+                                                           summary: error.localizedDescription)
+                }
+            }
+            throw error
+        }
+    }
+
+    private func checkActivity(_ id: UUID) async throws {
+        try Task.checkCancellation()
+        guard await WorkActivityCenter.shared.isActive(id) else { throw CancellationError() }
+        try Task.checkCancellation()
+    }
+
+    private func markWorking(_ id: UUID, detail: String = "Thinking with the local model") async throws {
+        try await checkActivity(id)
+        await WorkActivityCenter.shared.update(id, phase: .working, detail: detail)
+        try Task.checkCancellation()
+    }
+
     /// Runs model → tool → result → model until the model stops asking for tools.
     /// - onAssistantText: called with each turn's visible text (for live UI logging).
     /// - maxIterations: override for the outer turn cap (defaults to
@@ -230,8 +316,29 @@ actor OllamaClient {
         userText: String,
         tools: [ToolDef],
         maxIterations: Int? = nil,
-        runTool: ToolRunner,
+        runTool: @escaping ToolRunner,
         onAssistantText: @escaping @Sendable (String) -> Void = { _ in }
+    ) async throws -> AgentOutcome {
+        try await withModelActivity(title: String(userText.prefix(90)), origin: .user,
+                                   completion: { result in
+            if result.stopReason != "end_turn" {
+                return (.failure, "The local model reached its limit before finishing.")
+            }
+            if result.lastTurnText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return (.failure, "The local model returned no answer.")
+            }
+            return (.success, String(result.lastTurnText.prefix(180)))
+        }) { id in
+            try await self.runAgentRequest(system: system, systemContext: systemContext, userText: userText,
+                                      tools: tools, maxIterations: maxIterations, runTool: runTool,
+                                      onAssistantText: onAssistantText, activityID: id)
+        }
+    }
+
+    private func runAgentRequest(
+        system: String, systemContext: String?, userText: String, tools: [ToolDef],
+        maxIterations: Int?, runTool: ToolRunner,
+        onAssistantText: @escaping @Sendable (String) -> Void, activityID: UUID
     ) async throws -> AgentOutcome {
         guard OllamaConfig.isConfigured else { throw AgentError.notConfigured }
         let model = OllamaConfig.model
@@ -264,11 +371,12 @@ actor OllamaClient {
 
         let iterationCap = maxIterations ?? OllamaConfig.maxIterations
         for _ in 0..<iterationCap {
-            // Hold the GPU for one turn only, so background work interleaves
-            // between turns instead of starving for a whole session.
-            try await acquire(.agent)
+            // Hold the GPU for one turn. Already-queued work may proceed between
+            // turns; new background requests are refused during agent sessions.
+            try await acquire(.agent, activityID: activityID)
             let reply: ChatReply
             do {
+                try await markWorking(activityID)
                 reply = try await chat(model: model,
                                        messages: messages,
                                        tools: tools,
@@ -328,11 +436,13 @@ actor OllamaClient {
             // images as ONE follow-up user message the model is guaranteed to see.
             var images: [(tool: String, base64: String)] = []
             for call in toolCallsThisTurn {
+                try await markWorking(activityID, detail: "Checking the next step")
                 toolCalls += 1
                 let name = call.name
                 var input = call.arguments
                 input = Self.coerceArguments(input, schema: toolsByName[name]?.inputSchema)
                 let result = await runTool(name, input)
+                try await checkActivity(activityID)
                 // Bounded: a single MCP listing can be 10-30k chars (3-8k
                 // tokens) and the whole transcript has to fit num_ctx. Ollama
                 // truncates an overlong prompt from the FRONT, which discards
@@ -547,6 +657,18 @@ actor OllamaClient {
                   schema: [String: Any]? = nil,
                   imageBase64: String? = nil,
                   priority: Priority = .background) async throws -> String {
+        try await withModelActivity(title: priority == .agent ? "Answering your request" : "Reading context",
+                                   origin: priority == .agent ? .user : .background,
+                                   completion: { _ in (.success, "Answer ready.") }) { id in
+            try await self.completeRequest(system: system, user: user, maxTokens: maxTokens,
+                                      asJSON: asJSON, schema: schema, imageBase64: imageBase64,
+                                      priority: priority, activityID: id)
+        }
+    }
+
+    private func completeRequest(system: String, user: String, maxTokens: Int,
+                                 asJSON: Bool, schema: [String: Any]?, imageBase64: String?,
+                                 priority: Priority, activityID: UUID) async throws -> String {
         guard OllamaConfig.isConfigured else { throw AgentError.notConfigured }
         let model = OllamaConfig.model
         let caps = try await capabilities(for: model)
@@ -573,8 +695,9 @@ actor OllamaClient {
             }
         }
 
-        try await acquire(priority)
+        try await acquire(priority, activityID: activityID)
         defer { release() }
+        try await markWorking(activityID)
         let reply = try await chat(model: model,
                                    messages: [["role": "system", "content": systemPrompt], userMessage],
                                    tools: [],
@@ -585,6 +708,7 @@ actor OllamaClient {
         var text = reply.content.trimmingCharacters(in: .whitespacesAndNewlines)
         if asJSON { text = Self.stripCodeFences(text) }
         if text.isEmpty && reply.doneReason == "length" { throw AgentError.truncated }
+        guard !text.isEmpty else { throw AgentError.transport("The local model returned no answer") }
         return text
     }
 

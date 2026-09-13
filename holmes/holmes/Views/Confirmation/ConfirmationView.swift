@@ -91,12 +91,17 @@ final class ConfirmationBus {
     /// De-duped by id: re-proposing the draft that's already on screen just brings
     /// the window forward, and a draft can sit in the queue at most once — so
     /// clicking a DraftRow repeatedly can't enqueue ghost copies.
-    func proposeDraft(_ draft: ProactiveDraft) {
+    func proposeDraft(_ draft: ProactiveDraft, prioritize: Bool = false) {
         if pendingDraft?.id == draft.id {
             ConfirmationWindowController.shared.show()
             return
         }
         draftQueue.removeAll { $0.id == draft.id }
+        if prioritize, pendingAction == nil {
+            if let previous = pendingDraft { draftQueue.insert(previous, at: 0) }
+            pendingDraft = nil
+            isShowingReply = false
+        }
         // A speculative playbook draft never displaces an answer to a person who
         // is actually waiting on the user — it queues behind the reply card too.
         guard pendingAction == nil, pendingDraft == nil, !isShowingReply else {
@@ -182,6 +187,7 @@ final class ConfirmationBus {
     /// Proposes an action and suspends until the user approves or dismisses it.
     /// Used by the agentic loop to gate side-effecting tool calls.
     func decide(_ action: PendingAction) async -> AgentDecision {
+        guard !Task.isCancelled else { return .dismissed }
         // If a decision is already pending (two confirmations overlapped — e.g. a
         // calendar task raising a card while another autonomous step is still
         // awaiting one), resolve the OLD handler as .dismissed FIRST. Otherwise the
@@ -191,10 +197,19 @@ final class ConfirmationBus {
             decisionHandler = nil
             stale(.dismissed)
         }
-        return await withCheckedContinuation { cont in
-            decisionHandler = { cont.resume(returning: $0) }
-            propose(action)
-        }
+        guard !Task.isCancelled else { return .dismissed }
+        return await withTaskCancellationHandler(operation: {
+            await withCheckedContinuation { cont in
+                guard !Task.isCancelled else { cont.resume(returning: .dismissed); return }
+                decisionHandler = { cont.resume(returning: $0) }
+                propose(action)
+            }
+        }, onCancel: {
+            Task { @MainActor in
+                guard self.pendingAction?.id == action.id else { return }
+                self.dismiss()
+            }
+        })
     }
 
     /// Closes the showing card. For drafts this only CLOSES the popup by
@@ -316,6 +331,8 @@ struct ConfirmationView: View {
     @State private var draftBody: String = ""
     @State private var draftResult: String? = nil
     @State private var draftIsExecuting: Bool = false
+    @State private var draftDidSucceed = false
+    @State private var draftInsertionTask: Task<Void, Never>?
 
     var body: some View {
         Group {
@@ -499,7 +516,7 @@ struct ConfirmationView: View {
                         Text(draft.contextSummary)
                             .font(NoirFonts.caption())
                             .foregroundStyle(NoirColors.textSecondary)
-                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                         if let stagedNote = draft.stagedNote {
                             Label(stagedNote, systemImage: "envelope.badge.person.crop")
                                 .font(NoirFonts.caption())
@@ -528,27 +545,27 @@ struct ConfirmationView: View {
         .onAppear { syncDraftState(draft) }
         .onChange(of: draft.id) { _, _ in syncDraftState(draft) }
         .onChange(of: draftBody) { _, body in bus.updatePendingDraftBody(body) }
+        .onDisappear { draftInsertionTask?.cancel() }
     }
 
     private func syncDraftState(_ draft: ProactiveDraft) {
+        draftInsertionTask?.cancel()
+        draftInsertionTask = nil
         draftBody = draft.body
         draftResult = nil
         draftIsExecuting = false
+        draftDidSucceed = false
     }
 
     @ViewBuilder private func draftFooter(draft: ProactiveDraft) -> some View {
-        if let result = draftResult {
-            resultLabel(result)
-        } else if draftIsExecuting {
+        if let result = draftResult { resultLabel(result) }
+        if draftIsExecuting {
             progressLabel("Inserting…")
-        } else {
+        } else if !draftDidSucceed {
             HStack(spacing: 8) {
                 draftPrimaryControl(draft: draft)
                 if case .clipboard = draft.target { } else {
-                    NoirButton("Copy", style: .secondary) {
-                        copyDraftBody()
-                        finishDraft(draft, result: "✓ Copied to clipboard")
-                    }
+                    NoirButton("Copy", style: .secondary) { copyDraft(draft) }
                 }
                 NoirButton("Dismiss", style: .ghost) { bus.dismiss() }
                 Spacer(minLength: 0)
@@ -558,6 +575,11 @@ struct ConfirmationView: View {
 
     @ViewBuilder private func draftPrimaryControl(draft: ProactiveDraft) -> some View {
         switch draft.target {
+        case .emailCompose(let expected):
+            NoirButton(expected.bodyIsEmpty ? "Insert draft" : "Replace body", icon: "text.insert") {
+                insertEmailDraft(draft, expected: expected)
+            }
+            .disabled(draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         case .typeIntoApp(let appName):
             NoirButton("Insert", icon: "text.insert") { insertDraft(draft, appName: appName) }
                 .disabled(draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -574,8 +596,7 @@ struct ConfirmationView: View {
             }
         case .clipboard:
             NoirButton("Copy", icon: "doc.on.doc") {
-                copyDraftBody()
-                finishDraft(draft, result: "✓ Copied to clipboard")
+                copyDraft(draft)
             }
         }
     }
@@ -605,10 +626,48 @@ struct ConfirmationView: View {
         }
     }
 
-    private func copyDraftBody() {
+    private func insertEmailDraft(_ draft: ProactiveDraft, expected: EmailComposeSnapshot) {
+        guard !draftIsExecuting else { return }
+        draftIsExecuting = true
+        draftResult = nil
+        let text = draftBody
+        let activity = WorkActivityCenter.shared.begin(title: "Inserting email draft", detail: "Checking the original email")
+        let work = Task { @MainActor in
+            await WorkActivityScope.$id.withValue(activity) {
+                do {
+                    try Task.checkCancellation()
+                    WorkActivityCenter.shared.update(activity, phase: .working)
+                    let inserted = try await EmailDraftCoordinator.shared.insert(text, expected: expected)
+                    try Task.checkCancellation()
+                    guard WorkActivityCenter.shared.isActive(activity) else { throw CancellationError() }
+                    guard inserted else { throw EmailComposeError.unavailable("Couldn't verify the inserted email. Check Gmail before retrying.") }
+                    WorkActivityCenter.shared.finish(activity, outcome: .success, summary: "Email body inserted for your review")
+                    guard bus.pendingDraft?.id == draft.id else { return }
+                    draftIsExecuting = false
+                    finishDraft(draft, result: "✓ Inserted in your email — ready for your review")
+                } catch {
+                    let cancelled = Task.isCancelled || error is CancellationError
+                    let message = cancelled ? "Insertion stopped. Check the email body before retrying." : error.localizedDescription
+                    if cancelled { WorkActivityCenter.shared.cancel(activity, summary: message) }
+                    else { WorkActivityCenter.shared.finish(activity, outcome: .failure, summary: message) }
+                    guard bus.pendingDraft?.id == draft.id else { return }
+                    draftIsExecuting = false
+                    draftResult = message
+                }
+            }
+        }
+        draftInsertionTask = work
+        WorkActivityCenter.shared.setCancellationHandler(activity) { work.cancel() }
+    }
+
+    private func copyDraft(_ draft: ProactiveDraft) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(draftBody, forType: .string)
+        if pasteboard.setString(draftBody, forType: .string) {
+            finishDraft(draft, result: "✓ Copied to clipboard")
+        } else {
+            draftResult = "Couldn't copy the draft. Try again."
+        }
     }
 
     /// Shows a brief result line, then closes the card. The draft was acted on
@@ -616,6 +675,7 @@ struct ConfirmationView: View {
     /// from PlaybookEngine's list — a plain X/Dismiss keeps it for later.
     private func finishDraft(_ draft: ProactiveDraft, result: String) {
         draftResult = result
+        draftDidSucceed = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.6) {
             // Only auto-dismiss if this draft is still the one on screen.
             if bus.pendingDraft?.id == draft.id { bus.dismiss(removeDraft: true) }
@@ -624,6 +684,7 @@ struct ConfirmationView: View {
 
     private func kindLabel(_ kind: DraftKind) -> String {
         switch kind {
+        case .emailCompose:     return "EMAIL DRAFT"
         case .emailReply:       return "EMAIL REPLY"
         case .promptSuggestion: return "PROMPT"
         case .repoBrief:        return "REPO BRIEF"

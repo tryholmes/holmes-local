@@ -22,6 +22,7 @@ const COMMANDS_ENDPOINT = "http://127.0.0.1:5766/commands";
 const RESULT_ENDPOINT = "http://127.0.0.1:5766/command-result";
 const HEARTBEAT_ENDPOINT = "http://127.0.0.1:5766/heartbeat";
 const TOKEN_KEY = "holmesToken";
+const INSTANCE_KEY = "holmesBrowserInstance";
 const COMMAND_POLL_MS = 2000;
 
 // Worker-driven heartbeat (see the "Heartbeat" section below). The whole point is
@@ -56,6 +57,18 @@ async function ensureToken() {
   }
 }
 
+let browserInstancePromise;
+function browserInstance() {
+  if (!browserInstancePromise) browserInstancePromise = (async () => {
+    const stored = await chrome.storage.local.get(INSTANCE_KEY);
+    if (stored[INSTANCE_KEY]) return stored[INSTANCE_KEY];
+    const id = crypto.randomUUID();
+    await chrome.storage.local.set({ [INSTANCE_KEY]: id });
+    return id;
+  })().catch(error => { browserInstancePromise = null; throw error; });
+  return browserInstancePromise;
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   ensureToken().then((t) => {
     console.log("[Holmes] extension installed; token " + (t ? "ready" : "UNAVAILABLE"));
@@ -87,7 +100,9 @@ async function activeTabId() {
 async function notifyActive(tabId, isActive) {
   if (typeof tabId !== "number" || tabId < 0) return;
   try {
-    await chrome.tabs.sendMessage(tabId, { type: "holmes:active", isActiveTab: isActive, tabId });
+    const tab = await chrome.tabs.get(tabId);
+    await chrome.tabs.sendMessage(tabId, { type: "holmes:active", isActiveTab: isActive, tabId,
+      windowId: tab.windowId, instanceId: await browserInstance() });
   } catch (e) {
     // Expected whenever the tab has no content script (chrome:// pages, the web store,
     // a tab still loading). Not an error worth surfacing.
@@ -146,7 +161,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const active = await activeTabId();
       if (active >= 0) lastActiveTabId = active;
       const tabId = sender && sender.tab && typeof sender.tab.id === "number" ? sender.tab.id : -1;
-      sendResponse({ token, tabId, isActiveTab: tabId >= 0 && tabId === active });
+      sendResponse({ token, tabId, windowId: sender.tab ? sender.tab.windowId : -1,
+        instanceId: await browserInstance(), isActiveTab: tabId >= 0 && tabId === active });
     })();
     return true; // keep the message channel open for the async reply
   }
@@ -158,10 +174,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const token = await ensureToken();
       try {
+        // Tab-activation notifications reach content scripts asynchronously.
+        // Recheck the actual sender at relay time so a previously active window
+        // cannot publish one last stale composer after the user switches tabs.
+        const active = await activeTabId();
+        if (!sender.tab || sender.tab.id !== active) {
+          sendResponse({ ok: true, dropped: "inactive tab" });
+          return;
+        }
+        const payload = typeof msg.body === "string" ? JSON.parse(msg.body) : Object.assign({}, msg.body || {});
+        payload.tabId = sender.tab.id;
+        payload.windowId = sender.tab.windowId;
+        payload.isActiveTab = true;
         const res = await fetch(ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
-          body: typeof msg.body === "string" ? msg.body : JSON.stringify(msg.body || {})
+          body: JSON.stringify(payload)
         });
         sendResponse({ ok: res.ok, status: res.status });
       } catch (e) {
@@ -317,7 +345,7 @@ async function pollCommands() {
     try {
       res = await fetch(COMMANDS_ENDPOINT, {
         method: "GET",
-        headers: { "X-Holmes-Token": token, "Accept": "application/json" }
+        headers: { "X-Holmes-Token": token, "Accept": "application/json", "X-Holmes-Browser-Instance": await browserInstance() }
       });
     } catch (e) {
       return; // Holmes app not running / port closed — expected, stay quiet.
@@ -344,7 +372,8 @@ async function runOneCommand(cmd, token) {
 
   let outcome;
   try {
-    outcome = await HolmesAutomation.execute(cmd);
+    outcome = action === "read_email_compose" || action === "fill_email_draft"
+      ? await emailComposeCommand(cmd) : await HolmesAutomation.execute(cmd);
   } catch (e) {
     outcome = { ok: false, error: String(e && e.message ? e.message : e) };
   }
@@ -359,6 +388,46 @@ async function runOneCommand(cmd, token) {
   } catch (e) {
     // The app went away between GET and POST — drop the result rather than retry-storm.
   }
+}
+
+async function emailComposeCommand(cmd) {
+  const params = cmd.params || {};
+  const instanceId = await browserInstance();
+  let tab;
+  if (cmd.action === "fill_email_draft") {
+    // Explicit Insert targets the original tab, never the current cursor. A
+    // document/composer comparison still occurs inside it before any write.
+    let identity;
+    try { identity = JSON.parse(params.expected && params.expected.identity); } catch (_) { identity = null; }
+    if (!Array.isArray(identity) || identity[0] !== instanceId || !Number.isInteger(identity[2])) {
+      return { ok: false, refused: true, reason: "The draft belongs to another browser session." };
+    }
+    tab = await chrome.tabs.get(identity[2]);
+    if (tab.windowId !== identity[1]) return { ok: false, refused: true, reason: "The composer window changed." };
+    await chrome.windows.update(tab.windowId, { focused: true });
+    await chrome.tabs.update(tab.id, { active: true });
+    await notifyActive(tab.id, true);
+  } else {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    tab = tabs && tabs[0];
+  }
+  if (!tab || typeof tab.id !== "number") return { ok: false, refused: true, reason: "No active browser tab." };
+  const activeWindow = await chrome.windows.get(tab.windowId);
+  if (activeWindow.type !== "normal" && activeWindow.type !== "popup") {
+    return { ok: false, refused: true, reason: "No active compose window." };
+  }
+  const environment = { tabId: tab.id, windowId: tab.windowId, instanceId };
+  if (await activeTabId() !== tab.id) return { ok: false, refused: true, reason: "The active tab changed." };
+  const result = await chrome.tabs.sendMessage(tab.id, {
+    type: cmd.action === "read_email_compose" ? "holmes:readEmailCompose" : "holmes:fillEmailDraft",
+    environment, body: params.body, expected: params.expected
+  });
+  // A tab switch while the response was in flight invalidates a refresh. The
+  // page writer separately validates the exact identity before any mutation.
+  if (cmd.action === "read_email_compose" && await activeTabId() !== tab.id) {
+    return { ok: false, refused: true, reason: "The active tab changed." };
+  }
+  return result || { ok: false, error: "The compose reader did not respond." };
 }
 
 // Restart the poll loop and heartbeat whenever this script (re)loads — i.e. on every

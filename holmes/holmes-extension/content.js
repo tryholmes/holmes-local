@@ -2330,6 +2330,24 @@
     var bodyText = clip(squish(result.bodyText || ""), MAX_BODY_TEXT);
     var thread = (result.thread || []).slice(-MAX_THREAD_MESSAGES);
     var legacy = result.legacy || {};
+    var compose = scopeComposeRead();
+    if (compose) {
+      // Preserve literal empty fields. The page title is never a subject.
+      entities.recipient = compose.recipients.join(", ");
+      entities.subject = compose.subject;
+      entities.surface = "emailCompose";
+      bodyText = compose.body;
+      result.activity = "composing";
+      result.headline = "Composing an email in " + compose.provider
+        + (entities.recipient ? " to " + entities.recipient : " — no recipient yet")
+        + (compose.subject ? ' with subject "' + compose.subject + '"' : " with an empty subject line")
+        + (compose.bodyIsEmpty ? ", body still empty" : ", " + wordCount(compose.body) + " words drafted");
+      result.detail = "To: " + entities.recipient + "\nSubject: " + compose.subject + "\n\n" + compose.body;
+      legacy.type = "email_compose";
+      legacy.recipient = entities.recipient;
+      legacy.subject = compose.subject;
+      legacy.body = compose.body;
+    }
 
     var payload = {
       v: 2,
@@ -2356,9 +2374,14 @@
       scrollPercent: g.scroll,
       isActiveTab: IS_ACTIVE_TAB && document.visibilityState === "visible",
       tabId: TAB_ID,
+      windowId: WINDOW_ID,
+      browserInstanceId: BROWSER_INSTANCE_ID,
       visible: document.visibilityState === "visible",
       focused: document.hasFocus(),
-      capturedAt: Date.now(),
+      capturedAt: compose ? compose.capturedAt : Date.now(),
+      emailCompose: compose,
+      emailComposeProtocolVersion: window.HolmesEmailCompose ? 1 : 0,
+      extensionVersion: extensionVersion(),
       fingerprint: hash32([HOST, PATH, result.activity || "", g.title].join("|")),
 
       // Legacy keys: the current Swift BrowserBridge parses these five. Kept populated so
@@ -2366,10 +2389,19 @@
       type: legacy.type || adapterId,
       sender: legacy.sender || "",
       recipient: legacy.recipient || "",
-      subject: legacy.subject || g.title,
+      subject: Object.prototype.hasOwnProperty.call(legacy, "subject") ? legacy.subject : g.title,
       body: legacy.body || bodyText.slice(0, 800)
     };
     return payload;
+  }
+
+  function scopeComposeRead() {
+    if (!window.HolmesEmailCompose || isExcludedHost()) return null;
+    return window.HolmesEmailCompose.read();
+  }
+
+  function extensionVersion() {
+    try { return chrome.runtime.getManifest().version || ""; } catch (_) { return ""; }
   }
 
   function byteLength(s) {
@@ -2407,6 +2439,11 @@
     for (var k in payload) {
       if (!Object.prototype.hasOwnProperty.call(payload, k)) continue;
       if (k === "capturedAt") continue;
+      if (k === "emailCompose" && payload[k]) {
+        copy[k] = Object.assign({}, payload[k]);
+        delete copy[k].capturedAt;
+        continue;
+      }
       copy[k] = payload[k];
     }
     if (copy.media) {
@@ -2486,6 +2523,8 @@
 
   var TOKEN = "";
   var TAB_ID = -1;
+  var WINDOW_ID = -1;
+  var BROWSER_INSTANCE_ID = "";
   var IS_ACTIVE_TAB = true; // assumed until the background worker says otherwise
   // relay -> (no runtime) fetch -> xhr, demoted on failure and remembered.
   //
@@ -2521,6 +2560,11 @@
         if (err || !res) return;
         if (res.token) TOKEN = res.token;
         if (typeof res.tabId === "number") TAB_ID = res.tabId;
+        if (typeof res.windowId === "number") WINDOW_ID = res.windowId;
+        if (typeof res.instanceId === "string") BROWSER_INSTANCE_ID = res.instanceId;
+        if (window.HolmesEmailCompose) window.HolmesEmailCompose.setEnvironment({
+          tabId: res.tabId, windowId: res.windowId, instanceId: res.instanceId, app: BROWSER
+        });
         if (typeof res.isActiveTab === "boolean") IS_ACTIVE_TAB = res.isActiveTab;
       });
     } catch (e) { /* ignore */ }
@@ -2695,6 +2739,11 @@
           var becameActive = msg.isActiveTab && !IS_ACTIVE_TAB;
           IS_ACTIVE_TAB = !!msg.isActiveTab;
           if (typeof msg.tabId === "number") TAB_ID = msg.tabId;
+          if (typeof msg.windowId === "number") WINDOW_ID = msg.windowId;
+          if (typeof msg.instanceId === "string") BROWSER_INSTANCE_ID = msg.instanceId;
+          if (window.HolmesEmailCompose) window.HolmesEmailCompose.setEnvironment({
+            tabId: msg.tabId, windowId: msg.windowId, instanceId: msg.instanceId, app: BROWSER
+          });
           if (becameActive) { lastHash = ""; schedule(true); }
         });
       } catch (e) { /* ignore */ }
@@ -2704,6 +2753,27 @@
       try {
         chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           if (!msg || typeof msg.type !== "string") return false;
+
+          if (msg.type === "holmes:readEmailCompose" || msg.type === "holmes:fillEmailDraft") {
+            if (isExcludedHost() || !IS_ACTIVE_TAB || document.visibilityState !== "visible") {
+              sendResponse({ ok: false, refused: true, reason: "The composer is no longer in the active tab." });
+              return false;
+            }
+            if (window.HolmesEmailCompose && msg.environment) {
+              window.HolmesEmailCompose.setEnvironment(Object.assign({ app: BROWSER }, msg.environment));
+            }
+            if (msg.type === "holmes:readEmailCompose") {
+              sendResponse({ ok: true, payload: buildPayload() });
+            } else {
+              var staged = window.HolmesEmailCompose
+                ? window.HolmesEmailCompose.stage(msg.body, msg.expected)
+                : { ok: false, refused: true, reason: "Reload the extension to enable precise draft insertion." };
+              lastHash = "";
+              schedule(true);
+              sendResponse(staged);
+            }
+            return false;
+          }
 
           if (msg.type === "holmes:getContext") {
             try {

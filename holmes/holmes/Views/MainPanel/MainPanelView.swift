@@ -457,6 +457,7 @@ struct DraftRow: View {
 
     private func kindIcon(_ kind: DraftKind) -> String {
         switch kind {
+        case .emailCompose:     return "square.and.pencil"
         case .emailReply:       return "envelope.badge"
         case .promptSuggestion: return "wand.and.stars"
         case .repoBrief:        return "arrow.triangle.branch"

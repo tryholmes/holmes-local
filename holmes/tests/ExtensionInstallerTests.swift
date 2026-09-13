@@ -22,15 +22,22 @@ import Foundation
         let downloads = fm.urls(for: .downloadsDirectory, in: .userDomainMask).first!
         check(ExtensionInstaller.installedFolder == downloads.appendingPathComponent("Holmes Extension", isDirectory: true),
               "Install location must be a visible folder in Downloads")
+        let noExport = try ExtensionInstaller.refreshInstalledIfNeeded(from: source, to: destination)
+        check(noExport == nil && !fm.fileExists(atPath: destination.path),
+              "App launch must not create an export or bypass fresh-install onboarding")
         let installed = try ExtensionInstaller.installUnpacked(from: source, to: destination)
         check(installed == destination, "Installer must return the folder Chrome should load")
         check(fm.fileExists(atPath: destination.appendingPathComponent("manifest.json").path), "Manifest must be directly inside the selected folder")
         check(try String(contentsOf: destination.appendingPathComponent("background.js"), encoding: .utf8) == "first", "Extension assets must be copied")
 
         try "old".write(to: destination.appendingPathComponent("obsolete.js"), atomically: true, encoding: .utf8)
+        let unchanged = try ExtensionInstaller.refreshInstalledIfNeeded(from: source, to: destination)
+        check(unchanged == nil && fm.fileExists(atPath: destination.appendingPathComponent("obsolete.js").path),
+              "Same-version launches must leave the export untouched")
         try writeManifest(version: "2.0", in: source)
         try "updated".write(to: source.appendingPathComponent("background.js"), atomically: true, encoding: .utf8)
-        try ExtensionInstaller.installUnpacked(from: source, to: destination)
+        let updated = try ExtensionInstaller.refreshInstalledIfNeeded(from: source, to: destination)
+        check(updated == destination, "A version change must refresh the existing managed export")
         check(try String(contentsOf: destination.appendingPathComponent("background.js"), encoding: .utf8) == "updated", "Refreshing must update extension assets at the same path")
         check(!fm.fileExists(atPath: destination.appendingPathComponent("obsolete.js").path), "Refreshing must remove obsolete extension files")
         check(try fm.contentsOfDirectory(atPath: destination.deletingLastPathComponent().path) == ["Holmes Extension"], "Staging must not leave extra folders in Downloads")
@@ -45,18 +52,40 @@ import Foundation
         let invalid = root.appendingPathComponent("invalid")
         try fm.createDirectory(at: invalid, withIntermediateDirectories: true)
         expectFailure { try ExtensionInstaller.installUnpacked(from: invalid, to: destination) }
+        expectFailure {
+            _ = try ExtensionInstaller.refreshInstalledIfNeeded(from: invalid, to: destination)
+            return destination
+        }
         check(try String(contentsOf: destination.appendingPathComponent("background.js"), encoding: .utf8) == "updated", "A missing package must leave the installed copy intact")
 
         let unrelated = root.appendingPathComponent("unrelated")
         try fm.createDirectory(at: unrelated, withIntermediateDirectories: true)
         try "keep me".write(to: unrelated.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
         expectFailure { try ExtensionInstaller.installUnpacked(from: source, to: unrelated) }
+        expectFailure {
+            _ = try ExtensionInstaller.refreshInstalledIfNeeded(from: source, to: unrelated)
+            return unrelated
+        }
         check(try String(contentsOf: unrelated.appendingPathComponent("notes.txt"), encoding: .utf8) == "keep me", "A same-named personal folder must remain untouched")
 
         let link = root.appendingPathComponent("shortcut")
         try fm.createSymbolicLink(at: link, withDestinationURL: destination)
         expectFailure { try ExtensionInstaller.installUnpacked(from: source, to: link) }
+        expectFailure {
+            _ = try ExtensionInstaller.refreshInstalledIfNeeded(from: source, to: link)
+            return link
+        }
         check(try fm.destinationOfSymbolicLink(atPath: link.path) == destination.path, "A symlink must remain untouched")
+        let suite = "holmes-extension-reload-test-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        check(!ExtensionInstaller.needsBrowserReload(defaults: defaults), "Fresh profile has no upgrade notice")
+        ExtensionInstaller.markNeedsBrowserReload(version: "2.2", defaults: defaults)
+        check(ExtensionInstaller.needsBrowserReload(defaults: defaults), "Updated managed export records a persistent reload notice")
+        ExtensionInstaller.noteBrowserVersion("2.1", defaults: defaults)
+        check(ExtensionInstaller.needsBrowserReload(defaults: defaults), "Older running extension cannot dismiss the update notice")
+        ExtensionInstaller.noteBrowserVersion("2.2", defaults: defaults)
+        check(!ExtensionInstaller.needsBrowserReload(defaults: defaults), "Seeing the updated browser version clears reload notice")
         print("Extension installer: \(checks) checks passed")
     }
 

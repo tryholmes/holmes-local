@@ -185,6 +185,7 @@ struct LiveContext: Codable, Equatable {
     let media: MediaState?
     let bodyText: String         // clean extracted text (DOM or AX), NOT OCR mush
     let capturedAt: Date
+    let emailCompose: EmailComposeSnapshot?
 
     // Defaults let callers construct partial contexts without repeating nils; the
     // argument labels and order match the canonical memberwise initializer.
@@ -202,7 +203,8 @@ struct LiveContext: Codable, Equatable {
          focusedField: FocusedField? = nil,
          media: MediaState? = nil,
          bodyText: String = "",
-         capturedAt: Date = Date()) {
+         capturedAt: Date = Date(),
+         emailCompose: EmailComposeSnapshot? = nil) {
         self.source = source
         self.confidence = confidence
         self.app = app
@@ -218,6 +220,7 @@ struct LiveContext: Codable, Equatable {
         self.media = media
         self.bodyText = bodyText
         self.capturedAt = capturedAt
+        self.emailCompose = emailCompose
     }
 
     /// Stable identity of this screen — used for dedupe + enrichment gating.
@@ -239,6 +242,7 @@ struct LiveContext: Codable, Equatable {
         }
         // Composing vs reading the same page are genuinely different situations.
         if focusedField?.isEditable == true { parts.append("composing") }
+        if let emailCompose { parts.append("composer=" + emailCompose.identity) }
         return LiveContextFormat.stableHash(parts.joined(separator: "|"))
     }
 
@@ -308,6 +312,8 @@ struct ContextDraft {
     var focusedField: FocusedField?
     var media: MediaState?
     var bodyText: String = ""
+    var capturedAt: Date = Date()
+    var emailCompose: EmailComposeSnapshot?
 
     /// Entity lookup that treats empty strings as missing — extension payloads are
     /// full of `""` for fields the page simply didn't have.
@@ -440,6 +446,18 @@ enum LiveContextBuilder {
                                              site: site, url: url, title: title,
                                              entities: entities, media: media,
                                              focusedField: focused)
+        if let capturedAt = EmailComposeSnapshot.browserCaptureDate(payload["capturedAt"]) {
+            draft.capturedAt = capturedAt
+            if let raw = payload["emailCompose"] as? [String: Any],
+               let compose = EmailComposeSnapshot.fromBrowser(raw, app: draft.app,
+                    bundleIdentifier: str("appBundleIdentifier"), capturedAt: capturedAt) {
+                draft.emailCompose = compose
+                draft.surface = .emailCompose
+                draft.entities["recipient"] = compose.recipients.joined(separator: ", ")
+                draft.entities["subject"] = compose.subject
+                draft.bodyText = compose.body
+            }
+        }
         draft.entities["surface"] = draft.surface.rawValue
         if let creator = draft.entity("creator", "channelName") { draft.entities["creator"] = creator }
 
@@ -472,6 +490,17 @@ enum LiveContextBuilder {
             media: nil,
             bodyText: cleanText
         )
+
+        if let compose = reading.emailCompose {
+            draft.emailCompose = compose
+            draft.capturedAt = compose.capturedAt
+            draft.surface = .emailCompose
+            draft.entities["surface"] = ContextSurface.emailCompose.rawValue
+            draft.entities["recipient"] = compose.recipients.joined(separator: ", ")
+            draft.entities["subject"] = compose.subject
+            draft.bodyText = compose.body
+            return finish(draft, activityOverride: "composing")
+        }
 
         switch reading.kind {
         case .editor:
@@ -694,7 +723,8 @@ enum LiveContextBuilder {
             focusedField: draft.focusedField,
             media: draft.media,
             bodyText: draft.bodyText,
-            capturedAt: Date()
+            capturedAt: draft.capturedAt,
+            emailCompose: draft.emailCompose
         )
     }
 
@@ -931,7 +961,7 @@ enum HeadlineFormatter {
     private static func composingHeadline(_ d: ContextDraft) -> Candidate? {
         let field = d.focusedField
         let typing = field?.isEditable == true
-        let draftText = (field?.isEditable == true ? field?.value : nil)?.trimmed
+        let draftText = d.emailCompose?.body ?? (field?.isEditable == true ? field?.value : nil)?.trimmed
             ?? d.entity("draft") ?? ""
         let words = LiveContextFormat.wordCount(draftText)
         let place = siteName(d)

@@ -50,6 +50,19 @@ jobs:
       - name: Test guided demo behavior
         run: holmes/tests/run-guided-demo-tests.sh
 
+      - name: Test email drafting, voice routing and work lifecycle
+        run: |
+          holmes/tests/run-action-run-evidence-tests.sh
+          holmes/tests/run-email-compose-tests.sh
+          holmes/tests/run-browser-compose-bridge-tests.sh
+          holmes/tests/run-email-draft-intent-tests.sh
+          holmes/tests/run-email-drafting-tests.sh
+          holmes/tests/run-email-draft-coordinator-tests.sh
+          holmes/tests/run-request-routing-tests.sh
+          holmes/tests/run-voice-hold-tests.sh
+          holmes/tests/run-work-activity-tests.sh
+          holmes/tests/run-extension-installer-tests.sh
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,4 +1,4 @@
-// Run: swiftc -parse-as-library holmes/holmes/Views/NotchAnimation/NotchDetector.swift holmes/holmes/Views/NotchAnimation/NotchViewModel.swift holmes/tests/notch_geometry_tests.swift -o /tmp/holmes-notch-geometry-tests && /tmp/holmes-notch-geometry-tests
+// Run: holmes/tests/run-work-activity-tests.sh
 import AppKit
 
 @main

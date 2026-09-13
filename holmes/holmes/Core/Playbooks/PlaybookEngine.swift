@@ -27,6 +27,9 @@ final class PlaybookEngine {
 
     // ── Private state ───────────────────────────────
     @ObservationIgnored private var started = false
+    @ObservationIgnored private var fireTask: Task<Void, Never>?
+    @ObservationIgnored private var fireID: UUID?
+    @ObservationIgnored private var failureSummary: String?
     // "playbookId|contextKey" -> last successful fire
     @ObservationIgnored private var cooldowns: [String: Date] = [:]
     // playbookId -> the screen (app|window) it last matched, with when that
@@ -92,6 +95,29 @@ final class PlaybookEngine {
         PlaybookRegistry.startWatching()
         let enabled = PlaybookRegistry.all.filter { Self.isEnabled($0.id) }.map(\.id)
         print("[Holmes] PlaybookEngine started — \(PlaybookRegistry.all.count) playbooks, enabled: \(enabled.joined(separator: ", "))")
+    }
+
+    func stop() {
+        started = false
+        fireID = nil
+        fireTask?.cancel()
+        fireTask = nil
+        isExecuting = false
+        lastSeenKeys.removeAll()
+    }
+
+    /// All generated text uses the same editable, bounded review collection.
+    func offerDraft(_ draft: ProactiveDraft, prioritize: Bool = false) {
+        drafts.removeAll { $0.id == draft.id }
+        drafts.insert(draft, at: 0)
+        if drafts.count > maxDrafts {
+            for evicted in drafts.suffix(from: maxDrafts) {
+                ConfirmationBus.shared.removeQueuedDraft(id: evicted.id)
+            }
+            drafts = Array(drafts.prefix(maxDrafts))
+        }
+        ConfirmationBus.shared.proposeDraft(draft, prioritize: prioritize)
+        if !prioritize { postDraftNotification(for: draft) }
     }
 
     // MARK: - Evaluate (called on every context snapshot)
@@ -246,6 +272,13 @@ final class PlaybookEngine {
     }
 
     func runManually(playbookId: String, context: PlaybookContext, onCompletion: ((Bool) -> Void)? = nil) {
+        if playbookId == "email-compose" {
+            Task { @MainActor in
+                let result = await EmailDraftCoordinator.shared.request(instruction: "Draft this email for me.")
+                if case .ready = result { onCompletion?(true) } else { onCompletion?(false) }
+            }
+            return
+        }
         guard let playbook = PlaybookRegistry.all.first(where: { $0.id == playbookId }) else {
             print("[Holmes] Playbook '\(playbookId)' not found")
             onCompletion?(false)
@@ -297,6 +330,8 @@ final class PlaybookEngine {
     /// window title — key drift can no longer re-draft one unchanged screen.
     /// Cooldowns are still consumed on success only.
     func fireFromTrigger(playbookId: String, context: PlaybookContext) {
+        // Email compose requires exact, stable DOM/AX headers, not a model trigger.
+        guard playbookId != "email-compose" else { return }
         guard started, !isExecuting else { return }
         guard let playbook = PlaybookRegistry.all.first(where: { $0.id == playbookId }) else {
             print("[Holmes] TriggerBrain fire skipped — playbook '\(playbookId)' not found")
@@ -353,54 +388,80 @@ final class PlaybookEngine {
         currentRunIsManual = manual
         glow(.thinking)
 
-        Task { @MainActor in
-            defer { isExecuting = false }
+        let runID = UUID()
+        fireID = runID
+        failureSummary = nil
+        let inherited = WorkActivityScope.id
+        let activity = inherited ?? WorkActivityCenter.shared.begin(
+            title: playbook.name, detail: "Preparing", origin: manual ? .user : .background)
+        let work = Task { @MainActor in
+            var succeeded = false
+            let report: (Bool) -> Void = { succeeded = $0 }
+            await WorkActivityScope.$id.withValue(activity) {
+                guard !Task.isCancelled else { return }
+                // === AUTONOMY ROUTING ===
+                // effectiveLevel applies the global "Autonomous actions" master switch
+                // (default OFF → every playbook clamps to ≤ .draft), so with autonomy
+                // off this seam behaves EXACTLY like the historical draft-only Holmes.
+                // All fire-time brakes (cooldown, debounce, 60s floor, single-flight)
+                // already ran before we got here and are unchanged.
+                // SDK (manifest) playbooks are confined to the draft-only path no
+                // matter how the dial is set: their goal text is third-party prompt
+                // and must never reach ActionPlanner / AutonomousActionRunner.
+                let level = playbook.source == nil
+                    ? AutonomyPolicy.shared.effectiveLevel(for: playbook.id)
+                    : min(AutonomyPolicy.shared.effectiveLevel(for: playbook.id), .draft)
+                switch level {
+                case .observe:
+                    // Watch only: record what WOULD have run; act on nothing.
+                    await MemoryStore.shared.record(
+                        kind: "action", app: ctx.appName, windowTitle: ctx.windowTitle,
+                        activity: "autonomy-observed",
+                        summary: "Observed (not run): \(playbook.name)",
+                        detail: "playbook=\(playbook.id) level=observe context=\(ctx.appName) — \(ctx.windowTitle)")
+                    guard !Task.isCancelled, self.fireID == runID else { return }
+                    glow(.off)
+                    report(false)
 
-            // === AUTONOMY ROUTING ===
-            // effectiveLevel applies the global "Autonomous actions" master switch
-            // (default OFF → every playbook clamps to ≤ .draft), so with autonomy
-            // off this seam behaves EXACTLY like the historical draft-only Holmes.
-            // All fire-time brakes (cooldown, debounce, 60s floor, single-flight)
-            // already ran before we got here and are unchanged.
-            // SDK (manifest) playbooks are confined to the draft-only path no
-            // matter how the dial is set: their goal text is third-party prompt
-            // and must never reach ActionPlanner / AutonomousActionRunner.
-            let level = playbook.source == nil
-                ? AutonomyPolicy.shared.effectiveLevel(for: playbook.id)
-                : min(AutonomyPolicy.shared.effectiveLevel(for: playbook.id), .draft)
-            switch level {
-            case .observe:
-                // Watch only: record what WOULD have run; act on nothing.
-                await MemoryStore.shared.record(
-                    kind: "action", app: ctx.appName, windowTitle: ctx.windowTitle,
-                    activity: "autonomy-observed",
-                    summary: "Observed (not run): \(playbook.name)",
-                    detail: "playbook=\(playbook.id) level=observe context=\(ctx.appName) — \(ctx.windowTitle)")
-                glow(.off)
-                onCompletion?(false)
-
-            case .draft:
-                await runDraftPath(playbook, ctx: ctx, cooldownKeys: cooldownKeys,
-                                   fromTrigger: fromTrigger, onCompletion: onCompletion)
-
-            case .confirm, .auto:
-                // Autonomy may act. If the gate refuses (rate budget spent, the
-                // playbook's own enable, or a master-switch race), fall back to
-                // the draft path so the playbook still helps rather than going dark.
-                guard AutonomyGate.mayAct(playbookId: playbook.id) else {
+                case .draft:
                     await runDraftPath(playbook, ctx: ctx, cooldownKeys: cooldownKeys,
-                                       fromTrigger: fromTrigger, onCompletion: onCompletion)
-                    return
-                }
-                if playbook.isTeachScenario {
-                    await runTeachPath(playbook, ctx: ctx, cooldownKeys: cooldownKeys,
-                                       fromTrigger: fromTrigger, onCompletion: onCompletion)
-                } else {
-                    await runActionPath(playbook, ctx: ctx, level: level, cooldownKeys: cooldownKeys,
-                                        fromTrigger: fromTrigger, onCompletion: onCompletion)
+                                       fromTrigger: fromTrigger, onCompletion: report)
+
+                case .confirm, .auto:
+                    // Autonomy may act. If the gate refuses (rate budget spent, the
+                    // playbook's own enable, or a master-switch race), fall back to
+                    // the draft path so the playbook still helps rather than going dark.
+                    guard AutonomyGate.mayAct(playbookId: playbook.id) else {
+                        await runDraftPath(playbook, ctx: ctx, cooldownKeys: cooldownKeys,
+                                           fromTrigger: fromTrigger, onCompletion: report)
+                        return
+                    }
+                    if playbook.isTeachScenario {
+                        await runTeachPath(playbook, ctx: ctx, cooldownKeys: cooldownKeys,
+                                           fromTrigger: fromTrigger, onCompletion: report)
+                    } else {
+                        await runActionPath(playbook, ctx: ctx, level: level, cooldownKeys: cooldownKeys,
+                                            fromTrigger: fromTrigger, onCompletion: report)
+                    }
                 }
             }
+            let cancelled = Task.isCancelled || self.fireID != runID
+            if inherited == nil {
+                if cancelled { WorkActivityCenter.shared.cancel(activity) }
+                else {
+                    WorkActivityCenter.shared.finish(activity, outcome: succeeded ? .success : .failure,
+                        summary: succeeded ? "\(playbook.name) is ready" : (self.failureSummary ?? "Couldn't complete \(playbook.name). Try again."))
+                }
+            }
+            if self.fireID == runID {
+                self.isExecuting = false
+                self.fireTask = nil
+                self.fireID = nil
+            }
+            onCompletion?(succeeded && !cancelled)
         }
+        fireTask = work
+        if inherited == nil { WorkActivityCenter.shared.setCancellationHandler(activity) { work.cancel() } }
     }
 
     // MARK: - Draft path (the historical draft-only pipeline, UNCHANGED)
@@ -453,9 +514,11 @@ final class PlaybookEngine {
                 // No local model, no draft. There is no second-tier model to fall
                 // back to, and a playbook that quietly produced a worse draft would
                 // be indistinguishable from one that worked.
+                failureSummary = OllamaConfig.notReadyMessage
                 print("[Holmes] Playbook '\(playbook.id)' skipped — \(OllamaConfig.notReadyMessage)")
             }
 
+            guard !Task.isCancelled else { onCompletion?(false); return }
             var body = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             // The model is TOLD to append this line only on a successful create,
             // but a lying/failed run must not surface the claim: keep the body
@@ -553,16 +616,6 @@ final class PlaybookEngine {
                 stagedNote: stagedNote
             )
 
-            drafts.insert(draft, at: 0)
-            if drafts.count > maxDrafts {
-                // Keep the ConfirmationBus queue in sync: an evicted draft must
-                // not pop up as a review card later.
-                for evicted in drafts.suffix(from: maxDrafts) {
-                    ConfirmationBus.shared.removeQueuedDraft(id: evicted.id)
-                }
-                drafts = Array(drafts.prefix(maxDrafts))
-            }
-
             // Memory: every prepared draft is a durable, recallable fact.
             Task {
                 await MemoryStore.shared.record(
@@ -572,8 +625,7 @@ final class PlaybookEngine {
                     detail: String(body.prefix(600)) + (stagedNote.map { "\n\($0)" } ?? ""))
             }
 
-            ConfirmationBus.shared.proposeDraft(draft)
-            postDraftNotification(for: draft)
+            offerDraft(draft)
             glow(.ready)
             if playbook.usesDing {
                 ScreenGlowController.shared.ding(origin: glowOrigin)
@@ -612,7 +664,13 @@ final class PlaybookEngine {
             return
         }
         // The runner settles the glow / posts the notification / logs memory.
-        await AutonomousActionRunner.shared.run(plan, playbookId: playbook.id, level: level)
+        guard !Task.isCancelled else { onCompletion?(false); return }
+        let outcome = await AutonomousActionRunner.shared.run(plan, playbookId: playbook.id, level: level)
+        guard outcome.succeeded, !Task.isCancelled else {
+            failureSummary = outcome.summary
+            onCompletion?(false)
+            return
+        }
         // Consume the per-context cooldown(s) so the same window doesn't re-fire,
         // and record the key-independent fire fact for the drift guards — the same
         // bookkeeping the draft path does on success.
@@ -659,6 +717,7 @@ final class PlaybookEngine {
             return
         }
 
+        guard !Task.isCancelled else { onCompletion?(false); return }
         // Draw the annotations on the display they were produced against
         // (auto-hides; the next key/click dismisses).
         if !result.annotations.isEmpty {
@@ -667,7 +726,7 @@ final class PlaybookEngine {
         // Speak WITHOUT holding the fire lock — fire-and-forget so isExecuting
         // releases immediately and other playbooks aren't starved by a long TTS.
         if !result.spokenAnswer.isEmpty {
-            Task { @MainActor in await SpeechSynthesizer.shared.speak(result.spokenAnswer) }
+            SpeechSynthesizer.shared.enqueue(result.spokenAnswer, priority: .utterance)
         }
 
         await MemoryStore.shared.record(
@@ -676,6 +735,7 @@ final class PlaybookEngine {
             summary: "Explained: \(playbook.makeTitle(ctx))",
             detail: "playbook=\(playbook.id)\n\(String(result.spokenAnswer.prefix(600)))")
 
+        guard !Task.isCancelled else { onCompletion?(false); return }
         for cooldownKey in cooldownKeys { cooldowns[cooldownKey] = Date() }
         lastSuccessfulFire[playbook.id] = (at: Date(), windowTitle: ctx.windowTitle, fromTrigger: fromTrigger)
         glow(.ready)
@@ -755,6 +815,7 @@ final class PlaybookEngine {
 
     static func setEnabled(_ enabled: Bool, playbookId: String) {
         UserDefaults.standard.set(enabled, forKey: "holmes.playbook." + playbookId + ".enabled")
+        if playbookId == "email-compose", !enabled { EmailDraftCoordinator.shared.cancelAutomaticDraft() }
     }
 
     // MARK: - Draft-only personas
@@ -775,6 +836,8 @@ final class PlaybookEngine {
 
     private static func systemHint(for kind: DraftKind) -> String {
         switch kind {
+        case .emailCompose:
+            return EmailDraftInput.systemPrompt
         case .emailReply:
             return "You are Holmes drafting an email reply on the user's behalf. You work in draft-only mode: you may read emails, threads, and screen context to ground the reply, and you may save the reply into the user's own Gmail Drafts folder via GMAIL_CREATE_EMAIL_DRAFT (a draft cannot send itself — the user reviews it in Gmail), but you can never send, forward, or reply directly. Match the sender's formality and the user's likely voice: warm, concise, no filler, no corporate boilerplate. Your final message must be ONLY the reply body text, ready to paste — no subject line, no signature placeholders like [Your Name], no commentary."
         case .promptSuggestion:

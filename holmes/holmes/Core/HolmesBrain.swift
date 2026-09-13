@@ -118,6 +118,8 @@ final class HolmesBrain {
     enum RunResult {
         case notConfigured
         case text(String)
+        case failed(String)
+        case cancelled
     }
 
     /// Runs `goal` to completion through the local model + tools loop.
@@ -130,13 +132,14 @@ final class HolmesBrain {
     func run(goal: String,
              narrateAloud: Bool = true,
              log: @escaping @MainActor (String) -> Void) async -> RunResult {
+        guard !Task.isCancelled else { return .cancelled }
         guard OllamaConfig.isConfigured else { return .notConfigured }
 
         let narrates = narrateAloud && ClickyController.shared.narrateActionsEnabled
         if narrates {
             // Status line: queues without cutting anything, and a fast run's
             // closing line no longer clips it mid-word (statuses coalesce).
-            Task { @MainActor in SpeechSynthesizer.shared.enqueue("On it.", priority: .status) }
+            SpeechSynthesizer.shared.enqueue("On it.", priority: .status)
         }
 
         // Deterministic lane first (action doctrine): "open Finder" / "launch
@@ -151,17 +154,20 @@ final class HolmesBrain {
             ComputerUseEngine.shared.beginRun()
             let opened = await ComputerUseEngine.shared.perform(action: "open_app", input: ["name": appName])
             if !opened.isRefused && !opened.isError {
-                try? await Task.sleep(nanoseconds: 900_000_000)
+                do { try await Task.sleep(nanoseconds: 900_000_000) }
+                catch { return .cancelled }
+                guard !Task.isCancelled else { return .cancelled }
                 let approved = await approve(title: "Type into \(appName)", preview: text, app: appName)
-                guard let approvedText = approved else { return .text("Okay, not typing anything.") }
+                guard !Task.isCancelled, let approvedText = approved else { return .cancelled }
                 var typed = false
                 if let running = ActionExecutor.shared.runningApp(named: appName) {
                     typed = await typeIntoApp(running, text: approvedText)
                 }
                 let result = typed ? "Opened \(appName) and typed it." : "Opened \(appName) but couldn't type into it — click into a note or field and try again."
+                guard !Task.isCancelled else { return .cancelled }
                 log(result)
-                if narrates { Task { @MainActor in SpeechSynthesizer.shared.enqueue(result, priority: .utterance) } }
-                return .text(result)
+                if narrates { SpeechSynthesizer.shared.enqueue(result, priority: .utterance) }
+                return typed ? .text(result) : .failed(result)
             }
             // Refused or unknown app — let the model interpret the whole goal.
         }
@@ -169,6 +175,7 @@ final class HolmesBrain {
         if let appName = Self.openAppIntent(in: goal), Self.isExactInstalledApp(appName) {
             ComputerUseEngine.shared.beginRun()
             let outcome = await ComputerUseEngine.shared.perform(action: "open_app", input: ["name": appName])
+            guard !Task.isCancelled else { return .cancelled }
             if !outcome.isRefused && !outcome.isError {
                 let text = "Opened \(appName)."
                 log(text)
@@ -178,7 +185,7 @@ final class HolmesBrain {
                         summary: "Ran: \(String(goal.prefix(120)))", detail: text)
                 }
                 if narrates {
-                    Task { @MainActor in SpeechSynthesizer.shared.enqueue(text, priority: .utterance) }
+                    SpeechSynthesizer.shared.enqueue(text, priority: .utterance)
                 }
                 return .text(text)
             }
@@ -186,6 +193,7 @@ final class HolmesBrain {
         }
 
         await MCPClient.shared.startAll() // no-op if already started
+        guard !Task.isCancelled else { return .cancelled }
         // Pin this run's screenshot resolution BEFORE building `builtinTools` and
         // the system prompt, so the `computer` tool's declared pixel space
         // (W×H in its description) equals the pixel dims every screenshot in the
@@ -199,7 +207,9 @@ final class HolmesBrain {
         // server — the split just keeps the volatile part in one place.
         let system = stableSystemPrompt
         let systemContext = await screenContextPreamble()
-
+        guard !Task.isCancelled else { return .cancelled }
+        var evidence = ActionRunEvidence()
+        let activity = WorkActivityScope.id
         do {
             let outcome = try await OllamaClient.shared.runAgent(
                 system: system,
@@ -215,15 +225,37 @@ final class HolmesBrain {
                 maxIterations: 25,
                 runTool: { [weak self] name, input in
                     guard let self else { return OllamaClient.ToolResult("internal error", isError: true) }
-                    return await self.runTool(name: name, input: input)
+                    guard !Task.isCancelled, !evidence.declined else {
+                        return OllamaClient.ToolResult("Stopped after cancellation or a declined action.", isError: true)
+                    }
+                    let result = await self.runTool(name: name, input: input)
+                    evidence.record(tool: name, action: input["action"] as? String,
+                                    readOnly: self.toolIsReadOnly(name: name, input: input),
+                                    isError: result.isError, text: result.text)
+                    return result
                 },
                 onAssistantText: { text in
-                    Task { @MainActor in log(text) }
+                    Task { @MainActor in
+                        if let activity, !WorkActivityCenter.shared.isActive(activity) { return }
+                        log(text)
+                    }
                 }
             )
-            let text = outcome.finalText.isEmpty
-                ? "Done (\(outcome.toolCallCount) tool call\(outcome.toolCallCount == 1 ? "" : "s"))."
-                : outcome.finalText
+            try Task.checkCancellation()
+            if evidence.declined { return .cancelled }
+            guard outcome.stopReason == "end_turn" else {
+                return .failed("The local model reached its limit before completing the request. Check the app before retrying.")
+            }
+            if let failure = evidence.failure {
+                return .failed("Couldn't complete the action: " + String(failure.prefix(300)))
+            }
+            let text = outcome.lastTurnText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                return .failed("The local model returned no final result. Check the app before retrying.")
+            }
+            if !evidence.hasSuccessfulAction, ActionRequestIntent.matches(goal) {
+                return .failed("No action was performed. " + String(text.prefix(500)))
+            }
             // Memory: user-initiated agent runs are part of the durable record.
             let goalNote = String(goal.prefix(120))
             let resultNote = String(text.prefix(600))
@@ -237,34 +269,34 @@ final class HolmesBrain {
                 // .utterance: the result is an ANSWER — it queues after any
                 // playing audio instead of cutting it off.
                 let spoken = String(text.prefix(220))
-                Task { @MainActor in SpeechSynthesizer.shared.enqueue(spoken, priority: .utterance) }
+                SpeechSynthesizer.shared.enqueue(spoken, priority: .utterance)
             }
             return .text(text)
         } catch let OllamaClient.AgentError.refused(msg) {
-            return .text("Holmes declined: \(msg)")
+            return .failed("Holmes declined: \(msg)")
         } catch OllamaClient.AgentError.serverUnreachable(_) {
             Task { await OllamaServer.shared.refreshAfterFailure() }
-            return .text("Ollama isn't running — Holmes can't act until it starts (Settings ▸ Local Model).")
+            return .failed("Ollama isn't running — Holmes can't act until it starts (Settings ▸ Local Model).")
         } catch OllamaClient.AgentError.modelMissing(let model) {
             Task { await OllamaServer.shared.refreshAfterFailure() }
-            return .text("The local model \(model) isn't downloaded — download it in Settings ▸ Local Model, then try again.")
+            return .failed("The local model \(model) isn't downloaded — download it in Settings ▸ Local Model, then try again.")
         } catch OllamaClient.AgentError.busy {
-            return .text("The local model is busy — try again in a moment.")
+            return .failed("The local model is busy — try again in a moment.")
         } catch OllamaClient.AgentError.truncated {
-            return .text("Local model error: the model ran out of output tokens before finishing. Try a shorter goal, or raise the output/context limits in Settings ▸ Local Model.")
+            return .failed("Local model error: the model ran out of output tokens before finishing. Try a shorter goal, or raise the output/context limits in Settings ▸ Local Model.")
         } catch OllamaClient.AgentError.notConfigured {
             // A status, not an answer: callers already render RunResult.notConfigured
             // (and AutonomousActionRunner must not count it as a completed step).
             return .notConfigured
         } catch OllamaClient.AgentError.unsupported(let msg) {
-            return .text("Local model error: \(msg)")
+            return .failed("Local model error: \(msg)")
         } catch let OllamaClient.AgentError.http(code, msg) {
-            return .text("Local model error \(code): \(msg)")
+            return .failed("Local model error \(code): \(msg)")
         } catch is CancellationError {
             // The user (or a superseding run) cancelled: exit quietly.
-            return .text("Stopped.")
+            return .cancelled
         } catch {
-            return .text("Action failed: \(error.localizedDescription)")
+            return .failed("Action failed: \(error.localizedDescription)")
         }
     }
 
@@ -885,6 +917,21 @@ final class HolmesBrain {
 
     // MARK: - Tool dispatch
 
+    /// Reads can verify an action, but cannot stand in for a successful action.
+    /// Track failures by operation so a later screenshot cannot erase a failed click.
+    private func toolIsReadOnly(name: String, input: [String: Any]) -> Bool {
+        switch name {
+        case "read_screen", "zoom_screen", "recall_memory": return true
+        case "computer":
+            return ["screenshot", "cursor_position", "wait"].contains(input["action"] as? String ?? "")
+        case "browser_control":
+            return ["read_selection", "extract", "list_tabs", "screenshot_tab", "wait_for_selector"]
+                .contains(input["action"] as? String ?? "")
+        case "type_text", "send_message", "open_url", "click_button": return false
+        default: return MCPClient.shared.tool(forNamespacedName: name)?.readOnly ?? false
+        }
+    }
+
     private func runTool(name: String, input: [String: Any]) async -> OllamaClient.ToolResult {
         switch name {
         case "read_screen":   return readScreen()
@@ -996,13 +1043,18 @@ final class HolmesBrain {
     /// Notes/TextEdit window with no document swallows keystrokes — ⌘N fixes
     /// that), then types.
     func typeIntoApp(_ app: NSRunningApplication, text: String) async -> Bool {
+        guard !Task.isCancelled else { return false }
         app.activate(options: [.activateIgnoringOtherApps])
-        try? await Task.sleep(nanoseconds: 450_000_000)
+        do { try await Task.sleep(nanoseconds: 450_000_000) }
+        catch { return false }
+        guard !Task.isCancelled else { return false }
         let editors: Set<String> = ["com.apple.Notes", "com.apple.TextEdit", "com.apple.iWork.Pages", "com.apple.Stickies"]
         if let bundle = app.bundleIdentifier, editors.contains(bundle), !ActionExecutor.shared.hasEditableFocus(in: app) {
             _ = await ComputerUseEngine.shared.perform(action: "key", input: ["text": "cmd+n"])
-            try? await Task.sleep(nanoseconds: 600_000_000)
+            do { try await Task.sleep(nanoseconds: 600_000_000) }
+            catch { return false }
         }
+        guard !Task.isCancelled else { return false }
         return await offMain { ActionExecutor.shared.typeIntoFocusedField(in: app, text: text) }
     }
 
@@ -1015,6 +1067,7 @@ final class HolmesBrain {
         guard let approved = await approve(title: "Send on \(app)", preview: message, app: app) else {
             return OllamaClient.ToolResult("User declined to send the message.")
         }
+        guard !Task.isCancelled else { return OllamaClient.ToolResult("Stopped", isError: true) }
         let ok = await offMain { ActionExecutor.shared.sendMessageInApp(app, message: approved) }
         return OllamaClient.ToolResult(ok ? "Placed the message into \(app)'s input field." : "Failed to send.", isError: !ok)
     }
@@ -1026,8 +1079,9 @@ final class HolmesBrain {
         guard await approve(title: "Open URL", preview: urlString, app: "Browser") != nil else {
             return OllamaClient.ToolResult("User declined to open the URL.")
         }
-        NSWorkspace.shared.open(url)
-        return OllamaClient.ToolResult("Opened \(urlString).")
+        guard !Task.isCancelled else { return OllamaClient.ToolResult("Stopped", isError: true) }
+        let opened = NSWorkspace.shared.open(url)
+        return OllamaClient.ToolResult(opened ? "Opened \(urlString)." : "Couldn't open \(urlString).", isError: !opened)
     }
 
     private func clickButton(_ input: [String: Any]) async -> OllamaClient.ToolResult {
@@ -1041,6 +1095,7 @@ final class HolmesBrain {
         guard let running = ActionExecutor.shared.runningApp(named: app) else {
             return OllamaClient.ToolResult("Could not find app '\(app)'.", isError: true)
         }
+        guard !Task.isCancelled else { return OllamaClient.ToolResult("Stopped", isError: true) }
         let ok = await offMain { ActionExecutor.shared.clickButton(label: label, in: running) }
         return OllamaClient.ToolResult(ok ? "Clicked '\(label)'." : "Could not find a button labeled '\(label)'.", isError: !ok)
     }
@@ -1201,6 +1256,7 @@ final class HolmesBrain {
                 return OllamaClient.ToolResult("User declined to run \(name).")
             }
         }
+        guard !Task.isCancelled else { return OllamaClient.ToolResult("Stopped", isError: true) }
         return await MCPClient.shared.call(namespacedName: name, arguments: input)
     }
 
@@ -1211,7 +1267,7 @@ final class HolmesBrain {
     private func approve(title: String, preview: String, app: String) async -> String? {
         let action = PendingAction(title: title, preview: preview, appName: app, actionType: .agentToolCall)
         switch await ConfirmationBus.shared.decide(action) {
-        case .approved(let text): return text
+        case .approved(let text): return Task.isCancelled ? nil : text
         case .dismissed:          return nil
         }
     }

@@ -19,6 +19,19 @@ import Foundation
 /// `Result.capture` to `VisualGuidanceOverlay.show(_:mappedFrom:)`.
 enum VisualGuidance {
 
+    enum GuidanceError: Error, LocalizedError {
+        case screenUnavailable, emptyResponse
+
+        var errorDescription: String? {
+            switch self {
+            case .screenUnavailable:
+                return "I couldn't read your screen. Check Screen Recording permission in System Settings."
+            case .emptyResponse:
+                return "The local model returned no answer or usable screen guidance."
+            }
+        }
+    }
+
     struct Result {
         /// The concise, conversational answer to speak aloud.
         let spokenAnswer: String
@@ -44,8 +57,16 @@ enum VisualGuidance {
     /// (e.g. a meeting-notes playbook that fired on a code screen) dragging the
     /// answer off into a topic that isn't visible.
     static func answer(question: String, context: String = "") async -> Result? {
-        guard OllamaConfig.isConfigured else { return nil }
-        guard let capture = await WindowCapture.captureForModel() else { return nil }
+        try? await answerResult(question: question, context: context)
+    }
+
+    /// Explicit callers retain a typed failure and cancellation instead of
+    /// treating every unavailable answer as the same successful nil result.
+    static func answerResult(question: String, context: String = "") async throws -> Result {
+        try Task.checkCancellation()
+        guard OllamaConfig.isConfigured else { throw OllamaClient.AgentError.notConfigured }
+        guard let capture = await WindowCapture.captureForModel() else { throw GuidanceError.screenUnavailable }
+        try Task.checkCancellation()
 
         let system = systemPrompt(
             width: capture.screenshotWidthInPixels,
@@ -53,28 +74,22 @@ enum VisualGuidance {
             context: context
         )
 
-        let raw: String
-        do {
-            // Grammar-constrained to `guidanceSchema`; the user is waiting with
-            // the hotkey held, so this is .agent priority — never dropped as
-            // .busy behind background enrichment.
-            raw = try await OllamaClient.shared.complete(
-                system: system,
-                user: question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "What's on my screen, and where should I look?"
-                    : question,
-                maxTokens: 1200,
-                asJSON: true,
-                schema: guidanceSchema,
-                imageBase64: capture.jpegBase64,
-                priority: .agent
-            )
-        } catch {
-            print("[Clicky] VisualGuidance failed — \(error.localizedDescription)")
-            return nil
-        }
-
-        return parse(raw, capture: capture)
+        // Grammar-constrained to `guidanceSchema`; this is an explicit user
+        // request, so .agent priority waits instead of being dropped as .busy.
+        let raw = try await OllamaClient.shared.complete(
+            system: system,
+            user: question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "What's on my screen, and where should I look?"
+                : question,
+            maxTokens: 1200,
+            asJSON: true,
+            schema: guidanceSchema,
+            imageBase64: capture.jpegBase64,
+            priority: .agent
+        )
+        try Task.checkCancellation()
+        guard let result = parse(raw, capture: capture) else { throw GuidanceError.emptyResponse }
+        return result
     }
 
     // MARK: - Schema

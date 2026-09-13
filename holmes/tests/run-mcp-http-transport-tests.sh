@@ -6,6 +6,7 @@ trap 'rm -rf "$mcp_test_dir"' EXIT
 cd "$mcp_repo_root"
 xcrun swiftc -swift-version 5 \
   holmes/holmes/Core/OllamaConfig.swift \
+  holmes/holmes/Core/WorkActivity.swift \
   holmes/holmes/Core/OllamaClient.swift \
   holmes/holmes/Core/MCPModels.swift \
   holmes/holmes/Core/MCPClient.swift \
