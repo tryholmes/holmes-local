@@ -360,6 +360,9 @@ struct MCPHTTPTransportTests {
         expect(p.feed(Array("data: partial".utf8)).isEmpty, "An unterminated event is not dispatched")
         expect(p.feed(Array("\n\n".utf8)) == ["partial"], "The rest of the event completes it")
         expect(p.feed(Array("data\n\n".utf8)) == [""], "A field with no colon has an empty value")
+        var bom = MCPSSEParser()
+        expect(bom.feed(Array("\u{FEFF}data: x\n\n".utf8)) == ["x"], "A leading byte order mark is not part of the first field")
+        expect(bom.feed(Array("data: \u{FEFF}y\n\n".utf8)) == ["\u{FEFF}y"], "A byte order mark later in the stream is ordinary data")
         var q = MCPSSEParser()
         var out: [String] = []
         for byte in Array("event: message\r\ndata: {\"a\":1}\r\n\r\n".utf8) {
