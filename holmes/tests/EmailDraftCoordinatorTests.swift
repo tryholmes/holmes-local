@@ -134,6 +134,15 @@ struct EmailDraftCoordinatorTests {
         let cards = PlaybookEngine.shared
 
         reset()
+        browser.emailComposeUnavailableReason = "Reload Holmes, then refresh Gmail."
+        let unavailableCompose = LiveContext(source: .browserExtension, confidence: .exact, app: "Chrome", entities: ["surface": ContextSurface.emailCompose.rawValue])
+        coordinator.observe(unavailableCompose)
+        expect(center.completion?.summary == browser.emailComposeUnavailableReason, "Unavailable composer explains the blocker in the notch")
+        let blockerRevision = center.revision
+        coordinator.observe(unavailableCompose)
+        expect(center.revision == blockerRevision, "Repeated detections do not flood the notch with the same blocker")
+
+        reset()
         let first = compose()
         show(first)
         coordinator.observe(context(first))
@@ -157,8 +166,11 @@ struct EmailDraftCoordinatorTests {
         let typed = compose(identity: typing.identity, body: "My own email text")
         show(typed)
         coordinator.observe(context(typed))
-        await pause(1.6)
-        expect(model.calls.isEmpty && cards.offered.isEmpty, "Continued typing during dwell cancels automatic generation")
+        await pause(1.0)
+        expect(model.calls.isEmpty && cards.offered.isEmpty, "Continued typing restarts the drafting delay")
+        await eventually { cards.offered.count == 1 }
+        expect(model.calls.count == 1, "Pausing on existing notes generates a draft suggestion")
+        expect(browser.insertions == 0, "Existing notes remain untouched until review")
 
         reset()
         let beforeEdit = compose(subject: "Old subject")

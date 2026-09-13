@@ -115,6 +115,7 @@ struct EmailComposeTrigger {
     private var candidate: (key: String, since: Date)?
     private var completed: [String: Date] = [:]
     private var attempts: [String: Date] = [:]
+    private var insertedComposers: [String: Date] = [:]
 
     mutating func observe(_ snapshot: EmailComposeSnapshot?, now: Date = Date()) -> TimeInterval? {
         guard let snapshot, snapshot.canAutoDraft, snapshot.isFresh(at: now) else {
@@ -122,6 +123,8 @@ struct EmailComposeTrigger {
             return nil
         }
         let key = snapshot.revisionKey
+        insertedComposers = insertedComposers.filter { now.timeIntervalSince($0.value) < 3600 }
+        guard insertedComposers[snapshot.identity] == nil else { return nil }
         completed = completed.filter { now.timeIntervalSince($0.value) < 3600 }
         attempts = attempts.filter { now.timeIntervalSince($0.value) < 60 }
         guard completed[key] == nil, attempts[key] == nil else { return nil }
@@ -131,6 +134,7 @@ struct EmailComposeTrigger {
 
     mutating func claim(_ snapshot: EmailComposeSnapshot, now: Date = Date()) -> Bool {
         guard snapshot.canAutoDraft, snapshot.isFresh(at: now),
+              insertedComposers[snapshot.identity] == nil,
               let candidate, candidate.key == snapshot.revisionKey,
               now.timeIntervalSince(candidate.since) >= Self.dwell,
               completed[candidate.key] == nil, attempts[candidate.key] == nil else { return false }
@@ -140,6 +144,11 @@ struct EmailComposeTrigger {
 
     mutating func succeeded(_ snapshot: EmailComposeSnapshot, now: Date = Date()) {
         completed[snapshot.revisionKey] = now
+        candidate = nil
+    }
+
+    mutating func didInsert(into snapshot: EmailComposeSnapshot, now: Date = Date()) {
+        insertedComposers[snapshot.identity] = now
         candidate = nil
     }
 

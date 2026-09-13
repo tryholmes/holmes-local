@@ -13,6 +13,8 @@ struct EmailDraftLiveSmoke {
         ], forName: UserDefaults.argumentDomain)
         OllamaConfig.updateReadiness(ready: true, problem: nil)
         let cases: [(String, EmailDraftInput)] = [
+            ("sick-notes", EmailDraftInput(instruction: "Finish this email using its subject and any existing notes. Preserve the facts and intent of the existing text. Keep it concise and natural.", compose: nil,
+                subject: "", recipient: "boss@example.com", sourceBody: "I am sick")),
             ("reported-lateness", EmailDraftInput(instruction: "Draft this email for me.", compose: nil,
                 subject: "Im gonna be late", recipient: "boss@gmail.com")),
             ("specified-delay", EmailDraftInput(instruction: "Write a polite email saying I will be 15 minutes late because my train is delayed.", compose: nil,

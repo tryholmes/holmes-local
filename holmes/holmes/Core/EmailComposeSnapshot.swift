@@ -29,8 +29,9 @@ struct EmailComposeSnapshot: Codable, Equatable, Sendable {
     }
 
     var canAutoDraft: Bool {
-        !identity.isEmpty && bodyReadable && bodyIsEmpty && Self.isBlankBody(body)
-            && !subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !identity.isEmpty && bodyReadable
+            && (bodyIsEmpty || !Self.isBlankBody(body))
+            && (!subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !Self.isBlankBody(body))
             && !recipients.isEmpty && (recipients + cc + bcc).allSatisfy(Self.isEmailAddress)
     }
 

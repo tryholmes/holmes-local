@@ -1,6 +1,6 @@
 # Email drafting and work visibility
 
-A composer with verified recipients, a literal subject and an empty readable body is observed for 1.5 seconds, then read again before automatic drafting starts. The dedicated writer produces an editable body, and the existing review card offers Insert draft, Copy and Dismiss. A reviewed rewrite offers Replace body. Generation never inserts or sends. The Email Draft automation can be disabled in Settings.
+A composer with verified recipients and a readable body is observed for 1.5 seconds, then read again before automatic drafting starts. Either a subject or existing body notes provide the topic. Continued typing restarts the delay; existing notes remain untouched until a reviewed replacement. Successfully inserting a draft suppresses automatic rewrites of that composer for an hour. An unavailable browser compose protocol produces an actionable notch error instead of a silent return. The dedicated writer produces an editable body, and the existing review card offers Insert draft, Copy and Dismiss. A reviewed rewrite offers Replace body. Generation never inserts or sends. The Email Draft automation can be disabled in Settings.
 
 Voice and typed requests such as “Could you draft this email for me?” reach this writer before the guidance/agent routes. Instructional questions still use guidance. The notch tracks reading, queued model work, writing, transcription, approval waits and completion. Stop cancels the owning task; pause, sleep and lock cancel all active work. Local-model failure is reported as failure, rather than a successful text answer.
 
@@ -27,7 +27,7 @@ HOLMES_UI_PREVIEW_WORK_ONLY=1 holmes/tests/render-ui-previews.sh /tmp/holmes-wor
 
 The browser checks cover subject-focused insertion, multiline readback, unchanged headers, rejection after a user edit, explicit nonempty rewrite, ambiguous composers and an 8,000-character body. Send is a counter in the fixture and remains zero.
 
-The live-model cases cover the reported `boss@gmail.com` / `Im gonna be late` email, a user-specified 15-minute train delay, a self-contained voice request, a professional rewrite and a reply that needs a calendar check. Output is printed for factual review. Validation rejects empty, instructional, refusal and placeholder output, with one bounded repair attempt. These checks verify representative cases, not every possible model response.
+The live-model cases cover the reported `boss@gmail.com` / `Im gonna be late` email, a user-specified 15-minute train delay, a self-contained voice request, a professional rewrite, a reply that needs a calendar check, and subject-free sickness notes. Output is printed for factual review. Validation rejects empty, instructional, refusal and placeholder output, with one bounded repair attempt. These checks verify representative cases, not every possible model response.
 
 ## Updating an existing installation
 

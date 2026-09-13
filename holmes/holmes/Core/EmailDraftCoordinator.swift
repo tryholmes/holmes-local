@@ -12,6 +12,7 @@ final class EmailDraftCoordinator {
     private var debounceKey: String?
     private var automaticTask: Task<Void, Never>?
     private var observed: EmailComposeSnapshot?
+    private var lastComposeBlocker: String?
     private var isStopped = false
     private var explicitTask: Task<EmailDraftOutcome, Never>?
     private var explicitID: UUID?
@@ -98,6 +99,14 @@ final class EmailDraftCoordinator {
         observed = snapshot
         session.noteContext(snapshot)
         guard explicitID == nil, session.origin != .user else { return }
+        if snapshot != nil { lastComposeBlocker = nil }
+        if snapshot == nil, context.entities["surface"] == ContextSurface.emailCompose.rawValue,
+           !MenuBarManager.shared.isPaused, AutonomyPolicy.shared.isEnabled("email-compose"),
+           let reason = BrowserBridge.shared.emailComposeUnavailableReason, reason != lastComposeBlocker {
+            lastComposeBlocker = reason
+            let activity = WorkActivityCenter.shared.begin(title: "Email drafting needs attention", origin: .background)
+            WorkActivityCenter.shared.finish(activity, outcome: .failure, summary: reason)
+        }
         guard !MenuBarManager.shared.isPaused,
               AutonomyPolicy.shared.isEnabled("email-compose"),
               let delay = trigger.observe(snapshot), let snapshot else {
@@ -139,7 +148,7 @@ final class EmailDraftCoordinator {
                 guard let self, !Task.isCancelled, !self.isStopped,
                       !MenuBarManager.shared.isPaused, AutonomyPolicy.shared.isEnabled("email-compose"),
                       self.explicitID == nil, self.observed?.revisionKey == expectedKey else { return }
-                let input = EmailDraftInput(instruction: "Draft this email using its subject. Keep it concise and natural.", compose: fresh)
+                let input = EmailDraftInput(instruction: "Finish this email using its subject and any existing notes. Preserve the facts and intent of the existing text. Keep it concise and natural.", compose: fresh)
                 let result = await self.session.request(input, origin: .background)
                 guard !Task.isCancelled else { return }
                 if case .ready = result { self.trigger.succeeded(fresh) }
@@ -188,10 +197,16 @@ final class EmailDraftCoordinator {
         guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw EmailDraftTextError.unusable
         }
+        let inserted: Bool
         switch expected.source {
-        case .browser: return try await BrowserBridge.shared.stageEmailDraft(body, expected: expected)
-        case .accessibility: return try await MailComposeReader.stageEmailDraft(body, expected: expected)
+        case .browser: inserted = try await BrowserBridge.shared.stageEmailDraft(body, expected: expected)
+        case .accessibility: inserted = try await MailComposeReader.stageEmailDraft(body, expected: expected)
         }
+        if inserted {
+            cancelDebounce()
+            trigger.didInsert(into: expected)
+        }
+        return inserted
     }
 
     private static func input(instruction: String, context: LiveContext) -> EmailDraftInput {

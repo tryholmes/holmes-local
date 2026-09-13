@@ -149,14 +149,19 @@ struct EmailDraftingTests {
         let changedHeader = snapshot(subject: "Different subject", now: now.addingTimeInterval(1))
         expect(changing.observe(changedHeader, now: now.addingTimeInterval(1)) == EmailComposeTrigger.dwell, "Editing a header restarts dwell")
         expect(!changing.claim(snapshot(now: now.addingTimeInterval(2)), now: now.addingTimeInterval(2)), "An old header's timer cannot claim the new email")
-        expect(changing.observe(snapshot(body: "User is writing", now: now.addingTimeInterval(2)), now: now.addingTimeInterval(2)) == nil, "Existing body blocks automatic drafting")
+        expect(changing.observe(snapshot(body: "User is writing", now: now.addingTimeInterval(2)), now: now.addingTimeInterval(2)) == EmailComposeTrigger.dwell, "Existing notes restart drafting dwell")
         expect(!changing.claim(snapshot(subject: "Different subject", now: now.addingTimeInterval(3)), now: now.addingTimeInterval(3)), "Typing in the body cancels a pending automatic trigger")
+        expect(changing.claim(snapshot(body: "User is writing", now: now.addingTimeInterval(4)), now: now.addingTimeInterval(4)), "Stable notes become eligible for a draft suggestion")
         _ = changing.observe(original, now: now)
         expect(changing.observe(nil, now: now) == nil, "Leaving the compose window cancels dwell")
         expect(!changing.claim(snapshot(now: now.addingTimeInterval(2)), now: now.addingTimeInterval(2)), "Navigation cannot leave an old timer eligible")
         expect(!snapshot(recipients: []).canAutoDraft, "Automatic generation requires a resolved recipient")
         expect(!snapshot(readable: false).canAutoDraft, "Unreadable body is never assumed empty")
         expect(changing.observe(snapshot(now: now.addingTimeInterval(-20)), now: now) == nil, "Stale header observations cannot start drafting")
+
+        var insertedTrigger = EmailComposeTrigger()
+        insertedTrigger.didInsert(into: original, now: now)
+        expect(insertedTrigger.observe(snapshot(body: "Inserted draft", now: now), now: now) == nil, "Inserted draft does not trigger another automatic rewrite")
 
         let center = WorkActivityCenter.shared
         center.invalidateAll()

@@ -12,8 +12,10 @@ import Foundation
         }
         let base = sample()
         precondition(base.canAutoDraft)
+        precondition(sample(subject: "", body: "I am sick", empty: false).canAutoDraft)
+        precondition(sample(body: "I am sick", empty: false).canAutoDraft)
         for bad in [sample(recipient: "unfinished"), sample(subject: ""), sample(subject: " \n"),
-                    sample(body: "User text"), sample(readable: false), sample(empty: false), sample(identity: "")] {
+                    sample(readable: false), sample(empty: false), sample(identity: "")] {
             precondition(!bad.canAutoDraft)
         }
         precondition(sample(body: " \n\u{00a0}\u{200b}").canAutoDraft)
