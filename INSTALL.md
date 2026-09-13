@@ -1,12 +1,12 @@
 # Installing Holmes
 
-Holmes ships as one DMG. The app inside carries everything else: the browser
-extension, the SDK, and a first run setup that installs and links them.
+Holmes ships as one DMG. The app includes the browser extension and first-run
+setup for permissions, the local model, and connected tools.
 
 ## 1. Get the DMG
 
 Download `Holmes-<version>.dmg` from the
-[Releases page](../../releases). Open it and drag **Holmes** onto
+[Releases page](https://github.com/tryholmes/holmes-local/releases/latest). Open it and drag **Holmes** onto
 **Applications**.
 
 If the build is signed and notarized it opens like any other app. If you are
