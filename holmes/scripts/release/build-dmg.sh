@@ -17,9 +17,9 @@
 #   HOLMES_VERSION         Override the version string (default: MARKETING_VERSION).
 #   HOLMES_OUT             Output directory (default: <repo>/dist).
 #
-# The DMG contains Holmes.app only. The browser extension, the SDK CLI and the
-# MCP config are inside the app bundle and installed by Holmes itself on first
-# launch (onboarding ▸ Connect your browser / Connect your tools).
+# The DMG contains Holmes.app and an Applications shortcut. The app bundles the
+# browser extension and prepares it during onboarding; connected-tool configs
+# are created from the user's setup choices.
 
 set -euo pipefail
 
@@ -28,7 +28,18 @@ PROJ_DIR="$(cd "$HERE/../.." && pwd)"            # <repo>/holmes
 REPO_DIR="$(cd "$PROJ_DIR/.." && pwd)"
 OUT="${HOLMES_OUT:-$REPO_DIR/dist}"
 WORK="$(mktemp -d /tmp/holmes-dmg.XXXXXX)"
-trap 'rm -rf "$WORK"' EXIT
+MOUNT_DIR=""
+cleanup() {
+  if [[ -n "$MOUNT_DIR" ]]; then
+    if ! hdiutil detach -quiet "$MOUNT_DIR" >/dev/null 2>&1 && \
+       ! hdiutil detach -force "$MOUNT_DIR" >/dev/null 2>&1; then
+      echo "Could not detach $MOUNT_DIR; retained temporary files in $WORK" >&2
+      return
+    fi
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
 
 IDENTITY="${HOLMES_SIGN_IDENTITY:--}"
 TEAM_ID="${HOLMES_TEAM_ID:-}"
@@ -45,6 +56,9 @@ log() { printf '\033[1;33m▸ %s\033[0m\n' "$*"; }
 # ---------------------------------------------------------------------------
 log "Building ${APP_NAME} ${VERSION} (Release, identity: ${IDENTITY})"
 DERIVED="$WORK/DerivedData"
+mkdir -p "$OUT"
+BUILD_LOG="$OUT/Holmes-${VERSION}-build.log"
+log "Build log: $BUILD_LOG"
 SIGN_ARGS=(CODE_SIGN_STYLE=Manual "CODE_SIGN_IDENTITY=${IDENTITY}")
 if [[ "$IDENTITY" == "-" ]]; then
   SIGN_ARGS+=(DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER=)
@@ -52,14 +66,17 @@ else
   [[ -n "$TEAM_ID" ]] || { echo "HOLMES_TEAM_ID is required with a real signing identity" >&2; exit 2; }
   SIGN_ARGS+=("DEVELOPMENT_TEAM=${TEAM_ID}" "OTHER_CODE_SIGN_FLAGS=--timestamp --options runtime")
 fi
-(
+if ! (
   cd "$PROJ_DIR"
-  set -o pipefail
   xcodebuild -project holmes.xcodeproj -scheme holmes -configuration Release \
              -derivedDataPath "$DERIVED" -destination 'platform=macOS' \
-             "${SIGN_ARGS[@]}" build \
-    | grep -E 'error:|BUILD (SUCCEEDED|FAILED)' || true
-)
+             "MARKETING_VERSION=${VERSION}" "${SIGN_ARGS[@]}" build
+) > "$BUILD_LOG" 2>&1; then
+  tail -n 80 "$BUILD_LOG" >&2
+  echo "Build failed; full log: $BUILD_LOG" >&2
+  exit 1
+fi
+grep -E 'warning:|BUILD (SUCCEEDED|FAILED)' "$BUILD_LOG" || true
 APP_SRC="$DERIVED/Build/Products/Release/holmes.app"
 [[ -d "$APP_SRC" ]] || { echo "Build failed: $APP_SRC not found" >&2; exit 1; }
 
@@ -77,8 +94,10 @@ if [[ "$IDENTITY" == "-" ]]; then
   codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$APP"
 else
   # Inner-most first: frameworks/bundles, then the app.
-  find "$APP/Contents/Frameworks" -maxdepth 1 \( -name '*.framework' -o -name '*.dylib' -o -name '*.bundle' \) 2>/dev/null \
-    | while read -r item; do codesign --force --timestamp --options runtime --sign "$IDENTITY" "$item"; done
+  if [[ -d "$APP/Contents/Frameworks" ]]; then
+    find "$APP/Contents/Frameworks" -maxdepth 1 \( -name '*.framework' -o -name '*.dylib' -o -name '*.bundle' \) \
+      | while read -r item; do codesign --force --timestamp --options runtime --sign "$IDENTITY" "$item"; done
+  fi
   codesign --force --timestamp --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP"
 fi
 codesign --verify --deep --strict "$APP"
@@ -106,8 +125,8 @@ fi
 RW="$WORK/rw.dmg"
 log "Creating DMG"
 hdiutil create -quiet -srcfolder "$STAGE" -volname "$VOL_NAME" -fs HFS+ -fsargs "-c c=64,a=16,e=16" -format UDRW -ov "$RW"
-MOUNT_DIR="$(hdiutil attach -readwrite -noverify -noautoopen "$RW" | awk -F'\t' '/Apple_HFS/ {print $3}')"
-[[ -n "$MOUNT_DIR" ]] || { echo "mount failed" >&2; exit 1; }
+hdiutil attach -quiet -readwrite -noverify -noautoopen -mountpoint "$WORK/mount" "$RW"
+MOUNT_DIR="$WORK/mount"
 if [[ -f "$STAGE/.VolumeIcon.icns" ]] && command -v SetFile >/dev/null 2>&1; then
   SetFile -a C "$MOUNT_DIR" || true
 fi
@@ -142,6 +161,7 @@ end tell
 EOF
 sync
 hdiutil detach -quiet "$MOUNT_DIR" || { sleep 2; hdiutil detach -force "$MOUNT_DIR"; }
+MOUNT_DIR=""
 
 mkdir -p "$OUT"
 FINAL="$OUT/$DMG_NAME"
@@ -164,8 +184,11 @@ fi
 # A fixed-name copy so a "latest" permalink never needs updating:
 #   https://github.com/<org>/<repo>/releases/latest/download/Holmes.dmg
 cp -f "$FINAL" "$OUT/Holmes.dmg"
-shasum -a 256 "$FINAL" | tee "$FINAL.sha256"
-shasum -a 256 "$OUT/Holmes.dmg" > "$OUT/Holmes.dmg.sha256"
+(
+  cd "$OUT"
+  shasum -a 256 "$DMG_NAME" | tee "$DMG_NAME.sha256"
+  shasum -a 256 Holmes.dmg > Holmes.dmg.sha256
+)
 log "Done: $FINAL"
 if [[ "$IDENTITY" == "-" ]]; then
   echo "NOTE: ad-hoc signed. Users must right-click ▸ Open on first launch (or run: xattr -dr com.apple.quarantine /Applications/Holmes.app)."
