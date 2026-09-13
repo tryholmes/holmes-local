@@ -170,6 +170,7 @@ struct MCPHTTPTransportTests {
         try await eventsSplitAcrossChunksWithCRLF()
         try await otherMessagesOnTheStreamAreSkipped()
         try await jsonReplyAndSessionHeader()
+        try await errorsSurfaceInsteadOfHanging()
         print("Passed \(checks) MCP HTTP transport regression checks")
     }
 
@@ -236,5 +237,30 @@ struct MCPHTTPTransportTests {
         expect(requests[1].headers["Mcp-Session-Id"] == "sess-1", "Session id from the reply is sent on the next request")
         expect(requests[1].headers["Accept"] == "application/json, text/event-stream", "Both reply types are advertised")
         expect(requests[1].headers["X-Test"] == "1", "Configured headers are sent")
+    }
+
+    // TEST: errorsSurfaceInsteadOfHanging
+    /// A JSON-RPC error event and a stream that closes early both fail promptly.
+    static func errorsSurfaceInsteadOfHanging() async throws {
+        ScriptedMCPServer.reset()
+        ScriptedMCPServer.script("tools/call", .init(steps: [
+            .chunk(event(["jsonrpc": "2.0", "id": NSNull(), "error": ["code": -32600, "message": "bad request"]])), .hold
+        ]))
+        ScriptedMCPServer.script("tools/call", .init(steps: [
+            .chunk(": nothing to say\n\n"), .finish
+        ]))
+        do {
+            _ = try await connection().callTool("echo", arguments: [:])
+            fatalError("An error event must throw")
+        } catch MCPHTTPConnection.MCPError.badResponse(let message) {
+            expect(message == "bad request", "The server's error message is surfaced")
+        }
+        let started = Date()
+        do {
+            _ = try await connection().callTool("echo", arguments: [:])
+            fatalError("A stream that ends without a response must throw")
+        } catch MCPHTTPConnection.MCPError.badResponse {
+            expect(Date().timeIntervalSince(started) < 10, "Early close fails right away, not at the deadline")
+        }
     }
 }
