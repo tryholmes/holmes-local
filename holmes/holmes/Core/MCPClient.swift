@@ -382,8 +382,10 @@ final class MCPHTTPConnection: MCPTransport {
         let status = http?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             // Only the start of an error page is ever shown; do not drain a large one.
+            // The cut is byte based and may split a multibyte character, so decode
+            // leniently rather than lose the whole message to one bad trailing byte.
             let data = try await Self.collect(bytes, limit: 16_384)
-            throw MCPError.http(status, String(data: data, encoding: .utf8) ?? "")
+            throw MCPError.http(status, String(decoding: data, as: UTF8.self))
         }
 
         let ctype = http?.value(forHTTPHeaderField: "Content-Type") ?? ""
