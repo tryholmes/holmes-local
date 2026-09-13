@@ -75,7 +75,7 @@ The `holmes-sdk` command lives in the repository at `holmes/sdk/bin/holmes-sdk`.
 Symlink it onto your PATH to scaffold playbooks and tool servers:
 
 ```sh
-ln -s /path/to/holmes-ollama/holmes/sdk/bin/holmes-sdk /usr/local/bin/holmes-sdk
+ln -s /path/to/holmes-local/holmes/sdk/bin/holmes-sdk /usr/local/bin/holmes-sdk
 ```
 
 ## Building the DMG yourself

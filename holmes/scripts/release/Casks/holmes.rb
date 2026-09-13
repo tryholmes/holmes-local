@@ -9,10 +9,10 @@ cask "holmes" do
   version "0.1.0"
   sha256 "REPLACE_WITH_SHA256_FROM_dist/Holmes-#{version}.dmg.sha256"
 
-  url "https://github.com/<org>/holmes-ollama/releases/download/v#{version}/Holmes-#{version}.dmg"
+  url "https://github.com/<org>/holmes-local/releases/download/v#{version}/Holmes-#{version}.dmg"
   name "Holmes"
   desc "Local first autonomous desktop agent that drafts and never sends"
-  homepage "https://github.com/<org>/holmes-ollama"
+  homepage "https://github.com/<org>/holmes-local"
 
   depends_on macos: ">= :sonoma"
 
