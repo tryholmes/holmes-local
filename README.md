@@ -1,4 +1,12 @@
-# Holmes Local — the autonomous desktop agent that runs entirely on your Mac
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="holmes/assets/holmes-wordmark-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="holmes/assets/holmes-wordmark-light.svg">
+    <img src="holmes/assets/holmes-wordmark-light.svg" alt="Holmes Local" width="460">
+  </picture>
+</h1>
+
+the autonomous desktop agent that runs entirely on your Mac
 
 > **Beta.** Holmes Local is the open-source, fully local build of Holmes. The model that drives it is an open-weights vision model served by [Ollama](https://ollama.com) on your own machine. No API key, no account, no cloud. The hosted (commercial) build of Holmes lives in a different repository and is not part of this one.
 
@@ -6,7 +14,7 @@ Holmes is a **local-first, autonomous AI agent for macOS**. It watches your scre
 
 You never open a chat box. You just work. When Holmes spots something it can help with, the screen edges glow, your trackpad buzzes, and a ready-to-review draft appears. You approve it (or don't). **Holmes can only ever draft — it never sends, posts, or deletes anything. That line is enforced in code, not by prompt.**
 
-> **Install:** grab the DMG from Releases and follow [INSTALL.md](INSTALL.md). First launch installs the browser extension and connects your tools.
+> **Install:** [download the latest Holmes installer](https://github.com/tryholmes/holmes-local/releases/latest/download/Holmes.dmg) and follow [INSTALL.md](INSTALL.md). First launch prepares the browser extension and helps connect your tools.
 
 ---
 
@@ -112,9 +120,9 @@ On first launch Holmes probes the server, sees that no suitable model is pulled,
 ollama pull qwen3-vl:4b-instruct
 ```
 
-### 3. Build and run Holmes
+### 3. Install and run Holmes
 
-See [Build from source](#build-from-source) below (there are no binary releases yet during the beta).
+[Download Holmes.dmg](https://github.com/tryholmes/holmes-local/releases/latest/download/Holmes.dmg), open it, and drag **Holmes** into **Applications**. Follow [INSTALL.md](INSTALL.md) for first-launch instructions. You can also [build from source](#build-from-source).
 
 ### 4. Permissions
 
