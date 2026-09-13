@@ -46,7 +46,12 @@ You always approve before anything goes out. The only unsupervised write Holmes 
 | Terminal Help | A command just failed | Explains the fix out loud |
 | GitHub Brief | You open a repo | Summary of PRs, issues, next steps |
 | Chat Reply | A real contact is on screen | Drafted reply, staged, never sent |
+| Email Draft | An empty email has recipients and a stable subject | Editable body to review and insert into that exact composer |
 | Downloads Sorter | 10+ loose files in Downloads | Sorted into folders, fully undoable |
+
+In Gmail in Chrome or Comet, enter recipients and a subject, then pause briefly. Holmes prepares the body in its review card. You can also hold Fn or use the command bar to ask “Draft this email for me.” The notch shows when Holmes is reading, waiting for the local model, writing, or stopped. Insertion checks the original composer and its unchanged headers/body; it never presses Send.
+
+After an app update, Holmes refreshes the managed extension folder at `~/Downloads/Holmes Extension`. If prompted, reload Holmes at `chrome://extensions` and refresh Gmail. Comet needs the extension loaded in Comet as well.
 
 Plus: push to talk (hold Fn), a command bar (`Ctrl+Space`), custom playbooks via the Holmes SDK, and an optional local MCP server for other agents to read your screen context.
 
