@@ -14,9 +14,7 @@ enum NotchState {
     case open
 }
 
-/// The transient one-line reveal on the CLOSED notch (boring.notch's
-/// "sneak peek" / battery-notification pattern): text on the left wing,
-/// symbol on the right wing, auto-hides.
+/// The transient reveal below the camera housing; auto-hides.
 struct NotchSneakPeek: Equatable {
     var show = false
     var title = ""
@@ -27,8 +25,18 @@ struct NotchSneakPeek: Equatable {
 @MainActor
 final class NotchViewModel: ObservableObject {
     @Published private(set) var notchState: NotchState = .closed
-    @Published var notchSize: CGSize = NotchGeometry.closedNotchSize(on: NSScreen.main)
-    @Published var closedNotchSize: CGSize = NotchGeometry.closedNotchSize(on: NSScreen.main)
+    @Published private(set) var geometry: NotchGeometry.Layout
+
+    init(geometry: NotchGeometry.Layout? = nil) {
+        self.geometry = geometry ?? NotchGeometry.layout(on: NotchDetector.preferredScreen)
+    }
+
+    var closedNotchSize: CGSize { geometry.closedSize }
+    var notchSize: CGSize {
+        if notchState == .open { return geometry.openSize }
+        if sneakPeek.show || taskActive { return geometry.compactSize }
+        return geometry.closedSize
+    }
 
     // MARK: Holmes content (replaces boring.notch's music/battery/shelf state)
 
@@ -36,8 +44,8 @@ final class NotchViewModel: ObservableObject {
     @Published var contextLine: String = ""
     @Published var contextSymbol: String = "eye"
 
-    /// The in-flight autonomous task, shown as closed-notch "wings" (bolt +
-    /// progress) and in the open panel.
+    /// The in-flight autonomous task, shown below the notch in compact and
+    /// expanded states.
     @Published var taskActive = false
     @Published var taskName: String = ""
     @Published var taskStep: String = ""
@@ -53,20 +61,15 @@ final class NotchViewModel: ObservableObject {
     var effectiveClosedNotchHeight: CGFloat { closedNotchSize.height }
 
     func open() {
-        notchSize = NotchGeometry.openSize
         notchState = .open
     }
 
     func close() {
-        notchSize = NotchGeometry.closedNotchSize(on: NSScreen.main)
-        closedNotchSize = notchSize
         notchState = .closed
     }
 
     func refreshNotchSize(for screen: NSScreen?) {
-        let size = NotchGeometry.closedNotchSize(on: screen)
-        closedNotchSize = size
-        if notchState == .closed { notchSize = size }
+        geometry = NotchGeometry.layout(on: screen)
     }
 
     /// Show a transient closed-notch reveal; replaces any current one and

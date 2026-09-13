@@ -86,10 +86,7 @@ class NotchWindowController: NSObject, ObservableObject {
     }
 
     private func createWindow() {
-        let rect = NSRect(
-            x: 0, y: 0,
-            width: NotchGeometry.windowSize.width,
-            height: NotchGeometry.windowSize.height)
+        let rect = NotchGeometry.layout(on: targetScreen()).windowFrame
         let styleMask: NSWindow.StyleMask = [.borderless, .nonactivatingPanel, .utilityWindow, .hudWindow]
         let window = HolmesNotchWindow(contentRect: rect, styleMask: styleMask, backing: .buffered, defer: false)
 
@@ -100,18 +97,15 @@ class NotchWindowController: NSObject, ObservableObject {
     }
 
     private func targetScreen() -> NSScreen? {
-        NSScreen.main ?? NSScreen.screens.first
+        NotchDetector.preferredScreen
     }
 
     private func positionWindow() {
         guard let window, let screen = targetScreen() else { return }
         viewModel.refreshNotchSize(for: screen)
-        let screenFrame = screen.frame
-        window.setFrameOrigin(
-            NSPoint(
-                x: screenFrame.origin.x + (screenFrame.width / 2) - window.frame.width / 2,
-                y: screenFrame.origin.y + screenFrame.height - window.frame.height
-            ))
+        // Resize the host as well as moving it: changing display scale or menu
+        // bar/cutout height changes the space required below the camera housing.
+        window.setFrame(viewModel.geometry.windowFrame, display: true)
     }
 
     func handleScreenChange() {
