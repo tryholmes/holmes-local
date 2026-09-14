@@ -67,7 +67,10 @@ const CONFIG = Object.assign({
   // After Holmes activates a background composer tab, how often and how long to
   // wait for the page to report itself visible before inserting.
   visibilityPollMs: 50,
-  visibilityTimeoutMs: 2000
+  visibilityTimeoutMs: 2000,
+  // Longest wait for a content script to answer a compose read or insert. Below
+  // the app's 20s result timeout, so a silent page frees its slot and lane.
+  composeMessageTimeoutMs: 10000
 }, CONFIG_OVERRIDES);
 // Every request to the bridge is bounded. A stalled app must never park a worker.
 CONFIG.fetchTimeoutMs = Object.assign({ heartbeat: 5000, relay: 5000, commands: 28000, result: 15000 },
@@ -970,10 +973,12 @@ async function emailComposeCommand(cmd) {
   }
   const environment = { tabId: tab.id, windowId: tab.windowId, instanceId };
   if (await activeTabId() !== tab.id) return { ok: false, refused: true, reason: "The active tab changed." };
-  const result = await chrome.tabs.sendMessage(tab.id, {
+  // Bounded: a content script that never answers must not pin a command slot,
+  // block this tab's lane, or keep the worker awake indefinitely.
+  const result = await withTimeout(chrome.tabs.sendMessage(tab.id, {
     type: cmd.action === "read_email_compose" ? "holmes:readEmailCompose" : "holmes:fillEmailDraft",
     environment, body: params.body, expected: params.expected
-  });
+  }), CONFIG.composeMessageTimeoutMs, "compose message");
   // A tab switch while the response was in flight invalidates a refresh. The
   // page writer separately validates the exact identity before any mutation.
   if (cmd.action === "read_email_compose" && await activeTabId() !== tab.id) {

@@ -701,6 +701,29 @@ async function laneOrderTests() {
   worker.dispose();
 }
 
+async function composeTimeoutTests() {
+  // A content script that never answers must not pin a command slot, block its
+  // lane and keep the worker awake forever.
+  const worker = loadWorker({
+    config: { composeMessageTimeoutMs: 100 },
+    fetch: async () => ({ status: 503, body: {} }),
+    sendMessage(tabId, message) {
+      if (message.type === 'holmes:readEmailCompose') return new Promise(() => {});
+      return { ok: true, visible: true, isActiveTab: true };
+    }
+  });
+  const started = Date.now();
+  const outcome = await Promise.race([
+    worker.context.emailComposeCommand({ action: 'read_email_compose' }).then(result => ({ result }), error => ({ error })),
+    sleep(1500).then(() => 'hung')
+  ]);
+  const text = outcome === 'hung' ? 'hung'
+    : String((outcome.error && outcome.error.message) || (outcome.result && (outcome.result.error || outcome.result.reason)));
+  check(outcome !== 'hung' && Date.now() - started < 1000 && /timed out/i.test(text),
+    `A silent content script cannot hold a compose command open (${text})`);
+  worker.dispose();
+}
+
 module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 
 if (require.main === module) {
@@ -710,7 +733,7 @@ if (require.main === module) {
     setInterval(() => {}, 1000);
     const only = process.argv[2];
     const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests,
-      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests, ledgerRaceTests, ledgerQuotaTests, laneOrderTests };
+      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests, ledgerRaceTests, ledgerQuotaTests, laneOrderTests, composeTimeoutTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();
