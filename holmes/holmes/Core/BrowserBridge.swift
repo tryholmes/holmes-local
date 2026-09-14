@@ -506,6 +506,14 @@ final class BrowserBridge {
     /// headers and the expected body, then changes only that body. Auto generation
     /// never calls this method; a nonempty rewrite requires explicit review.
     func stageEmailDraft(_ body: String, expected: EmailComposeSnapshot) async throws -> Bool {
+        _ = try await writeEmailDraft(body, subject: nil, mode: .replace, expected: expected)
+        return true
+    }
+
+    /// Writes a draft in the given mode (never sends). The page validates the
+    /// exact composer, keeps signature and quote, verifies, and returns an undo token.
+    func writeEmailDraft(_ body: String, subject: String?, mode: EmailWriteMode,
+                         expected: EmailComposeSnapshot) async throws -> EmailWriteReceipt {
         try Task.checkCancellation()
         guard expected.source == .browser, expected.bodyReadable,
               !EmailComposeSnapshot.isBlankBody(body), body.count <= 16_000,
@@ -520,8 +528,10 @@ final class BrowserBridge {
             throw EmailComposeError.unavailable("The original browser composer is unavailable.")
         }
         try Task.checkCancellation()
+        var options: [String: Any] = ["mode": mode.rawValue]
+        if let subject, !subject.isEmpty { options["subject"] = subject }
         let result = await enqueueBrowserCommand("fill_email_draft", ["body": body,
-            "expected": expected.browserExpectation, "_browserInstanceID": instance])
+            "expected": expected.browserExpectation, "options": options, "_browserInstanceID": instance])
         try Task.checkCancellation()
         if result["cancelled"] as? Bool == true { throw CancellationError() }
         guard result["ok"] as? Bool == true, result["inserted"] as? Bool == true,
@@ -529,7 +539,31 @@ final class BrowserBridge {
             throw EmailComposeError.unavailable((result["reason"] ?? result["error"]) as? String
                 ?? "The composer could not confirm insertion. Your draft is still available to copy.")
         }
-        return true
+        return EmailWriteReceipt(undoToken: result["undoToken"] as? String,
+                                 subjectFilled: result["subjectFilled"] as? Bool ?? false)
+    }
+
+    /// One click undo of a verified write. The page refuses when the person has
+    /// edited the email since, so their changes are never erased.
+    func undoEmailDraft(token: String, expected: EmailComposeSnapshot) async throws {
+        try Task.checkCancellation()
+        guard expected.source == .browser, !token.isEmpty,
+              let app = contextEnvironment.frontmost(),
+              app.bundleIdentifier == expected.appBundleIdentifier
+                || app.bundleIdentifier == contextEnvironment.ownBundleIdentifier,
+              let encoded = expected.identity.data(using: .utf8),
+              let identity = (try? JSONSerialization.jsonObject(with: encoded)) as? [Any],
+              let instance = identity.first as? String else {
+            throw EmailComposeError.unavailable("Return to the email Holmes wrote into to undo it.")
+        }
+        let result = await enqueueBrowserCommand("undo_email_draft", ["token": token,
+            "expected": ["identity": expected.identity], "_browserInstanceID": instance])
+        try Task.checkCancellation()
+        if result["cancelled"] as? Bool == true { throw CancellationError() }
+        guard result["ok"] as? Bool == true, result["undone"] as? Bool == true else {
+            throw EmailComposeError.unavailable((result["reason"] ?? result["error"]) as? String
+                ?? "Holmes could not undo the email. Use Command Z in the email instead.")
+        }
     }
 
     /// Drains and RETURNS the pending commands as the JSON array background.js

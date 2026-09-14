@@ -159,6 +159,22 @@ struct EmailComposeSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+/// How a draft enters the composer. None of them ever sends.
+enum EmailWriteMode: String, Sendable {
+    /// Prediction: only into a body holding nothing of the person's own, never while typing.
+    case auto
+    /// Card "Replace body": replaces the person's text, keeps signature and quote.
+    case replace
+    /// Card "Insert": adds below the person's text, above signature and quote.
+    case insert
+}
+
+/// Proof of a verified write, with what one click undo needs.
+struct EmailWriteReceipt: Equatable, Sendable {
+    let undoToken: String?
+    let subjectFilled: Bool
+}
+
 enum EmailComposeError: LocalizedError {
     case unavailable(String)
     var errorDescription: String? {
