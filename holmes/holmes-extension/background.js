@@ -372,7 +372,7 @@ async function runOneCommand(cmd, token) {
 
   let outcome;
   try {
-    outcome = action === "read_email_compose" || action === "fill_email_draft"
+    outcome = action === "read_email_compose" || action === "fill_email_draft" || action === "undo_email_draft"
       ? await emailComposeCommand(cmd) : await HolmesAutomation.execute(cmd);
   } catch (e) {
     outcome = { ok: false, error: String(e && e.message ? e.message : e) };
@@ -394,9 +394,9 @@ async function emailComposeCommand(cmd) {
   const params = cmd.params || {};
   const instanceId = await browserInstance();
   let tab;
-  if (cmd.action === "fill_email_draft") {
-    // Explicit Insert targets the original tab, never the current cursor. A
-    // document/composer comparison still occurs inside it before any write.
+  if (cmd.action === "fill_email_draft" || cmd.action === "undo_email_draft") {
+    // Writes and undo target the original tab, never the current cursor. A
+    // document/composer comparison still occurs inside it before any change.
     let identity;
     try { identity = JSON.parse(params.expected && params.expected.identity); } catch (_) { identity = null; }
     if (!Array.isArray(identity) || identity[0] !== instanceId || !Number.isInteger(identity[2])) {
@@ -404,9 +404,22 @@ async function emailComposeCommand(cmd) {
     }
     tab = await chrome.tabs.get(identity[2]);
     if (tab.windowId !== identity[1]) return { ok: false, refused: true, reason: "The composer window changed." };
-    await chrome.windows.update(tab.windowId, { focused: true });
-    await chrome.tabs.update(tab.id, { active: true });
-    await notifyActive(tab.id, true);
+    if (cmd.action === "fill_email_draft") {
+      // Validate in the page first: a refused insert leaves windows and tabs
+      // exactly where the person had them.
+      const precheck = await chrome.tabs.sendMessage(tab.id, { type: "holmes:checkEmailDraft",
+        environment: { tabId: tab.id, windowId: tab.windowId, instanceId },
+        body: params.body, expected: params.expected, options: params.options });
+      if (!precheck || precheck.ok !== true) {
+        return precheck || { ok: false, refused: true, reason: "The composer did not answer." };
+      }
+      // Automatic writes happen only in the composer the person is looking at.
+      if (!(params.options && params.options.mode === "auto")) {
+        await chrome.windows.update(tab.windowId, { focused: true });
+        await chrome.tabs.update(tab.id, { active: true });
+        await notifyActive(tab.id, true);
+      }
+    }
   } else {
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     tab = tabs && tabs[0];
@@ -418,9 +431,10 @@ async function emailComposeCommand(cmd) {
   }
   const environment = { tabId: tab.id, windowId: tab.windowId, instanceId };
   if (await activeTabId() !== tab.id) return { ok: false, refused: true, reason: "The active tab changed." };
+  const messageTypes = { read_email_compose: "holmes:readEmailCompose", fill_email_draft: "holmes:fillEmailDraft", undo_email_draft: "holmes:undoEmailDraft" };
   const result = await chrome.tabs.sendMessage(tab.id, {
-    type: cmd.action === "read_email_compose" ? "holmes:readEmailCompose" : "holmes:fillEmailDraft",
-    environment, body: params.body, expected: params.expected
+    type: messageTypes[cmd.action],
+    environment, body: params.body, expected: params.expected, options: params.options, token: params.token
   });
   // A tab switch while the response was in flight invalidates a refresh. The
   // page writer separately validates the exact identity before any mutation.

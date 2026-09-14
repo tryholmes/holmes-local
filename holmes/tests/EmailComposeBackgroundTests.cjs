@@ -6,7 +6,7 @@ let checks = 0;
 function check(condition, description) { checks++; assert.ok(condition, description); }
 const event = { addListener() {} };
 const messageListeners = [];
-let active = 17, changeDuringRead = false, genericExecutions = 0;
+let active = 17, changeDuringRead = false, genericExecutions = 0, checkReply = { ok: true };
 const tabs = new Map([[17, { id: 17, windowId: 23 }], [28, { id: 28, windowId: 29 }]]);
 const messages = [], requests = [], activations = [];
 const context = vm.createContext({
@@ -26,6 +26,8 @@ const context = vm.createContext({
         messages.push({ tabId, message });
         if (message.type === 'holmes:active') return {};
         if (changeDuringRead && message.type === 'holmes:readEmailCompose') active = 28;
+        if (message.type === 'holmes:checkEmailDraft') return checkReply;
+        if (message.type === 'holmes:undoEmailDraft') return { ok: true, undone: true };
         return message.type === 'holmes:readEmailCompose' ? { ok: true, payload: { capturedAt: Date.now() } }
           : { ok: true, inserted: true, identity: message.expected.identity };
       }
@@ -50,6 +52,20 @@ vm.runInContext(fs.readFileSync(path.resolve(__dirname, '../holmes-extension/bac
   check(result.ok && active === 17, 'Explicit Insert returns to original known tab');
   check(messages.at(-1).tabId === 17 && messages.at(-1).message.expected === expected && messages.at(-1).message.body === 'Reviewed draft', 'Exact expected fields reach original content script');
   check(activations.length === 2 && genericExecutions === 0, 'Draft insertion uses only targeted tab/window activation, never generic computer automation');
+  // Regression: insert used to focus the window and tab even when the page then refused.
+  const focusedBefore = activations.length;
+  checkReply = { ok: false, refused: true, reason: 'The composer or its headers changed.' };
+  result = await context.emailComposeCommand({ action: 'fill_email_draft', params: { body: 'Stale draft', expected } });
+  check(!result.ok && activations.length === focusedBefore && messages.at(-1).message.type === 'holmes:checkEmailDraft', 'A refused precheck never focuses the window or tab');
+  checkReply = { ok: true };
+  result = await context.emailComposeCommand({ action: 'fill_email_draft', params: { body: 'Predicted email', expected, options: { mode: 'auto', subject: 'Plans' } } });
+  check(result.ok && activations.length === focusedBefore && messages.at(-1).message.options.mode === 'auto'
+    && messages.at(-1).message.options.subject === 'Plans', 'Automatic writes never change focus and carry mode and subject');
+  result = await context.emailComposeCommand({ action: 'undo_email_draft', params: { token: 'undo-1', expected } });
+  check(result.ok && result.undone && activations.length === focusedBefore && messages.at(-1).tabId === 17
+    && messages.at(-1).message.type === 'holmes:undoEmailDraft' && messages.at(-1).message.token === 'undo-1', 'Undo reaches the original tab without focusing it');
+  result = await context.emailComposeCommand({ action: 'undo_email_draft', params: { token: 'undo-2', expected: { ...expected, identity: JSON.stringify(['other-profile', 23, 17]) } } });
+  check(!result.ok, 'Undo for another browser profile is refused');
   const previous = messages.length;
   result = await context.emailComposeCommand({ action: 'fill_email_draft', params: { body: 'Wrong browser', expected: { ...expected, identity: JSON.stringify(['other-profile', 23, 17]) } } });
   check(!result.ok && messages.length === previous, 'Another browser profile cannot execute the draft');
