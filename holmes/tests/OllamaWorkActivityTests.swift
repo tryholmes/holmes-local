@@ -414,6 +414,19 @@ struct OllamaWorkActivityTests {
         let afterStall = try await client.complete(system: "Test", user: "after-stall", priority: .agent)
         expect(afterStall == "Still serving", "A stalled request releases the GPU gate for the next request")
 
+        // The failure hook is set on one thread and called from others.
+        let hookCalls = LockedCounter()
+        DispatchQueue.concurrentPerform(iterations: 400) { index in
+            if index % 2 == 0 {
+                OllamaConfig.onModelTransportFailure = { hookCalls.increment() }
+            } else {
+                OllamaConfig.onModelTransportFailure?()
+            }
+        }
+        OllamaConfig.onModelTransportFailure = nil
+        expect(OllamaConfig.onModelTransportFailure == nil && hookCalls.count <= 200,
+               "Concurrent sets and calls of the transport failure hook are synchronized")
+
         OllamaConfig.updateReadiness(ready: false, problem: "Ollama is stopped")
         do {
             _ = try await client.complete(system: "Test", user: "not-ready", priority: .agent)
