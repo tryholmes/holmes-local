@@ -565,9 +565,13 @@ enum EmailGrounding {
     static func mentionedWeekdays(in lower: String, context: EmailPredictionContext) -> Weekdays {
         var result = Weekdays()
         let calendar = EmailDates.calendar(context.timeZone)
+        // "sat" or "sun" in an ordinary sentence is not a day: short names count
+        // only when the same text also names a time or a date.
+        let hasWhen = !times(in: lower).isEmpty || !dates(in: lower).isEmpty
         for (index, name) in weekdayNames.enumerated() {
             let short = String(name.prefix(3))
-            if lower.range(of: "\\b(\(name)|\(short))s?\\b", options: .regularExpression) != nil {
+            let pattern = hasWhen ? "\\b(\(name)s?|\(short))\\b" : "\\b\(name)s?\\b"
+            if lower.range(of: pattern, options: .regularExpression) != nil {
                 result.named.append(index)
                 result.all.insert(index)
             }
@@ -646,6 +650,8 @@ enum EmailPredictionParser {
             issues.append("it states things that are not in the context: " + invented.prefix(6).joined(separator: ", "))
         }
         issues += availabilityIssues(body, context: context)
+        issues += topicIssues(body, context: context)
+        issues += notesIssues(body, context: context)
 
         let compose = context.compose
         let wantsSubject = compose.subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && compose.subjectEditable
@@ -677,10 +683,66 @@ enum EmailPredictionParser {
         // Small models often leave follow_up_days at 0 for a clear request, so
         // an explicit request in the email itself also qualifies.
         let days = integer(object["follow_up_days"])
-        if asksForReply(body), days > 0 || isDirectRequest(body) {
+        if (asksForReply(body) && (days > 0 || isDirectRequest(body))) || defers(body) {
             actions.append(.followUp(days: min(14, max(1, days > 0 ? days : 3))))
         }
         return actions
+    }
+
+    /// The email promises to come back later ("I'll check my calendar"), so a
+    /// reminder keeps that promise from being forgotten.
+    static func defers(_ body: String) -> Bool {
+        EmailBodySanitizer.matches(body.replacingOccurrences(of: "’", with: "'"),
+            #"\b(i'll|i will|let me) (check|confirm|get back|follow up|find (a|some) (time|slot))\b|\bget back to you\b"#)
+    }
+
+    static let topicStopwords: Set<String> = [
+        "about", "after", "again", "being", "could", "would", "should", "there", "their", "these", "those", "where",
+        "which", "while", "other", "thanks", "thank", "hello", "regards", "please", "today", "tomorrow", "within",
+        "before", "maybe", "still", "every", "everyone", "great", "really", "anything", "something", "right",
+        "think", "know", "going", "just", "since", "until", "whether", "chance", "look", "looking"
+    ]
+
+    static func topicKeywords(_ text: String) -> [String] {
+        var seen = Set<String>()
+        return EmailGrounding.matchesOf(#"\p{L}{5,}"#, in: text).map { $0.text.lowercased() }
+            .filter { !topicStopwords.contains($0) && seen.insert($0).inserted }
+    }
+
+    /// A reply must address what the newest thread message is about.
+    static func topicIssues(_ body: String, context: EmailPredictionContext) -> [String] {
+        guard let latest = context.compose.thread.first else { return [] }
+        let keywords = topicKeywords(EmailPredictionPrompt.stripQuoted(latest.text))
+        guard keywords.count >= 2 else { return [] }
+        let lower = body.lowercased()
+        guard !keywords.contains(where: { lower.contains(String($0.prefix(5))) }) else { return [] }
+        return ["it does not address the message it replies to; mention what it is about, such as " + keywords.prefix(4).joined(separator: ", ")]
+    }
+
+    private static let numberWords = ["one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+                                      "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12]
+
+    /// Times, durations and amounts the person typed must reach the email.
+    static func notesIssues(_ body: String, context: EmailPredictionContext) -> [String] {
+        let notes = context.compose.ownText
+        guard !EmailComposeSnapshot.isBlankBody(notes) else { return [] }
+        let bodyTimes = Set(EmailGrounding.times(in: body).map(\.minutes))
+        let bodyNumbers = Set(EmailGrounding.matchesOf(#"\d+(?:[.,]\d+)*"#, in: body).map { $0.text.filter(\.isNumber) })
+        let lowerBody = body.lowercased()
+        var missing: [String] = []
+        let noteTimes = EmailGrounding.times(in: notes)
+        for time in noteTimes where !bodyTimes.contains(time.minutes) { missing.append(time.text) }
+        let units = #"(?:\s*(?:hours?|hrs?|minutes?|mins?|days?|weeks?|months?|%|seats?|users?|people|percent))?"#
+        for number in EmailGrounding.matchesOf(#"\d+(?:[.,]\d+)*"# + units, in: notes) {
+            guard !noteTimes.contains(where: { $0.range.overlaps(number.range) }) else { continue }
+            let digits = number.text.prefix { $0.isNumber || $0 == "," || $0 == "." }.filter(\.isNumber)
+            if bodyNumbers.contains(String(digits)) { continue }
+            if let value = Int(digits), numberWords.contains(where: { $0.value == value && lowerBody.range(of: "\\b\($0.key)\\b", options: .regularExpression) != nil }) {
+                continue
+            }
+            missing.append(number.text.trimmingCharacters(in: .whitespaces))
+        }
+        return missing.isEmpty ? [] : ["it leaves out facts from the user's notes: " + missing.joined(separator: ", ")]
     }
 
     /// Splits a sentence where it changes direction ("Tuesday doesn't work, but Wednesday does").
@@ -732,7 +794,11 @@ enum EmailPredictionParser {
                     return days.all.contains((parts.weekday ?? 1) - 1) || dates.contains { $0.key == "\(parts.month ?? 0)/\(parts.day ?? 0)" }
                 }) else { continue }
                 for time in times {
-                    guard let start = calendar.date(byAdding: .minute, value: time.minutes, to: day), start > context.now else { continue }
+                    guard let start = calendar.date(byAdding: .minute, value: time.minutes, to: day) else { continue }
+                    if start <= context.now.addingTimeInterval(30 * 60) {
+                        if positive { issues.append("it offers \(time.text), which has already passed or is too soon; offer a later free time") }
+                        continue
+                    }
                     let end = start.addingTimeInterval(30 * 60)
                     let busy = context.calendar.contains { block in
                         block.isAllDay ? calendar.isDate(block.start, inSameDayAs: start) : (block.start < end && block.end > start)
@@ -775,6 +841,10 @@ enum EmailPredictionParser {
                     components.month = parts.first
                     components.day = parts.last
                     day = calendar.date(from: components)
+                    // "January 4" written on December 30 means next year.
+                    if let found = day, found < calendar.startOfDay(for: context.now) {
+                        day = calendar.date(byAdding: .year, value: 1, to: found)
+                    }
                 } else {
                     var days = EmailGrounding.mentionedWeekdays(in: lower, context: context)
                     if days.all.isEmpty { days = sentenceDays }
@@ -790,7 +860,7 @@ enum EmailPredictionParser {
     static func validatedEvent(_ object: [String: Any], body: String, context: EmailPredictionContext) -> EmailActionCandidate? {
         guard let rawStart = object["event_start"] as? String,
               let start = EmailDates.parseEventStart(rawStart, timeZone: context.timeZone),
-              start > context.now.addingTimeInterval(5 * 60),
+              start > context.now.addingTimeInterval(30 * 60),
               start < context.now.addingTimeInterval(60 * 86_400) else { return nil }
         let calendar = EmailDates.calendar(context.timeZone)
         let parts = calendar.dateComponents([.hour, .minute, .month, .day, .weekday], from: start)

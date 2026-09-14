@@ -102,7 +102,8 @@ struct EmailPredictionTests {
                                                            "subject": "Budget meeting", "event_start": "2026-09-15 14:00", "event_minutes": 30]),
                                                     context: context(compose(thread: scheduling), calendar: busyTuesday))
         if case .success(let prediction) = declined {
-            expect(prediction.actions.isEmpty, "A declined time is never offered as an event")
+            expect(!prediction.actions.contains { if case .calendarEvent = $0 { return true }; return false },
+                   "A declined time is never offered as an event")
         } else { fatalError("Declining reply should parse") }
         // Availability claims must match the calendar, and need one at all.
         let noCalendarIssues = EmailPredictionParser.availabilityIssues("Hi Dana,\n\nWednesday at 10am works for me.", context: reply)
@@ -174,6 +175,40 @@ struct EmailPredictionTests {
             answer(["body": "Hi Dana,\n\nThanks for the update."])
         }
         expect(noSubject.subject == nil && noSubject.body == "Hi Dana,\n\nThanks for the update.", "A good body is still written when the subject never arrives")
+        // Eval gap: the roadmap scenario offered a time equal to now.
+        let openQuestion = [EmailThreadMessage(from: "Nora Fischer", fromEmail: "dana@example.com", date: "", text: "When would you have an hour this week to review the roadmap together?")]
+        let roadmap = context(compose(thread: openQuestion), calendar: [])
+        expect(EmailPredictionParser.availabilityIssues("Hi Nora,\n\nI'm free today at 10:30am to review the roadmap.", context: roadmap).contains { $0.contains("already passed or is too soon") },
+               "Offering a time that has passed or starts within 30 minutes is rejected")
+        expect(EmailPredictionParser.validatedEvent(["event_start": "2026-09-13 10:45"], body: "Hi Nora,\n\nToday at 10:45am works for me.", context: roadmap) == nil,
+               "No calendar event starts within the next 30 minutes")
+        // Eval gap: a reply must address the thread's main topic.
+        if case .failure(let rejection) = EmailPredictionParser.parse(answer(["body": "Hi Nora,\n\nI'm free Thursday at 2pm."]), context: roadmap) {
+            expect(rejection.issues.contains { $0.contains("roadmap") }, "A reply that ignores the thread's topic is repaired with the topic named")
+        } else { fatalError("A reply ignoring the thread topic must be rejected") }
+        if case .success = EmailPredictionParser.parse(answer(["body": "Hi Nora,\n\nI'm free Thursday at 2pm to review the roadmap together."]), context: roadmap) {
+            checks += 1
+        } else { fatalError("A reply naming the topic must pass") }
+        // Eval gap: deferring email gets a follow up reminder deterministically.
+        expect(EmailPredictionParser.validatedActions(["follow_up_days": 0], body: "Hi Dana,\n\nI'd like to discuss Q4 planning. I'll check my calendar to find a slot that works.", context: context(compose())) == [.followUp(days: 3)],
+               "An email that defers (I'll check my calendar) gets a follow up candidate")
+        // Eval gap: numbers and times from the notes must survive.
+        let maintenance = context(compose(subject: "Maintenance", notes: "server maintenance saturday 11pm, about 2 hours downtime"))
+        if case .failure(let rejection) = EmailPredictionParser.parse(answer(["body": "Hi,\n\nThere is scheduled server maintenance on Saturday."]), context: maintenance) {
+            expect(rejection.issues.contains { $0.contains("11pm") && $0.contains("2 hours") }, "Times and amounts dropped from the notes are listed for repair")
+        } else { fatalError("Dropping note facts must be rejected") }
+        if case .success = EmailPredictionParser.parse(answer(["body": "Hi,\n\nServer maintenance is on Saturday at 11pm, with about two hours of downtime."]), context: maintenance) {
+            checks += 1
+        } else { fatalError("Keeping note facts, with a number written as a word, must pass") }
+        // Low: short weekday names need date or time context; dates cross New Year.
+        expect(EmailGrounding.mentionedWeekdays(in: "please sat down with the team", context: reply).all.isEmpty, "An ordinary word like sat is not a weekday")
+        expect(EmailGrounding.mentionedWeekdays(in: "sat 9/19 at 10am works", context: reply).all == [6], "A short weekday next to a date counts")
+        var newYear = context(compose(thread: [EmailThreadMessage(from: "Dana Lee", fromEmail: "dana@example.com", date: "", text: "Can we meet on January 4 at 3pm?")]), calendar: [])
+        newYear.now = cal.date(from: DateComponents(year: 2026, month: 12, day: 30, hour: 10))!
+        let january = EmailPredictionParser.validatedActions([:], body: "Hi Dana,\n\nJanuary 4 at 3pm works for me.", context: newYear)
+        expect(january == [.calendarEvent(title: "Meeting with Dana", start: cal.date(from: DateComponents(year: 2027, month: 1, day: 4, hour: 15))!, minutes: 30)],
+               "A date just after New Year is the next occurrence")
+
         // Regression: slow context sources (AppleScript, Composio) could hold a prediction indefinitely.
         let slowStarted = Date()
         let slow: String? = await EmailDeadline.first(within: 0.2) {
