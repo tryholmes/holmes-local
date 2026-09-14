@@ -63,6 +63,11 @@ jobs:
           holmes/tests/run-work-activity-tests.sh
           holmes/tests/run-extension-installer-tests.sh
 
+      - name: Test browser bridge reliability
+        run: |
+          holmes/tests/run-browser-bridge-extension-tests.sh
+          holmes/tests/run-browser-bridge-soak.sh
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
