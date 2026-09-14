@@ -1281,6 +1281,12 @@ final class HolmesBrain {
         switch await ConfirmationBus.shared.decide(action) {
         case .approved(let text): return Task.isCancelled ? nil : text
         case .dismissed:          return nil
+        case .timedOut:
+            // Only unattended (autonomous) work sets a deadline; show why it stopped.
+            if let activity = WorkActivityScope.id {
+                WorkActivityCenter.shared.update(activity, phase: .working, detail: ApprovalScope.timedOutMessage)
+            }
+            return nil
         }
     }
 

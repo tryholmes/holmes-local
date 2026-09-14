@@ -36,11 +36,7 @@ struct PendingAction: Identifiable {
     }
 }
 
-// Result of a user approving/dismissing an agent tool call.
-enum AgentDecision {
-    case approved(text: String)   // `text` carries any edits the user made in the preview
-    case dismissed
-}
+// AgentDecision and the approval FIFO live in Core/ApprovalQueue.swift.
 
 // MARK: - ConfirmationBus
 // HolmesAgent posts here when it detects something actionable.
@@ -50,7 +46,19 @@ enum AgentDecision {
 @Observable
 final class ConfirmationBus {
     static let shared = ConfirmationBus()
-    private init() {}
+    private init() {
+        approvals.onPresent = { [weak self] action in
+            guard let self else { return }
+            if let action {
+                self.propose(action)
+            } else {
+                self.closeApprovalCard()
+            }
+        }
+        approvals.onTimeout = { action in
+            print("[Holmes] Approval timed out: \(action.title)")
+        }
+    }
 
     var pendingAction: PendingAction? = nil
     var isShowing: Bool = false
@@ -69,8 +77,14 @@ final class ConfirmationBus {
     /// panel card and this card must always show the same words.
     var isShowingReply: Bool = false
 
-    // Set while an agent tool call awaits the user's decision (see `decide`).
-    @ObservationIgnored private var decisionHandler: ((AgentDecision) -> Void)?
+    // Agent tool calls awaiting the user's decision, one card at a time (see `decide`).
+    @ObservationIgnored private let approvals = ApprovalQueue<PendingAction>()
+
+    /// True when the showing card is the approval at the head of the queue.
+    private var showingQueuedApproval: Bool {
+        guard let current = approvals.currentID else { return false }
+        return pendingAction?.id == current
+    }
 
     func propose(_ action: PendingAction) {
         // A live approval outranks a proactive draft — push the draft back in line.
@@ -186,30 +200,27 @@ final class ConfirmationBus {
 
     /// Proposes an action and suspends until the user approves or dismisses it.
     /// Used by the agentic loop to gate side-effecting tool calls.
-    func decide(_ action: PendingAction) async -> AgentDecision {
-        guard !Task.isCancelled else { return .dismissed }
-        // If a decision is already pending (two confirmations overlapped — e.g. a
-        // calendar task raising a card while another autonomous step is still
-        // awaiting one), resolve the OLD handler as .dismissed FIRST. Otherwise the
-        // earlier continuation is orphaned and its await never resumes — the run
-        // that was waiting on it hangs forever and looks like "approve failed".
-        if let stale = decisionHandler {
-            decisionHandler = nil
-            stale(.dismissed)
+    ///
+    /// Overlapping requests QUEUE (FIFO): a second card waits until the first is
+    /// answered, so one run can never read another run's arrival as "declined".
+    /// Cancelling the awaiting task removes its card whether it is showing or
+    /// still queued. `timeout` (or the task's ApprovalScope.unattendedTimeout,
+    /// set by autonomous playbook runs) resolves `.timedOut` when nobody answers.
+    func decide(_ action: PendingAction, timeout: TimeInterval? = nil) async -> AgentDecision {
+        await approvals.decide(id: action.id, item: action,
+                               timeout: timeout ?? ApprovalScope.unattendedTimeout)
+    }
+
+    /// Hides the approval card once the queue is empty, then lets a queued
+    /// playbook draft take the panel.
+    private func closeApprovalCard() {
+        isShowingReply = false
+        pendingAction = nil
+        if pendingDraft == nil {
+            isShowing = false
+            ConfirmationWindowController.shared.hide()
         }
-        guard !Task.isCancelled else { return .dismissed }
-        return await withTaskCancellationHandler(operation: {
-            await withCheckedContinuation { cont in
-                guard !Task.isCancelled else { cont.resume(returning: .dismissed); return }
-                decisionHandler = { cont.resume(returning: $0) }
-                propose(action)
-            }
-        }, onCancel: {
-            Task { @MainActor in
-                guard self.pendingAction?.id == action.id else { return }
-                self.dismiss()
-            }
-        })
+        showNextDraftSoon()
     }
 
     /// Closes the showing card. For drafts this only CLOSES the popup by
@@ -218,9 +229,10 @@ final class ConfirmationBus {
     /// Pass `removeDraft: true` only where removal is what the user expects:
     /// the post-action completion (Copy/Insert/Open succeeded).
     func dismiss(removeDraft: Bool = false) {
-        if let handler = decisionHandler {
-            decisionHandler = nil
-            handler(.dismissed)
+        if showingQueuedApproval {
+            // The queue presents the next waiting approval, or closes the card.
+            approvals.resolveCurrent(.dismissed)
+            return
         }
         if let draft = pendingDraft {
             if removeDraft {
@@ -257,14 +269,9 @@ final class ConfirmationBus {
     func execute() {
         // Agent-loop path: hand the (possibly edited) text back to the awaiting loop
         // and let it perform the real call. Do NOT run ActionExecutor here.
-        if let handler = decisionHandler {
-            decisionHandler = nil
+        if showingQueuedApproval {
             let text = pendingAction?.preview ?? ""
-            isShowing = false
-            pendingAction = nil
-            ConfirmationWindowController.shared.hide()
-            handler(.approved(text: text))
-            showNextDraftSoon()
+            approvals.resolveCurrent(.approved(text: text))
             return
         }
 

@@ -279,9 +279,15 @@ final class AutonomousActionRunner {
         // the run (BackendRouter's userConfirmed contract names this exact case).
         let wholePlanApproved: Bool
         if level == .confirm {
-            guard await approveWholePlan(plan, playbookId: playbookId, composioApps: composioApps) else {
+            switch await approveWholePlan(plan, playbookId: playbookId, composioApps: composioApps) {
+            case .approved:
+                break
+            case .declined:
                 return await finishRun(plan: plan, playbookId: playbookId, executed: 0,
                                 succeeded: false, note: "declined", notifyBody: nil)
+            case .timedOut:
+                return await finishApprovalTimeout(plan: plan, playbookId: playbookId, executed: 0,
+                                                   what: "the plan")
             }
             wholePlanApproved = true
         } else {
@@ -306,10 +312,9 @@ final class AutonomousActionRunner {
                 // for itself. (.confirm already approved the whole plan.)
                 var confirmed = wholePlanApproved
                 if !confirmed, BackendRouter.requiresConfirmation(step, composioApps: composioApps) {
-                    guard await approveStep(step) else {
-                        return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
-                                        succeeded: false, note: "step declined",
-                                        notifyBody: "You declined “\(shorten(step.summary, max: 60))”. The run stopped there.")
+                    if let stop = await stopUnlessApproved(await approveStep(step), step: step, plan: plan,
+                                                           playbookId: playbookId, executed: executedCount) {
+                        return stop
                     }
                     confirmed = true
                 }
@@ -332,10 +337,9 @@ final class AutonomousActionRunner {
                 // pre-check missed (dispatch-time knowledge). Honor its
                 // protocol: raise the card now and retry exactly once.
                 if !result.ok, result.text.hasPrefix(BackendRouter.confirmMarker), !confirmed {
-                    guard await approveStep(step) else {
-                        return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
-                                        succeeded: false, note: "step declined",
-                                        notifyBody: "You declined “\(shorten(step.summary, max: 60))”. The run stopped there.")
+                    if let stop = await stopUnlessApproved(await approveStep(step), step: step, plan: plan,
+                                                           playbookId: playbookId, executed: executedCount) {
+                        return stop
                     }
                     result = await BackendRouter.run(step, composioApps: composioApps, userConfirmed: true)
                     if shouldStopRun {
@@ -390,10 +394,9 @@ final class AutonomousActionRunner {
                 // still re-confirm the actual send at execution time.
                 if !wholePlanApproved {
                     for step in steps where BackendRouter.requiresConfirmation(step, composioApps: composioApps) {
-                        guard await approveStep(step) else {
-                            return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
-                                            succeeded: false, note: "step declined",
-                                            notifyBody: "You declined “\(shorten(step.summary, max: 60))”. The run stopped there.")
+                        if let stop = await stopUnlessApproved(await approveStep(step), step: step, plan: plan,
+                                                               playbookId: playbookId, executed: executedCount) {
+                            return stop
                         }
                     }
                 }
@@ -699,8 +702,8 @@ final class AutonomousActionRunner {
     /// ones are visible at a glance. Edits to the preview text are ignored —
     /// the card shows a RENDERING of the steps, it is not the steps.
     private func approveWholePlan(_ plan: ActionPlan, playbookId: String,
-                                  composioApps: [String]) async -> Bool {
-        guard !shouldStopRun else { return false }
+                                  composioApps: [String]) async -> Approval {
+        guard !shouldStopRun else { return .declined }
         progress("Review the plan to continue", phase: .waitingForUser)
         let listing = plan.steps.enumerated()
             .map { index, step in
@@ -726,17 +729,14 @@ final class AutonomousActionRunner {
             preview: preview,
             appName: "your Mac",
             actionType: .agentToolCall)
-        switch await ConfirmationBus.shared.decide(action) {
-        case .approved: return !shouldStopRun
-        case .dismissed: return false
-        }
+        return approval(from: await ConfirmationBus.shared.decide(action))
     }
 
     /// .auto level: ONE card for the single gate-flagged step. Approve runs
     /// just this step; Dismiss stops the whole run (later steps almost always
     /// depend on the declined one).
-    private func approveStep(_ step: PlannedStep) async -> Bool {
-        guard !shouldStopRun else { return false }
+    private func approveStep(_ step: PlannedStep) async -> Approval {
+        guard !shouldStopRun else { return .declined }
         progress(shorten(step.summary, max: 80), phase: .waitingForUser)
         let preview = """
         \(step.summary)
@@ -751,10 +751,44 @@ final class AutonomousActionRunner {
             preview: preview,
             appName: frontApp.isEmpty ? "your Mac" : frontApp,
             actionType: .agentToolCall)
-        switch await ConfirmationBus.shared.decide(action) {
-        case .approved: return !shouldStopRun
-        case .dismissed: return false
+        return approval(from: await ConfirmationBus.shared.decide(action))
+    }
+
+    private enum Approval { case approved, declined, timedOut }
+
+    private func approval(from decision: AgentDecision) -> Approval {
+        switch decision {
+        case .approved: return shouldStopRun ? .declined : .approved
+        case .dismissed: return .declined
+        case .timedOut:
+            // Nobody is watching this run: say so in the notch instead of
+            // silently holding the playbook slot.
+            progress(ApprovalScope.timedOutMessage, phase: .working)
+            return .timedOut
         }
+    }
+
+    /// nil when the step was approved; otherwise the finished outcome to return.
+    private func stopUnlessApproved(_ approval: Approval, step: PlannedStep, plan: ActionPlan,
+                                    playbookId: String, executed: Int) async -> RunOutcome? {
+        switch approval {
+        case .approved:
+            return nil
+        case .declined:
+            return await finishRun(plan: plan, playbookId: playbookId, executed: executed,
+                                   succeeded: false, note: "step declined",
+                                   notifyBody: "You declined “\(shorten(step.summary, max: 60))”. The run stopped there.")
+        case .timedOut:
+            return await finishApprovalTimeout(plan: plan, playbookId: playbookId, executed: executed,
+                                               what: "“\(shorten(step.summary, max: 60))”")
+        }
+    }
+
+    private func finishApprovalTimeout(plan: ActionPlan, playbookId: String, executed: Int,
+                                       what: String) async -> RunOutcome {
+        await finishRun(plan: plan, playbookId: playbookId, executed: executed,
+                        succeeded: false, note: ApprovalScope.timedOutMessage,
+                        notifyBody: "Nobody approved \(what) in time, so nothing more was run.")
     }
 
     // MARK: - Memory + notifications + bookkeeping

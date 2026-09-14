@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AA000001000000000000114 /* ActionRunEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000114 /* ActionRunEvidence.swift */; };
+		B7A500010000000000000002 /* ApprovalQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000002 /* ApprovalQueue.swift */; };
 		B7A500010000000000000001 /* ComputerUseRunRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000001 /* ComputerUseRunRegistry.swift */; };
 		AA000001000000000000113 /* EmailDraftCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000113 /* EmailDraftCoordinator.swift */; };
 		AA000001000000000000112 /* EmailDrafting.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000112 /* EmailDrafting.swift */; };
@@ -122,6 +123,7 @@
 
 /* Begin PBXFileReference section */
 		AA000002000000000000114 /* ActionRunEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionRunEvidence.swift; sourceTree = "<group>"; };
+		B7A500020000000000000002 /* ApprovalQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalQueue.swift; sourceTree = "<group>"; };
 		B7A500020000000000000001 /* ComputerUseRunRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerUseRunRegistry.swift; sourceTree = "<group>"; };
 		AA000002000000000000113 /* EmailDraftCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailDraftCoordinator.swift; sourceTree = "<group>"; };
 		AA000002000000000000112 /* EmailDrafting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailDrafting.swift; sourceTree = "<group>"; };
@@ -373,6 +375,7 @@
 				AA000002000000000000112 /* EmailDrafting.swift */,
 				AA000002000000000000113 /* EmailDraftCoordinator.swift */,
 				AA000002000000000000114 /* ActionRunEvidence.swift */,
+				B7A500020000000000000002 /* ApprovalQueue.swift */,
 				B7A500020000000000000001 /* ComputerUseRunRegistry.swift */,
 				AA000002000000000000105 /* GuidedDemo.swift */,
 				AA000005000000000000030 /* Setup */,
@@ -608,6 +611,7 @@
 				AA000001000000000000112 /* EmailDrafting.swift in Sources */,
 				AA000001000000000000113 /* EmailDraftCoordinator.swift in Sources */,
 				AA000001000000000000114 /* ActionRunEvidence.swift in Sources */,
+				B7A500010000000000000002 /* ApprovalQueue.swift in Sources */,
 				B7A500010000000000000001 /* ComputerUseRunRegistry.swift in Sources */,
 				AA000001000000000000105 /* GuidedDemo.swift in Sources */,
 				AA000001000000000000001 /* holmesApp.swift in Sources */,

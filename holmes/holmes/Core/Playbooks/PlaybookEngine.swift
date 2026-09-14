@@ -397,6 +397,11 @@ final class PlaybookEngine {
         let work = Task { @MainActor in
             var succeeded = false
             let report: (Bool) -> Void = { succeeded = $0 }
+            // A background fire has nobody watching: its approval cards time
+            // out instead of holding the single playbook slot forever. A manual
+            // run was started by the user, who may take their time.
+            let approvalDeadline: TimeInterval? = manual ? nil : ApprovalScope.defaultUnattendedTimeout
+            await ApprovalScope.$unattendedTimeout.withValue(approvalDeadline) {
             await WorkActivityScope.$id.withValue(activity) {
                 guard !Task.isCancelled else { return }
                 // === AUTONOMY ROUTING ===
@@ -444,6 +449,7 @@ final class PlaybookEngine {
                                             fromTrigger: fromTrigger, onCompletion: report)
                     }
                 }
+            }
             }
             let cancelled = Task.isCancelled || self.fireID != runID
             if inherited == nil {
