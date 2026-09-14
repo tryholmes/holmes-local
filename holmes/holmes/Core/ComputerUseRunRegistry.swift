@@ -33,12 +33,15 @@ final class ComputerUseRunRegistry<Capture> {
     }
 
     private var entries: [ComputerUseRunToken: Entry] = [:]
-    private var order: [ComputerUseRunToken] = []
+    /// Runs holding a capture, oldest first. Only CAPTURES are bounded (they
+    /// are full screenshots); a run's kill switch entry lives until `end`, so a
+    /// long run can never be evicted and misread as cancelled.
+    private var captureOrder: [ComputerUseRunToken] = []
     /// Work that runs with no token in scope (a Settings self test, a
     /// standalone key press) shares one slot so a screenshot then click still
     /// map against the same frame, exactly like the historical single run.
     let unscoped = ComputerUseRunToken()
-    /// Bounded so a caller that forgets `end` cannot grow the table forever.
+    /// Most runs that keep a screenshot at once.
     private let capacity: Int
 
     init(capacity: Int = 64) {
@@ -54,17 +57,12 @@ final class ComputerUseRunRegistry<Capture> {
         let token = ComputerUseRunToken()
         let knownParent = parent.flatMap { entries[$0] == nil ? nil : $0 }
         entries[token] = Entry(parent: knownParent)
-        order.append(token)
-        while order.count > capacity {
-            let oldest = order.removeFirst()
-            entries.removeValue(forKey: oldest)
-        }
         return token
     }
 
     func end(_ token: ComputerUseRunToken) {
         entries.removeValue(forKey: token)
-        order.removeAll { $0 == token }
+        captureOrder.removeAll { $0 == token }
     }
 
     /// Cancels one run (and, through `isCancelled`, every run nested in it).
@@ -96,9 +94,10 @@ final class ComputerUseRunRegistry<Capture> {
         guard let token, token != unscoped else { return unscopedCancelled }
         var cursor: ComputerUseRunToken? = token
         var hops = 0
-        while let current = cursor, hops < capacity {
+        while let current = cursor, hops <= entries.count {
             guard let entry = entries[current] else {
-                // An ended or evicted run can no longer act.
+                // An ended run can no longer act; a parent that ended does not
+                // cancel a child that is still running.
                 return current == token
             }
             if entry.cancelled { return true }
@@ -118,6 +117,14 @@ final class ComputerUseRunRegistry<Capture> {
             unscopedCapture = capture
             return
         }
+        guard entries[token] != nil else { return }
         entries[token]?.capture = capture
+        captureOrder.removeAll { $0 == token }
+        guard capture != nil else { return }
+        captureOrder.append(token)
+        while captureOrder.count > capacity {
+            let oldest = captureOrder.removeFirst()
+            entries[oldest]?.capture = nil
+        }
     }
 }

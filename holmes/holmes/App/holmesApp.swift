@@ -897,8 +897,12 @@ struct PrivacySettingsView: View {
         guard PermissionManager.checkAccessibilityPermission() else {
             return "Drawing + speech OK. Accessibility isn\u{2019}t granted (or is stale) — grant it via Open Settings above, then click Relaunch Holmes."
         }
-        engine.beginRun() // clear any stale kill flag so the test event can post
-        let outcome = await engine.perform(action: "hold_key", input: ["text": "shift", "duration": 0.05])
+        // A run of its own (fresh kill switch), always ended so self tests never pile up.
+        let testRun = engine.beginRun()
+        defer { engine.endRun(testRun) }
+        let outcome = await ComputerUseRunScope.$token.withValue(testRun) {
+            await engine.perform(action: "hold_key", input: ["text": "shift", "duration": 0.05])
+        }
         if outcome.isRefused {
             return "Drawing + speech OK. Computer control is OFF — turn it on above."
         }

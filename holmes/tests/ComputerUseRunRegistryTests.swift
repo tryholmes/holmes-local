@@ -53,9 +53,24 @@ struct ComputerUseRunRegistryTests {
         expect(runs.isCancelled(ended) && runs.capture(for: ended) == nil,
                "An ended run can no longer act or keep a capture")
 
+        // A long run must never be evicted and then read as cancelled, however
+        // many short runs (Settings self tests, requests) start after it.
         let bounded = ComputerUseRunRegistry<Int>(capacity: 4)
-        for _ in 0..<50 { bounded.begin() }
-        expect(bounded.activeCount == 4, "Forgotten runs are evicted so the table stays bounded")
+        let longRun = bounded.begin()
+        bounded.setCapture(0, for: longRun)
+        var shortRuns: [ComputerUseRunToken] = []
+        for index in 1...100 {
+            let run = bounded.begin()
+            bounded.setCapture(index, for: run)
+            shortRuns.append(run)
+        }
+        expect(!bounded.isCancelled(longRun), "A live run started before 100 others is still live, not evicted into cancelled")
+        expect(bounded.capture(for: longRun) == nil && bounded.capture(for: shortRuns.last!) == 100,
+               "Only screenshots are bounded: the oldest capture is dropped")
+        bounded.cancelAll()
+        expect(bounded.isCancelled(longRun), "Stop all still reaches the long run")
+        for run in shortRuns { bounded.end(run) }
+        expect(bounded.activeCount == 1, "Ended runs leave the table; the live one stays")
 
         print("Passed \(checks) computer use run ownership checks")
     }
