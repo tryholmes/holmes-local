@@ -62,6 +62,9 @@ final class AutonomousActionRunner {
     @ObservationIgnored private var notificationPermissionRequested = false
     @ObservationIgnored private var runTask: Task<RunOutcome, Never>?
     @ObservationIgnored private var runActivityID: UUID?
+    /// This run's own computer control session: its kill switch and screenshot
+    /// are never shared with (or reset by) any other run.
+    @ObservationIgnored private var runToken: ComputerUseRunToken?
 
     enum RunOutcome: Equatable {
         case succeeded
@@ -88,14 +91,14 @@ final class AutonomousActionRunner {
     func cancelCurrentRun() {
         guard let runTask else { return }
         runTask.cancel()
-        ComputerUseEngine.shared.cancelRun()
+        if let runToken { ComputerUseEngine.shared.cancelRun(runToken) }
     }
 
     private var workWasCancelled: Bool {
         Task.isCancelled || WorkActivityScope.id.map { !WorkActivityCenter.shared.isActive($0) } == true
     }
 
-    private var shouldStopRun: Bool { workWasCancelled || ComputerUseEngine.shared.isCancelled }
+    private var shouldStopRun: Bool { workWasCancelled || ComputerUseEngine.shared.isCancelled(runToken) }
 
     private func progress(_ detail: String, phase: WorkActivityCenter.Phase = .working, fraction: Double? = nil) {
         guard let id = WorkActivityScope.id else { return }
@@ -149,10 +152,16 @@ final class AutonomousActionRunner {
         // Own the single-flight slot before the first preflight/MCP await.
         isRunning = true
         runActivityID = id
+        // Fresh actuator session owned by this run alone: a new kill switch and
+        // no stale screenshot, without resetting any other run in flight.
+        let token = ComputerUseEngine.shared.beginRun()
+        runToken = token
         WorkActivityCenter.shared.update(id, phase: .preparing, detail: "Checking the plan")
         let task = Task { @MainActor in
             await WorkActivityScope.$id.withValue(id) {
-                await self.execute(plan, playbookId: playbookId, level: level)
+                await ComputerUseRunScope.$token.withValue(token) {
+                    await self.execute(plan, playbookId: playbookId, level: level)
+                }
             }
         }
         runTask = task
@@ -165,6 +174,8 @@ final class AutonomousActionRunner {
         defer {
             runTask = nil
             runActivityID = nil
+            runToken = nil
+            ComputerUseEngine.shared.endRun(token)
             isRunning = false
         }
         let result = await withTaskCancellationHandler {
@@ -257,9 +268,6 @@ final class AutonomousActionRunner {
         guard !workWasCancelled else { return .cancelled }
         AutonomyGate.recordAct(playbookId: playbookId) // consume rate budget once per started run
         statusLine = "Running: \(shorten(plan.goal, max: 80))"
-        // Fresh actuator session: clears a stale ⌘⌥Esc flag and the stale
-        // screenshot so nothing maps coordinates against an old frame.
-        ComputerUseEngine.shared.beginRun()
         ScreenGlowController.shared.set(state: .thinking, origin: PlaybookEngine.shared.glowOrigin)
 
         // Speak the opening intent — "On it — <goal>." — so the run announces
@@ -438,13 +446,17 @@ final class AutonomousActionRunner {
         isUndoing = true
         defer { isUndoing = false }
         statusLine = "Undoing: \(shorten(run.goal, max: 80))"
-        // Undo is user-initiated — clear a stale kill flag so it can post events.
-        ComputerUseEngine.shared.beginRun()
+        // Undo is user initiated: it gets its own run, so a stale kill switch
+        // from an earlier run cannot block it and stop all still reaches it.
+        let undoToken = ComputerUseEngine.shared.beginRun()
+        defer { ComputerUseEngine.shared.endRun(undoToken) }
 
         var attempted = 0
         for action in undoActionsForLastRun.reversed() {
-            if ComputerUseEngine.shared.isCancelled { break }
-            await action.body()
+            if ComputerUseEngine.shared.isCancelled(undoToken) { break }
+            await ComputerUseRunScope.$token.withValue(undoToken) {
+                await action.body()
+            }
             attempted += 1
             await MemoryStore.shared.record(
                 kind: "action",

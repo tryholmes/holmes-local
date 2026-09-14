@@ -133,6 +133,21 @@ final class HolmesBrain {
              narrateAloud: Bool = true,
              log: @escaping @MainActor (String) -> Void) async -> RunResult {
         guard !Task.isCancelled else { return .cancelled }
+        // Every run owns its computer control kill switch and screenshot, so a
+        // second request can never disarm ⌘⌥Esc for, or map clicks through the
+        // frame of, a run already in flight.
+        let engine = ComputerUseEngine.shared
+        let runToken = engine.beginRun()
+        defer { engine.endRun(runToken) }
+        return await ComputerUseRunScope.$token.withValue(runToken) {
+            await runInScope(goal: goal, narrateAloud: narrateAloud, log: log)
+        }
+    }
+
+    private func runInScope(goal: String,
+                            narrateAloud: Bool,
+                            log: @escaping @MainActor (String) -> Void) async -> RunResult {
+        guard !Task.isCancelled else { return .cancelled }
         guard OllamaConfig.isConfigured else { return .notConfigured }
 
         let narrates = narrateAloud && ClickyController.shared.narrateActionsEnabled
@@ -151,7 +166,6 @@ final class HolmesBrain {
         // model's job. A master-switch refusal also falls through: type_text,
         // MCP and browser tools need no switch, so the model may still succeed.
         if let (appName, text) = Self.typeIntoAppIntent(in: goal), Self.isExactInstalledApp(appName) {
-            ComputerUseEngine.shared.beginRun()
             let opened = await ComputerUseEngine.shared.perform(action: "open_app", input: ["name": appName])
             if !opened.isRefused && !opened.isError {
                 do { try await Task.sleep(nanoseconds: 900_000_000) }
@@ -173,7 +187,6 @@ final class HolmesBrain {
         }
 
         if let appName = Self.openAppIntent(in: goal), Self.isExactInstalledApp(appName) {
-            ComputerUseEngine.shared.beginRun()
             let outcome = await ComputerUseEngine.shared.perform(action: "open_app", input: ["name": appName])
             guard !Task.isCancelled else { return .cancelled }
             if !outcome.isRefused && !outcome.isError {
@@ -197,10 +210,9 @@ final class HolmesBrain {
         // Pin this run's screenshot resolution BEFORE building `builtinTools` and
         // the system prompt, so the `computer` tool's declared pixel space
         // (W×H in its description) equals the pixel dims every screenshot in the
-        // run is resized to. Reset the computer engine's kill flag + stale
-        // capture for a fresh session.
+        // run is resized to. The computer engine's kill switch and capture are
+        // already fresh: `run` opened this session's own run token.
         WindowCapture.resolveForCurrentRun()
-        ComputerUseEngine.shared.beginRun()
         let tools = builtinTools + Self.relevantMCPTools(MCPClient.shared.toolDefs(), for: goal)
         // The system prompt is split into the stable guidelines and the per-run
         // screen context. There is no prompt cache to protect with a local
