@@ -149,3 +149,79 @@ final class ApprovalQueue<Item> {
         entry.resolve(decision)
     }
 }
+
+// MARK: - ApprovalCardArbiter
+//
+// ONE floating card is shared by queued approvals (decide) and direct proposals
+// (command bar results, meeting joins). The arbiter remembers which kind is on
+// screen so neither can orphan the other:
+//   • a direct proposal arriving over a queued approval PARKS that approval; it
+//     is shown again as soon as the direct card closes, so its run never hangs;
+//   • a queue change (a timeout, a resolve) only ever replaces or hides the
+//     card when that card IS the queue's approval, never a direct card or a
+//     draft the user is looking at.
+
+@MainActor
+final class ApprovalCardArbiter<Item> {
+    enum Showing: Equatable {
+        case none
+        case approval(UUID)
+        case direct(UUID)
+    }
+
+    private(set) var showing: Showing = .none
+    let queue: ApprovalQueue<Item>
+    private let idOf: (Item) -> UUID
+
+    /// Puts an item on the card.
+    var show: (Item) -> Void = { _ in }
+    /// Closes the card after the approval it showed went away.
+    var hide: () -> Void = {}
+
+    init(queue: ApprovalQueue<Item>, id: @escaping (Item) -> UUID) {
+        self.queue = queue
+        self.idOf = id
+        queue.onPresent = { [weak self] item in self?.queuePresented(item) }
+    }
+
+    /// The queue head's id while that head is the card on screen.
+    var showingApprovalID: UUID? {
+        guard case .approval(let id) = showing, id == queue.currentID else { return nil }
+        return id
+    }
+
+    var isShowingDirect: Bool {
+        if case .direct = showing { return true }
+        return false
+    }
+
+    private func queuePresented(_ item: Item?) {
+        // A direct card is on screen: the head waits (parked) until it closes.
+        if isShowingDirect { return }
+        if let item {
+            showing = .approval(idOf(item))
+            show(item)
+        } else if case .approval = showing {
+            // Only close the card when it was the approval that just went away.
+            showing = .none
+            hide()
+        }
+    }
+
+    /// Shows a card that is not part of the approval queue.
+    func proposeDirect(_ item: Item) {
+        showing = .direct(idOf(item))
+        show(item)
+    }
+
+    /// The direct card closed: bring back a parked approval, if any.
+    func directClosed() {
+        guard isShowingDirect else { return }
+        if let head = queue.currentItem {
+            showing = .approval(idOf(head))
+            show(head)
+        } else {
+            showing = .none
+        }
+    }
+}

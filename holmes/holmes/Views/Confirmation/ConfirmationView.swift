@@ -47,14 +47,8 @@ struct PendingAction: Identifiable {
 final class ConfirmationBus {
     static let shared = ConfirmationBus()
     private init() {
-        approvals.onPresent = { [weak self] action in
-            guard let self else { return }
-            if let action {
-                self.propose(action)
-            } else {
-                self.closeApprovalCard()
-            }
-        }
+        cards.show = { [weak self] action in self?.presentCard(action) }
+        cards.hide = { [weak self] in self?.closeApprovalCard() }
         approvals.onTimeout = { action in
             print("[Holmes] Approval timed out: \(action.title)")
         }
@@ -79,14 +73,23 @@ final class ConfirmationBus {
 
     // Agent tool calls awaiting the user's decision, one card at a time (see `decide`).
     @ObservationIgnored private let approvals = ApprovalQueue<PendingAction>()
+    /// Which kind of card is on screen, so a direct proposal parks (never
+    /// orphans) a queued approval and a timeout only closes its own card.
+    @ObservationIgnored private lazy var cards = ApprovalCardArbiter(queue: approvals, id: { $0.id })
 
     /// True when the showing card is the approval at the head of the queue.
     private var showingQueuedApproval: Bool {
-        guard let current = approvals.currentID else { return false }
+        guard let current = cards.showingApprovalID else { return false }
         return pendingAction?.id == current
     }
 
+    /// Shows a card that is not an awaited approval (command bar result, meeting
+    /// join). A queued approval on screen is parked and returns when this closes.
     func propose(_ action: PendingAction) {
+        cards.proposeDirect(action)
+    }
+
+    private func presentCard(_ action: PendingAction) {
         // A live approval outranks a proactive draft — push the draft back in line.
         if let draft = pendingDraft {
             draftQueue.insert(draft, at: 0)
@@ -247,6 +250,11 @@ final class ConfirmationBus {
         isShowing = false
         pendingAction = nil
         ConfirmationWindowController.shared.hide()
+        if cards.isShowingDirect {
+            // Re shows an approval that was parked behind the direct card.
+            cards.directClosed()
+            if pendingAction != nil { return }
+        }
         showNextDraftSoon()
     }
 

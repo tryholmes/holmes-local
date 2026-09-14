@@ -98,6 +98,60 @@ struct ApprovalQueueTests {
                "A showing unattended approval times out and hides its card")
         expect(ApprovalScope.defaultUnattendedTimeout == 120, "Autonomous approvals default to a 120 second deadline")
 
+        // One shared card: direct proposals and queued approvals.
+        struct Card { let id = UUID(); let name: String }
+        let cardQueue = ApprovalQueue<Card>()
+        let arbiter = ApprovalCardArbiter(queue: cardQueue, id: { $0.id })
+        var onScreen: [String] = []
+        var hides = 0
+        arbiter.show = { onScreen.append($0.name) }
+        arbiter.hide = { hides += 1 }
+
+        // Scenario 1: a direct proposal over a user approval (no deadline).
+        let userCard = Card(name: "user approval")
+        var userCardDecision: AgentDecision?
+        let userCardTask = Task { @MainActor in
+            userCardDecision = await cardQueue.decide(id: userCard.id, item: userCard, timeout: nil)
+        }
+        try await eventually { arbiter.showingApprovalID == userCard.id }
+        let meeting = Card(name: "meeting join")
+        arbiter.proposeDirect(meeting)
+        expect(onScreen.last == "meeting join" && arbiter.showingApprovalID == nil,
+               "A direct proposal takes the card and parks the approval")
+        arbiter.directClosed()
+        expect(onScreen.last == "user approval" && arbiter.showingApprovalID == userCard.id,
+               "When the direct card closes, the parked approval is shown again instead of hanging")
+        cardQueue.resolveCurrent(.approved(text: "yes"))
+        await userCardTask.value
+        expect(label(userCardDecision) == "approved:yes" && hides == 1 && arbiter.showing == .none,
+               "The re shown approval still resolves its run and closes the card")
+
+        // Scenario 2: a playbook approval times out while the user looks at a direct card.
+        let commandResult = Card(name: "command bar result")
+        arbiter.proposeDirect(commandResult)
+        let playbookCard = Card(name: "playbook approval")
+        let hidesBeforeTimeout = hides
+        let timedOutCard = await cardQueue.decide(id: playbookCard.id, item: playbookCard, timeout: 0.1)
+        expect(label(timedOutCard) == "timedOut", "The parked playbook approval still times out")
+        expect(hides == hidesBeforeTimeout && onScreen.last == "command bar result" && arbiter.isShowingDirect,
+               "A timeout never closes a direct card the user is looking at")
+        arbiter.directClosed()
+        expect(arbiter.showing == .none && onScreen.last == "command bar result",
+               "Closing the direct card afterwards shows nothing stale")
+
+        // Scenario 3: a queued playbook approval behind a showing user approval times out.
+        let front = Card(name: "front")
+        let frontTask = Task { @MainActor in await cardQueue.decide(id: front.id, item: front, timeout: nil) }
+        try await eventually { arbiter.showingApprovalID == front.id }
+        let hidesBeforeQueuedTimeout = hides
+        let behind = Card(name: "behind")
+        let behindDecision = await cardQueue.decide(id: behind.id, item: behind, timeout: 0.1)
+        expect(label(behindDecision) == "timedOut" && hides == hidesBeforeQueuedTimeout
+               && arbiter.showingApprovalID == front.id,
+               "A queued approval timing out leaves the showing approval on screen")
+        cardQueue.resolveCurrent(.dismissed)
+        _ = await frontTask.value
+
         print("Passed \(checks) approval queue, cancellation and unattended timeout checks")
     }
 
