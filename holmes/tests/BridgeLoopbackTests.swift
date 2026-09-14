@@ -286,6 +286,8 @@ enum BridgeLoopbackTests {
         check(await LoopbackHTTP.background { beat(port, secret: chrome, origin: "chrome-extension://abc", instance: "chrome-inst") } == 200,
               "An extension origin pairs inside the window")
         await waitUntil("chrome paired") { bridge.pairedExtensions.count == 1 }
+        check(bridge.recentlyPairedExtension?.token == chrome,
+              "The newly paired browser is surfaced right after adoption so an unexpected pairing is visible")
         check(!bridge.isPairing, "The window closes after one adoption")
 
         bridge.beginPairing()

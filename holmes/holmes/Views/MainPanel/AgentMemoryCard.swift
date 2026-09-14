@@ -557,7 +557,9 @@ struct ExtensionStatusRow: View {
 
     private var label: String {
         switch state {
-        case .connected: return "Browser extension connected"
+        case .connected:
+            return bridge.recentlyPairedExtension.map { "Browser extension connected (new pairing: \($0.label))" }
+                ?? "Browser extension connected"
         case .pageContextStale: return "Extension connected, but this tab isn't sending page context. Refresh the tab."
         case .notListening(let reason): return "Browser bridge not listening: \(reason)"
         case .disconnected: return "Browser extension not connected — context is OCR-guessed"

@@ -533,6 +533,17 @@ final class BrowserBridge {
 
     @ObservationIgnored private var pairingStore = PairedExtensionStore.files
 
+    /// The token adopted most recently, and when. Pairing trusts an Origin header
+    /// that a local app could forge, and any installed extension can claim an armed
+    /// window, so a new pairing is surfaced in Settings and the notch for ten
+    /// minutes, where an unexpected one is visible and can be removed.
+    private var lastPairedToken: String?
+    private var lastPairedAt: Date?
+    var recentlyPairedExtension: PairedExtension? {
+        guard let token = lastPairedToken, let at = lastPairedAt, Date().timeIntervalSince(at) < 600 else { return nil }
+        return pairedExtensions.first { $0.token == token }
+    }
+
     /// When the user-armed pairing window closes. Nil once it has expired or been
     /// consumed. Observable so Settings can count it down.
     private(set) var pairingWindowEnds: Date?
@@ -1168,6 +1179,8 @@ final class BrowserBridge {
             server?.setPairedTokens(pairedExtensions.map(\.token))
         }
         pairingStore.save(pairedExtensions)
+        lastPairedToken = secret
+        lastPairedAt = now
         print("[Bridge] Paired with an extension (token …\(secret.suffix(4))); \(pairedExtensions.count) paired")
     }
 
@@ -1882,6 +1895,10 @@ private final class BridgeServer: @unchecked Sendable {
     /// Brave, Edge and other Chromium browsers all post from chrome-extension://.
     /// No Origin is a native process, a site origin is page JavaScript, and "null"
     /// is an opaque browser origin (sandboxed iframe, file://); none may pair.
+    /// This keeps web pages out. It does not prove the caller is Holmes: a native
+    /// process can send any Origin header and every installed extension has an
+    /// extension origin. The real guards are that the user arms a short one shot
+    /// window and that the resulting pairing is shown in Settings for removal.
     static func mayPair(origin: String?) -> Bool {
         guard let origin = origin?.trimmingCharacters(in: .whitespaces),
               !origin.isEmpty else { return false }

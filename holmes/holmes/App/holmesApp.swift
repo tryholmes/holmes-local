@@ -819,6 +819,12 @@ struct PrivacySettingsView: View {
 
             // One row per paired browser. Pairing another browser keeps these;
             // Remove is how a stale or unwanted pairing is revoked.
+            if let fresh = bridge.recentlyPairedExtension {
+                Text("Just paired: \(fresh.label) · token …\(fresh.tokenSuffix). If you didn't just pair this browser, remove it below.")
+                    .font(NoirFonts.caption())
+                    .foregroundColor(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if !bridge.pairedExtensions.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(bridge.pairedExtensions) { paired in
@@ -964,7 +970,7 @@ struct PrivacySettingsView: View {
             return "\(error) — Holmes can't read pages until this is resolved."
         }
         if bridge.isPairing {
-            return "Pairing is open for the next couple of minutes: the next extension to post to 127.0.0.1:\(BrowserBridge.port) is adopted and remembered alongside any browsers already paired. Only a browser extension origin may pair; web pages and other apps cannot (local tools use the token below instead)."
+            return "Pairing is open for the next couple of minutes: the next extension to post to 127.0.0.1:\(BrowserBridge.port) is adopted and remembered alongside any browsers already paired. Web pages cannot pair. Any browser extension, or another app on this Mac that imitates one, could claim this window, so open it only while you are pairing Holmes and remove any browser below that you don't recognize."
         }
         if bridge.unauthorizedRequests > 0 {
             return "\(bridge.unauthorizedRequests) request\(bridge.unauthorizedRequests == 1 ? "" : "s") rejected: something is posting to 127.0.0.1:\(BrowserBridge.port) with a token Holmes doesn't know. If that's your extension, click Pair browser extension — Holmes never adopts a secret on its own, because every process on this Mac can reach a loopback port."
