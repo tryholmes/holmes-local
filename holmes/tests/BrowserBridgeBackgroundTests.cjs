@@ -95,7 +95,12 @@ function loadWorker(options = {}) {
         log.updates.push({ id, props });
         const tab = tabs.get(id);
         if (props.active) { for (const other of tabs.values()) if (other.windowId === tab.windowId) other.active = false; tab.active = true; }
-        if (props.url) { tab.url = props.url; tab.status = 'loading'; if (options.onNavigate) options.onNavigate(tab, events); }
+        if (props.url) {
+          // lazyNavigate mirrors real Chrome: update resolves before the new load
+          // starts, so the tab still reports the old page as complete.
+          if (!options.lazyNavigate) { tab.url = props.url; tab.status = 'loading'; }
+          if (options.onNavigate) options.onNavigate(tab, events, props.url);
+        }
         return tab;
       },
       async create(props) { const id = 100 + tabs.size; const tab = { id, windowId: 23, url: props.url, status: 'loading', active: props.active !== false }; tabs.set(id, tab); return tab; },
@@ -724,6 +729,36 @@ async function composeTimeoutTests() {
   worker.dispose();
 }
 
+async function navigateEarlyTests() {
+  const quiet = async () => ({ status: 503, body: {} });
+  // The old page still reports complete right after tabs.update; the new load
+  // starts 50ms later and finishes at 200ms.
+  let worker = loadWorker({
+    lazyNavigate: true, fetch: quiet,
+    onNavigate(tab, events, url) {
+      setTimeout(() => { tab.pendingUrl = url; tab.status = 'loading'; events.updated.emit(tab.id, { status: 'loading' }, tab); }, 50);
+      setTimeout(() => { tab.url = url; delete tab.pendingUrl; tab.status = 'complete'; events.updated.emit(tab.id, { status: 'complete' }, tab); }, 200);
+    }
+  });
+  let started = Date.now();
+  let result = await worker.context.HolmesAutomation.execute({ action: 'navigate', params: { url: 'https://example.test/next', tabId: 17 } });
+  let elapsed = Date.now() - started;
+  check(result.ok === true && result.loaded === true && elapsed >= 190 && result.url === 'https://example.test/next',
+    `navigate ignores the previous page's complete status and waits for the new load (${elapsed}ms)`);
+  worker.dispose();
+
+  // Same document navigation: no loading phase, the URL simply changes.
+  worker = loadWorker({
+    lazyNavigate: true, config: { navigateTimeoutMs: 2000 }, fetch: quiet,
+    onNavigate(tab, events, url) { tab.url = url; events.updated.emit(tab.id, { url }, tab); }
+  });
+  started = Date.now();
+  result = await worker.context.HolmesAutomation.execute({ action: 'navigate', params: { url: 'https://mail.example.test/#inbox', tabId: 17 } });
+  elapsed = Date.now() - started;
+  check(result.ok === true && result.loaded === true && elapsed < 500, `A same document navigation still resolves promptly (${elapsed}ms)`);
+  worker.dispose();
+}
+
 module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 
 if (require.main === module) {
@@ -733,7 +768,7 @@ if (require.main === module) {
     setInterval(() => {}, 1000);
     const only = process.argv[2];
     const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests,
-      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests, ledgerRaceTests, ledgerQuotaTests, laneOrderTests, composeTimeoutTests };
+      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests, ledgerRaceTests, ledgerQuotaTests, laneOrderTests, composeTimeoutTests, navigateEarlyTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();

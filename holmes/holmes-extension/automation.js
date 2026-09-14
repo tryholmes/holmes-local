@@ -357,8 +357,19 @@ self.HolmesAutomation = (function () {
   // Resolves when the tab reports status "complete" after arm() (so a completion
   // from the page being replaced is ignored), when it closes, or at the timeout.
   // Listeners are attached before navigation starts so a fast load is never missed.
-  function waitForTabComplete(tabId, timeoutMs) {
+  function waitForTabComplete(tabId, timeoutMs, targetUrl) {
     var started = Date.now(), armed = false, done = false, timer = null, finish;
+    // Chrome resolves tabs.update before the new load begins, while the tab still
+    // reports the PREVIOUS page as complete. So "complete" only counts once this
+    // navigation was seen loading, or when the tab is complete at the target URL
+    // with nothing pending (which also covers same document navigations).
+    var sawLoading = false;
+    function sameUrl(a, b) {
+      try { return new URL(a).href === new URL(b).href; } catch (e) { return a === b; }
+    }
+    function landedOn(tab) {
+      return !!tab && tab.status === "complete" && !tab.pendingUrl && !!targetUrl && sameUrl(tab.url, targetUrl);
+    }
     var promise = new Promise(function (resolve) { finish = resolve; });
     function settle(result) {
       if (done) return;
@@ -369,8 +380,11 @@ self.HolmesAutomation = (function () {
       result.waitedMs = Date.now() - started;
       finish(result);
     }
-    function onUpdated(id, info) {
-      if (id === tabId && armed && info && info.status === "complete") settle({ complete: true });
+    function onUpdated(id, info, tab) {
+      if (id !== tabId || !info) return;
+      if (info.status === "loading") { sawLoading = true; return; }
+      if (!armed) return;
+      if ((info.status === "complete" && sawLoading) || landedOn(tab)) settle({ complete: true });
     }
     function onRemoved(id) {
       if (id === tabId) settle({ complete: false, closed: true });
@@ -384,7 +398,7 @@ self.HolmesAutomation = (function () {
         armed = true;
         try {
           var tab = await chrome.tabs.get(tabId);
-          if (tab && tab.status === "complete") settle({ complete: true });
+          if (tab && tab.status === "complete" && (sawLoading || landedOn(tab))) settle({ complete: true });
         } catch (e) {
           settle({ complete: false, closed: true });
         }
@@ -465,7 +479,7 @@ self.HolmesAutomation = (function () {
           if (navTabId < 0) return { ok: false, error: "no target tab" };
           // Resolving right after tabs.update let the next command (click, extract)
           // run against the page being replaced. Wait for the load, bounded.
-          var loading = waitForTabComplete(navTabId, NAVIGATE_TIMEOUT_MS);
+          var loading = waitForTabComplete(navTabId, NAVIGATE_TIMEOUT_MS, String(params.url));
           var navTab;
           try {
             navTab = await chrome.tabs.update(navTabId, { url: String(params.url) });
