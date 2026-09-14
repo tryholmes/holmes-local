@@ -493,7 +493,7 @@ enum EmailGrounding {
             // "60 minutes" restates "an hour"; common durations are not new facts.
             let following = text[number.range.upperBound...].prefix(9).lowercased()
             if let value = Int(digits), [15, 30, 45, 60, 90, 120].contains(value),
-               following.hasPrefix(" min") || following.hasPrefix("min") || following.hasPrefix(" hour"),
+               following.range(of: #"^[\s-]?(min|hour|hr)"#, options: .regularExpression) != nil,
                sourceLower.contains("hour") || sourceLower.contains("minute") { continue }
             if let value = Int(digits), value == year || value == year + 1 { continue }
             issues.append(number.text)
@@ -693,7 +693,9 @@ enum EmailPredictionParser {
     /// reminder keeps that promise from being forgotten.
     static func defers(_ body: String) -> Bool {
         EmailBodySanitizer.matches(body.replacingOccurrences(of: "’", with: "'"),
-            #"\b(i'll|i will|let me) (check|confirm|get back|follow up|find (a|some) (time|slot))\b|\bget back to you\b"#)
+            // Only a promise to come back with a time the recipient waits for,
+            // not "I'll review them" or "follow up if needed".
+            #"\b(i'll|i will|let me) (check|look at) my (calendar|schedule) (to|and) (find|propose|suggest|pick|send)\b|\b(i'll|i will) (propose|suggest|send) (a|some) (time|slot|times)\b"#)
     }
 
     static let topicStopwords: Set<String> = [
@@ -705,15 +707,18 @@ enum EmailPredictionParser {
 
     static func topicKeywords(_ text: String) -> [String] {
         var seen = Set<String>()
-        return EmailGrounding.matchesOf(#"\p{L}{5,}"#, in: text).map { $0.text.lowercased() }
-            .filter { !topicStopwords.contains($0) && seen.insert($0).inserted }
+        let calendarWords = Set(["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "january",
+                                 "february", "march", "april", "august", "september", "october", "november", "december", "morning", "afternoon", "evening"])
+        return EmailGrounding.matchesOf(#"\p{L}{6,}"#, in: text).map { $0.text.lowercased() }
+            .filter { !topicStopwords.contains($0) && !calendarWords.contains($0) && seen.insert($0).inserted }
     }
 
     /// A reply must address what the newest thread message is about.
     static func topicIssues(_ body: String, context: EmailPredictionContext) -> [String] {
         guard let latest = context.compose.thread.first else { return [] }
         let keywords = topicKeywords(EmailPredictionPrompt.stripQuoted(latest.text))
-        guard keywords.count >= 2 else { return [] }
+        // Short scheduling notes have no clear topic to demand.
+        guard keywords.count >= 3 else { return [] }
         let lower = body.lowercased()
         guard !keywords.contains(where: { lower.contains(String($0.prefix(5))) }) else { return [] }
         return ["it does not address the message it replies to; mention what it is about, such as " + keywords.prefix(4).joined(separator: ", ")]

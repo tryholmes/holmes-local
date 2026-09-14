@@ -192,6 +192,13 @@ struct EmailPredictionTests {
         // Eval gap: deferring email gets a follow up reminder deterministically.
         expect(EmailPredictionParser.validatedActions(["follow_up_days": 0], body: "Hi Dana,\n\nI'd like to discuss Q4 planning. I'll check my calendar to find a slot that works.", context: context(compose())) == [.followUp(days: 3)],
                "An email that defers (I'll check my calendar) gets a follow up candidate")
+        for promise in ["I'll review them and get back to you by tomorrow.", "I'll check my calendar to confirm availability for any next steps."] {
+            expect(!EmailPredictionParser.defers("Hi,\n\nThanks for the slides. " + promise), "A self contained promise is not a deferral that needs a reminder")
+        }
+        expect(EmailPredictionParser.topicIssues("Hi Dana,\n\nI'll check my calendar and confirm.", context: reply).isEmpty,
+               "A short scheduling thread has no topic to demand beyond the day and time")
+        expect(EmailGrounding.ungrounded("Hi Nora,\n\nA 60-minute review on Thursday at 2pm works.", context: roadmap).isEmpty,
+               "A 60-minute session restates an hour")
         // Eval gap: numbers and times from the notes must survive.
         let maintenance = context(compose(subject: "Maintenance", notes: "server maintenance saturday 11pm, about 2 hours downtime"))
         if case .failure(let rejection) = EmailPredictionParser.parse(answer(["body": "Hi,\n\nThere is scheduled server maintenance on Saturday."]), context: maintenance) {
