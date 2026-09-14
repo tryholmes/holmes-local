@@ -617,10 +617,106 @@ function noteCommandActivity() {
   }, CONFIG.keepaliveMs);
 }
 
+// MARK: - Idempotent execution
+//
+// A command id can reach this worker more than once: the bridge requeues a command
+// whose poll response was lost, and an evicted worker restarts mid-command. Running
+// fill_field or click twice is exactly the bug, so every command is recorded in a
+// ledger keyed by app launch session plus id, kept in chrome.storage.session (which
+// survives worker restarts but not a browser restart) with an in-memory fallback.
+//   • done      → the stored result is posted again; nothing re-runs.
+//   • running   → in this worker life: the live run will post. From a previous life:
+//                 report "interrupted" rather than guess whether it took effect.
+const LEDGER_KEY = "holmesCommandLedger";
+const LEDGER_LIMIT = 100;
+const LEDGER_TTL_MS = 10 * 60 * 1000;
+const LEDGER_REPLAY_BYTES = 256 * 1024;
+const ledgerMemory = new Map();
+const runningCommandKeys = new Set();
+let ledgerWrites = Promise.resolve();
+
+function ledgerKey(cmd) {
+  return (cmd && typeof cmd.session === "string" ? cmd.session : "nosession") + ":" + cmd.id;
+}
+
+function sessionArea() {
+  try { return chrome.storage && chrome.storage.session ? chrome.storage.session : null; } catch (_) { return null; }
+}
+
+function pruneLedger(ledger) {
+  const now = Date.now();
+  const keys = Object.keys(ledger).filter(key => ledger[key] && now - (ledger[key].at || 0) < LEDGER_TTL_MS);
+  keys.sort((a, b) => (ledger[b].at || 0) - (ledger[a].at || 0));
+  const kept = {};
+  for (const key of keys.slice(0, LEDGER_LIMIT)) kept[key] = ledger[key];
+  return kept;
+}
+
+async function ledgerEntry(key) {
+  if (ledgerMemory.has(key)) return ledgerMemory.get(key);
+  const area = sessionArea();
+  if (!area) return null;
+  try {
+    await ledgerWrites;
+    const stored = await area.get(LEDGER_KEY);
+    const ledger = (stored && stored[LEDGER_KEY]) || {};
+    return ledger[key] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Serialized so concurrent commands never overwrite each other's entries.
+function recordLedger(key, entry) {
+  ledgerMemory.set(key, entry);
+  if (ledgerMemory.size > LEDGER_LIMIT) ledgerMemory.delete(ledgerMemory.keys().next().value);
+  const area = sessionArea();
+  if (!area) return Promise.resolve();
+  ledgerWrites = ledgerWrites.then(async () => {
+    try {
+      const stored = await area.get(LEDGER_KEY);
+      const ledger = (stored && stored[LEDGER_KEY]) || {};
+      ledger[key] = entry;
+      await area.set({ [LEDGER_KEY]: pruneLedger(ledger) });
+    } catch (_) { /* storage full or unavailable: the memory ledger still dedupes */ }
+  });
+  return ledgerWrites;
+}
+
+// Keeps a result for replay when it is small enough; a large one (a screenshot)
+// is replaced by an honest note rather than replayed as a success without data.
+function replayableOutcome(outcome) {
+  let size = 0;
+  try { size = JSON.stringify(outcome).length; } catch (_) { size = Infinity; }
+  if (size <= LEDGER_REPLAY_BYTES) return outcome;
+  return { ok: false, replayTruncated: true,
+    error: "the earlier result (" + size + " bytes) was too large to keep for replay; request it again if it is still needed" };
+}
+
 async function runOneCommand(cmd, token) {
   const id = cmd && cmd.id !== undefined ? cmd.id : null;
   const action = cmd && cmd.action;
   const session = cmd && typeof cmd.session === "string" ? cmd.session : undefined;
+  const key = id !== null ? ledgerKey(cmd) : null;
+
+  if (key !== null) {
+    if (runningCommandKeys.has(key)) return; // already running here; that run posts the result
+    const prior = await ledgerEntry(key);
+    if (prior && prior.state === "done") {
+      await postResult(Object.assign({ id, action, session, at: Date.now(), replayed: true }, prior.result), token);
+      return;
+    }
+    if (prior && prior.state === "running") {
+      const interrupted = { ok: false, interrupted: true,
+        error: "interrupted: the browser extension restarted while running this command, so it was not run again. Check the page before retrying." };
+      await recordLedger(key, { state: "done", action, at: Date.now(), result: interrupted });
+      await postResult(Object.assign({ id, action, session, at: Date.now() }, interrupted), token);
+      return;
+    }
+    runningCommandKeys.add(key);
+    // Recorded before anything runs, so a restart mid-command is detectable.
+    await recordLedger(key, { state: "running", action, at: Date.now() });
+  }
 
   let outcome;
   runningCommandCount++;
@@ -634,6 +730,10 @@ async function runOneCommand(cmd, token) {
     noteCommandActivity();
   }
 
+  if (key !== null) {
+    await recordLedger(key, { state: "done", action, at: Date.now(), result: replayableOutcome(outcome) });
+    runningCommandKeys.delete(key);
+  }
   // The session echo lets the app ignore a result meant for a previous launch.
   const body = Object.assign({ id, action, session, at: Date.now() }, outcome);
   await postResult(body, token);

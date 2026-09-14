@@ -30,7 +30,9 @@ function loadWorker(options = {}) {
   const tabs = new Map((options.tabs || [{ id: 17, windowId: 23, url: 'https://mail.example.test/', status: 'complete', active: true }])
     .map(tab => [tab.id, Object.assign({ status: 'complete', active: false }, tab)]));
   const log = { fetches: [], injections: [], messages: [], updates: [], platformInfo: 0 };
-  const storage = { local: new Map([['holmesToken', 'synthetic-token'], ['holmesBrowserInstance', 'test-profile']]), session: new Map() };
+  // Passing options.storage shares chrome.storage between two workers, which is how
+  // a test simulates the same browser after its MV3 worker was evicted and restarted.
+  const storage = options.storage || { local: new Map([['holmesToken', 'synthetic-token'], ['holmesBrowserInstance', 'test-profile']]), session: new Map() };
   const area = map => ({
     async get(keys) {
       const list = keys == null ? [...map.keys()] : Array.isArray(keys) ? keys : typeof keys === 'string' ? [keys] : Object.keys(keys);
@@ -392,12 +394,71 @@ async function resultDeliveryTests() {
   worker.dispose();
 }
 
+async function idempotencyTests() {
+  const fill = (id, session = 's1') => ({ id, action: 'fillField', params: { selector: '#to', value: 'boss@example.test' }, session });
+  let executions = 0;
+  const executeScript = details => {
+    if (!details.func) return [{}];
+    executions++;
+    return [{ result: { ok: true, filled: { tag: 'input', id: 'to' }, length: 17 } }];
+  };
+  const okResults = async () => ({ status: 200, body: { ok: true } });
+
+  // The same command id delivered twice (a requeue after a lost poll response)
+  // runs once; the second delivery gets the stored result again.
+  let feed = commandFeed([fill(21), fill(21)]);
+  let worker = loadWorker({ executeScript, fetch: async url => url.endsWith('/commands') ? feed() : okResults() });
+  await until('two results for id 21', () => resultPosts(worker, 21).length >= 2, 2000);
+  let posts = resultPosts(worker, 21);
+  check(executions === 1, `A redelivered command id executes once (${executions} executions)`);
+  check(posts[1].body.ok === true && posts[1].body.filled.id === 'to' && posts[1].body.session === 's1',
+    'The redelivery re-posts the stored result instead of re-running fill_field');
+  worker.dispose();
+
+  // Across a worker restart (same chrome.storage.session) the result is replayed.
+  const shared = { local: new Map([['holmesToken', 'synthetic-token'], ['holmesBrowserInstance', 'test-profile']]), session: new Map() };
+  executions = 0;
+  feed = commandFeed([fill(22)]);
+  worker = loadWorker({ storage: shared, executeScript, fetch: async url => url.endsWith('/commands') ? feed() : okResults() });
+  await until('first life result', () => resultPosts(worker, 22).length >= 1, 2000);
+  await sleep(50);
+  worker.dispose();
+  feed = commandFeed([fill(22), fill(22, 's2')]);
+  worker = loadWorker({ storage: shared, executeScript, fetch: async url => url.endsWith('/commands') ? feed() : okResults() });
+  await until('second life results', () => resultPosts(worker, 22).length >= 2, 2000);
+  posts = resultPosts(worker, 22);
+  check(executions === 2 && posts[0].body.ok === true,
+    'After a worker restart the same id and session is replayed from session storage, not re-run');
+  check(posts[1].body.session === 's2', 'The same numeric id from a new app launch is a different command and runs');
+  worker.dispose();
+
+  // A command the previous worker started but never finished is not re-run blindly.
+  executions = 0;
+  const interrupted = { local: new Map(shared.local), session: new Map() };
+  interrupted.session.set('holmesCommandLedger', { 's1:23': { state: 'running', action: 'fillField', at: Date.now() } });
+  feed = commandFeed([fill(23)]);
+  worker = loadWorker({ storage: interrupted, executeScript, fetch: async url => url.endsWith('/commands') ? feed() : okResults() });
+  await until('interrupted result', () => resultPosts(worker, 23).length >= 1, 2000);
+  posts = resultPosts(worker, 23);
+  check(executions === 0 && posts[0].body.ok === false && /interrupted/i.test(posts[0].body.error),
+    'A command interrupted by a worker restart reports that instead of running twice');
+  worker.dispose();
+
+  // Without chrome.storage.session (older Chrome) the in-memory ledger still dedupes.
+  executions = 0;
+  feed = commandFeed([fill(24), fill(24)]);
+  worker = loadWorker({ noSessionStorage: true, executeScript, fetch: async url => url.endsWith('/commands') ? feed() : okResults() });
+  await until('memory ledger results', () => resultPosts(worker, 24).length >= 2, 2000);
+  check(executions === 1, 'Without session storage a redelivered id still executes once');
+  worker.dispose();
+}
+
 module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 
 if (require.main === module) {
   (async () => {
     const only = process.argv[2];
-    const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests };
+    const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();
