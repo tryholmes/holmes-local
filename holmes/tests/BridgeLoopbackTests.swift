@@ -155,6 +155,39 @@ enum BridgeLoopbackTests {
         _ = await LoopbackHTTP.background { postResult(port, ["id": rescued.first?["id"] as? Int ?? -1, "ok": true]) }
         _ = await afterHangup.value
     }
+
+    /// Body limits: /context stays small, /command-result takes large results, and
+    /// an oversize body always gets a readable 413 instead of a reset connection.
+    @MainActor static func runBodyLimits(check: (Bool, String) -> Void) async {
+        let (bridge, port) = makeBridge()
+        defer { bridge.stop() }
+        bridge.commandResultTimeout = 10
+
+        let big = Task { @MainActor in await bridge.enqueueBrowserCommand("screenshotTab", ["_browserInstanceID": "inst-big"]) }
+        let bigID = await LoopbackHTTP.background { poll(port, instance: "inst-big").1.first?["id"] as? Int ?? -1 }
+        let twoMegabytes = String(repeating: "A", count: 2 * 1024 * 1024)
+        let accepted = await LoopbackHTTP.background { postResult(port, ["id": bigID, "ok": true, "dataUrl": twoMegabytes]) }
+        check(accepted?.status == 200, "A 2 MB command result is accepted (the old 512 KB cap returned 413)")
+        check(((await big.value)["dataUrl"] as? String)?.count == twoMegabytes.count, "The large result reaches the producer intact")
+
+        let oversize = Data(repeating: 0x41, count: BridgeProtocol.maxCommandResultBytes + 1024)
+        let rejected = await LoopbackHTTP.background {
+            LoopbackHTTP.request(port: port, method: "POST", path: "/command-result",
+                                 headers: ["X-Holmes-Token": token, "Content-Type": "application/json"], body: oversize, timeout: 20)
+        }
+        check(rejected?.status == 413, "A result over the 16 MB cap gets a readable 413 after the body is drained")
+        check((rejected?.json as? [String: Any])?["limit"] as? Int == BridgeProtocol.maxCommandResultBytes,
+              "The 413 names the limit so the extension can explain the size")
+
+        let bigContext = Data(repeating: 0x41, count: BridgeProtocol.maxBodyBytes + 1)
+        let contextRejected = await LoopbackHTTP.background {
+            LoopbackHTTP.request(port: port, method: "POST", path: "/context",
+                                 headers: ["X-Holmes-Token": token, "Content-Type": "application/json"], body: bigContext)
+        }
+        check(contextRejected?.status == 413, "Page context keeps its 512 KB cap")
+        let after = await LoopbackHTTP.background { LoopbackHTTP.request(port: port, method: "GET", path: "/health") }
+        check(after?.status == 200, "The server keeps serving after oversize requests")
+    }
 }
 
 extension LoopbackHTTP {

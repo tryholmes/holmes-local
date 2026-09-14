@@ -53,8 +53,16 @@ enum BridgeProtocol {
     static let tokenHeader = "X-Holmes-Token"
     /// Lowercased form used for header lookup (HTTP headers are case-insensitive).
     static let tokenHeaderKey = "x-holmes-token"
-    /// Hard ceiling on a single payload. A full DOM extract is ~50-200 KB.
+    /// Hard ceiling on a single page context payload. A full DOM extract is ~50-200 KB.
     static let maxBodyBytes = 512 * 1024
+    /// Ceiling for POST /command-result. Results legitimately carry screenshots and
+    /// large extracts, which the 512 KB context cap rejected and the extension then
+    /// reported as a timeout. Still bounded so a runaway result cannot exhaust memory.
+    static let maxCommandResultBytes = 16 * 1024 * 1024
+    /// An oversize body is read and discarded up to this many bytes before the 413
+    /// goes out, so the client sees the status instead of a reset connection.
+    /// Anything larger is refused without draining.
+    static let maxDrainBytes = 64 * 1024 * 1024
     /// Per-recv/send socket timeout. Long enough for a 512 KB body over loopback,
     /// short enough that a silent client releases its slot promptly.
     static let socketTimeoutSeconds = 5
@@ -1601,10 +1609,27 @@ private final class BridgeServer: @unchecked Sendable {
             if !key.isEmpty { headers[key] = value }
         }
 
+        // Command results may be large (screenshots, extracts); page context may not.
+        let bareRequestPath = path.components(separatedBy: "?").first ?? path
+        let limit = (method == "POST" && bareRequestPath == BridgeProtocol.commandResultPath)
+            ? BridgeProtocol.maxCommandResultBytes : maxBodyBytes
         let contentLength = Int(headers["content-length"] ?? "") ?? 0
-        guard contentLength >= 0, contentLength <= maxBodyBytes else {
+        guard contentLength >= 0 else { return nil }
+        guard contentLength <= limit else {
+            // Drain first (bounded by size and the request deadline). Replying 413
+            // and closing with unread bytes makes the kernel reset the connection,
+            // which the extension saw as a network error and surfaced as a timeout.
+            let alreadyRead = buffer.count - buffer.distance(from: buffer.startIndex, to: end.upperBound)
+            var remaining = contentLength - alreadyRead
+            if contentLength <= BridgeProtocol.maxDrainBytes {
+                while remaining > 0, Date() < deadline {
+                    let n = recv(fd, &chunk, min(chunk.count, remaining), 0)
+                    if n <= 0 { break }
+                    remaining -= n
+                }
+            }
             writeJSON(fd, status: "413 Payload Too Large", origin: headers["origin"],
-                      object: ["error": "Body exceeds \(maxBodyBytes) bytes"])
+                      object: ["error": "Body exceeds \(limit) bytes", "limit": limit, "received": contentLength])
             return nil
         }
 
@@ -1612,16 +1637,12 @@ private final class BridgeServer: @unchecked Sendable {
         // before that point yields a truncated payload, which is not a request:
         // drop the connection rather than handing half a DOM to the parser.
         var body = Data(buffer[end.upperBound...])
+        body.reserveCapacity(contentLength)
         while body.count < contentLength {
             guard Date() < deadline else { return nil }
             let n = recv(fd, &chunk, chunk.count, 0)
             if n <= 0 { return nil }
             body.append(contentsOf: chunk[0..<n])
-            if body.count > maxBodyBytes {
-                writeJSON(fd, status: "413 Payload Too Large", origin: headers["origin"],
-                          object: ["error": "Body exceeds \(maxBodyBytes) bytes"])
-                return nil
-            }
         }
         if contentLength > 0 { body = body.prefix(contentLength) }
 
