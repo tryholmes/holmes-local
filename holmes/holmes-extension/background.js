@@ -57,7 +57,9 @@ const CONFIG = Object.assign({
   // Result POST retry schedule: one attempt plus one per delay.
   resultRetryDelaysMs: [250, 1000, 3000],
   // The bridge accepts 16 MB of result; stay a little under it.
-  maxResultBytes: 16 * 1024 * 1024 - 64 * 1024
+  maxResultBytes: 16 * 1024 * 1024 - 64 * 1024,
+  // Commands for different tabs run concurrently, up to this many at once.
+  maxConcurrentCommands: 4
 }, CONFIG_OVERRIDES);
 // Every request to the bridge is bounded. A stalled app must never park a worker.
 CONFIG.fetchTimeoutMs = Object.assign({ heartbeat: 5000, relay: 5000, commands: 28000, result: 15000 },
@@ -590,9 +592,10 @@ async function pollCommands() {
       ? data
       : (data && Array.isArray(data.commands) ? data.commands : []);
     if (commands.length) noteCommandActivity();
-    for (const cmd of commands) {
-      await runOneCommand(cmd, token);
-    }
+    // Dispatch without waiting: each tab has its own serial lane and an overall cap
+    // bounds concurrency, so a long waitForSelector never stalls other tabs or the
+    // next poll.
+    for (const cmd of commands) scheduleCommand(cmd, token);
     return longPoll ? "longpoll" : "idle";
   } catch (e) {
     return "error";
@@ -615,6 +618,71 @@ function noteCommandActivity() {
     }
     try { Promise.resolve(chrome.runtime.getPlatformInfo()).catch(() => {}); } catch (_) { /* ignore */ }
   }, CONFIG.keepaliveMs);
+}
+
+// MARK: - Per tab scheduling
+//
+// Commands used to run strictly one after another, so one waitForSelector (up to
+// 15s) delayed every other command past the app's result timeout. Now each target
+// tab has a serial lane (two commands for the same page still run in order) and
+// lanes run in parallel up to maxConcurrentCommands.
+const commandLanes = new Map();
+let busyCommandSlots = 0;
+const commandSlotWaiters = [];
+
+function acquireCommandSlot() {
+  if (busyCommandSlots < CONFIG.maxConcurrentCommands) {
+    busyCommandSlots++;
+    return { immediate: true, ready: Promise.resolve() };
+  }
+  return { immediate: false, ready: new Promise(resolve => commandSlotWaiters.push(resolve)) };
+}
+
+function releaseCommandSlot() {
+  const next = commandSlotWaiters.shift();
+  if (next) next(); else busyCommandSlots--;
+}
+
+function commandLane(cmd) {
+  const params = (cmd && cmd.params) || {};
+  if (typeof params.tabId === "number") return Promise.resolve("tab:" + params.tabId);
+  if (cmd && cmd.action === "fill_email_draft") {
+    try {
+      const identity = JSON.parse(params.expected && params.expected.identity);
+      if (Array.isArray(identity) && Number.isInteger(identity[2])) return Promise.resolve("tab:" + identity[2]);
+    } catch (_) { /* fall through to the active tab */ }
+  }
+  if (cmd && (cmd.action === "openTab" || cmd.action === "listTabs")) return Promise.resolve("browser");
+  return activeTabId().then(id => (id >= 0 ? "tab:" + id : "browser"));
+}
+
+// Tells the app a delivered command has started running after waiting its turn,
+// so time spent queued in the browser does not count against its result timeout.
+function postStarted(cmd, token) {
+  const body = { id: cmd.id, action: cmd.action, session: cmd.session, _holmesStarted: true, at: Date.now() };
+  postResult(body, token);
+}
+
+function scheduleCommand(cmd, token) {
+  return (async () => {
+    const lane = await commandLane(cmd);
+    const previous = commandLanes.get(lane);
+    let release;
+    const turn = new Promise(resolve => { release = resolve; });
+    const tail = (previous || Promise.resolve()).then(() => turn);
+    commandLanes.set(lane, tail);
+    if (previous) await previous;
+    const slot = acquireCommandSlot();
+    await slot.ready;
+    try {
+      if ((previous || !slot.immediate) && cmd && cmd.id !== undefined) postStarted(cmd, token);
+      await runOneCommand(cmd, token);
+    } finally {
+      releaseCommandSlot();
+      release();
+      if (commandLanes.get(lane) === tail) commandLanes.delete(lane);
+    }
+  })().catch(() => { /* runOneCommand reports its own failures */ });
 }
 
 // MARK: - Idempotent execution

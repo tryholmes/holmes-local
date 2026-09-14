@@ -453,12 +453,76 @@ async function idempotencyTests() {
   worker.dispose();
 }
 
+async function concurrencyTests() {
+  const spans = [];
+  const delays = { '#slow': 300, '#first': 200, '#second': 10, '#fast': 10, '.capped': 100 };
+  const executeScript = async details => {
+    if (!details.func) return [{}];
+    const params = details.args[1] || {};
+    const span = { tab: details.target.tabId, selector: params.selector, start: Date.now() };
+    spans.push(span);
+    await sleep(delays[params.selector] || 10);
+    span.end = Date.now();
+    return [{ result: { ok: true, count: 0, elements: [], selector: params.selector } }];
+  };
+  const tabs = [1, 2, 3, 4, 5, 6].map(id => ({ id, windowId: 23, url: 'https://tab' + id + '.test/', active: id === 1 }));
+  function batchFeed(batch) {
+    let served = false;
+    return async () => {
+      await sleep(15);
+      if (served) return { status: 200, body: [], headers: { 'X-Holmes-Long-Poll': '1' } };
+      served = true;
+      return { status: 200, body: batch, headers: { 'X-Holmes-Long-Poll': '1' } };
+    };
+  }
+  const extract = (id, tabId, selector) => ({ id, action: 'extract', params: { tabId, selector }, session: 's1' });
+
+  // A long command on one tab does not stall a command for another tab.
+  let feed = batchFeed([extract(31, 1, '#slow'), extract(32, 2, '#fast')]);
+  let worker = loadWorker({ tabs, executeScript, fetch: async url => url.endsWith('/commands') ? feed() : { status: 200, body: { ok: true } } });
+  await until('both results', () => resultPosts(worker, 31).some(p => !p.body._holmesStarted) && resultPosts(worker, 32).length >= 1, 3000);
+  const slowDone = worker.log.fetches.findIndex(f => f.url.endsWith('/command-result') && JSON.parse(f.init.body).id === 31 && !JSON.parse(f.init.body)._holmesStarted);
+  const fastDone = worker.log.fetches.findIndex(f => f.url.endsWith('/command-result') && JSON.parse(f.init.body).id === 32);
+  check(fastDone < slowDone, 'A fast command on another tab finishes while a slow one is still running');
+  worker.dispose();
+
+  // Commands for the same tab still run strictly in order.
+  spans.length = 0;
+  feed = batchFeed([extract(33, 3, '#first'), extract(34, 3, '#second')]);
+  worker = loadWorker({ tabs, executeScript, fetch: async url => url.endsWith('/commands') ? feed() : { status: 200, body: { ok: true } } });
+  await until('same tab results', () => resultPosts(worker, 34).some(p => !p.body._holmesStarted), 3000);
+  const first = spans.find(s => s.selector === '#first'), second = spans.find(s => s.selector === '#second');
+  check(second.start >= first.end, 'Commands for the same tab run one at a time, in order');
+  check(resultPosts(worker, 34).some(p => p.body._holmesStarted === true),
+    'A command that waited behind another tells the app when it actually starts');
+  worker.dispose();
+
+  // An overall cap bounds how many run at once.
+  spans.length = 0;
+  feed = batchFeed([1, 2, 3, 4, 5, 6].map(tab => extract(40 + tab, tab, '.capped')));
+  worker = loadWorker({ tabs, config: { maxConcurrentCommands: 2 }, executeScript,
+    fetch: async url => url.endsWith('/commands') ? feed() : { status: 200, body: { ok: true } } });
+  await until('capped results', () => [41, 42, 43, 44, 45, 46].every(id => resultPosts(worker, id).some(p => !p.body._holmesStarted)), 4000);
+  // True peak concurrency: sweep start and end instants (ends first on ties).
+  // Counting every span that overlaps a given span overcounts staggered runs.
+  const instants = spans.flatMap(span => [{ t: span.start, d: 1 }, { t: span.end, d: -1 }])
+    .sort((a, b) => a.t - b.t || a.d - b.d);
+  let running = 0, peak = 0;
+  for (const instant of instants) { running += instant.d; peak = Math.max(peak, running); }
+  check(peak === 2, `No more than the configured number of commands run at once (peak ${peak})`);
+  worker.dispose();
+}
+
 module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 
 if (require.main === module) {
   (async () => {
+    // Worker timers are unref'd; keep node alive until every suite has finished so
+    // a test awaiting only those timers can never exit early and look like a pass.
+    setInterval(() => {}, 1000);
     const only = process.argv[2];
-    const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests };
+    const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests,
+      concurrencyTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();
