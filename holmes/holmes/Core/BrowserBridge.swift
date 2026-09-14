@@ -1660,9 +1660,12 @@ private final class BridgeServer: @unchecked Sendable {
             // client queue. Blocking the accept loop instead means a flood of
             // stalled connections queues in the listen backlog and dies there.
             let slots = clientSlots
-            guard slots.wait(timeout: .now() + BridgeProtocol.slotWaitSeconds) == .success else {
-                // Every handler is busy (stalled clients). Answer this one with a
-                // quick 503 instead of parking the accept loop indefinitely.
+            // Non-blocking: waiting here (even 2s) ran connections through one at a
+            // time, so a backlog pushed later requests past the extension's fetch
+            // timeout before they ever saw a 503.
+            guard slots.wait(timeout: .now()) == .success else {
+                // Every handler is busy (stalled clients). Answer this one with an
+                // immediate 503 and keep accepting.
                 Self.refuseBusy(clientFD)
                 close(clientFD)
                 continue

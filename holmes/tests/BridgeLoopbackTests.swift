@@ -233,11 +233,21 @@ enum BridgeLoopbackTests {
         // Stalled clients filling every slot get a quick 503 instead of a hang.
         let idle = (0..<BridgeProtocol.maxConcurrentClients).map { _ in LoopbackHTTP.openIdle(port: port) }
         try? await Task.sleep(nanoseconds: 300_000_000)
-        let busyStart = Date()
-        let busy = await LoopbackHTTP.background { LoopbackHTTP.request(port: port, method: "GET", path: "/health", timeout: 8) }
-        let busySeconds = Date().timeIntervalSince(busyStart)
-        check(busy?.status == 503 && busySeconds < 4,
-              "With every handler stalled the accept loop answers 503 in \(String(format: "%.1f", busySeconds))s")
+        // A backlog of requests arriving together must all be refused at once, not
+        // one slot wait after another (which pushed later ones past the extension's
+        // 5s fetch timeout).
+        let backlog = (0..<5).map { _ in
+            Task.detached { () -> (Int, TimeInterval) in
+                let start = Date()
+                let response = LoopbackHTTP.request(port: port, method: "GET", path: "/health", timeout: 8)
+                return (response?.status ?? -1, Date().timeIntervalSince(start))
+            }
+        }
+        var backlogResults: [(Int, TimeInterval)] = []
+        for request in backlog { backlogResults.append(await request.value) }
+        let slowest = backlogResults.map(\.1).max() ?? 99
+        check(backlogResults.allSatisfy { $0.0 == 503 } && slowest < 1.0,
+              "With every handler stalled a backlog of 5 requests all get 503 within \(String(format: "%.2f", slowest))s")
         idle.forEach { close($0) }
         try? await Task.sleep(nanoseconds: 300_000_000)
         let healthy = await LoopbackHTTP.background { LoopbackHTTP.request(port: port, method: "GET", path: "/health") }
