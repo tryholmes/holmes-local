@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AA000001000000000000114 /* ActionRunEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000114 /* ActionRunEvidence.swift */; };
+		B7A500010000000000000005 /* TextEntrySupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000005 /* TextEntrySupport.swift */; };
 		B7A500010000000000000004 /* AutonomousRunTally.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000004 /* AutonomousRunTally.swift */; };
 		B7A500010000000000000003 /* AXElementSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000003 /* AXElementSearch.swift */; };
 		B7A500010000000000000002 /* ApprovalQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000002 /* ApprovalQueue.swift */; };
@@ -125,6 +126,7 @@
 
 /* Begin PBXFileReference section */
 		AA000002000000000000114 /* ActionRunEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionRunEvidence.swift; sourceTree = "<group>"; };
+		B7A500020000000000000005 /* TextEntrySupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextEntrySupport.swift; sourceTree = "<group>"; };
 		B7A500020000000000000004 /* AutonomousRunTally.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutonomousRunTally.swift; sourceTree = "<group>"; };
 		B7A500020000000000000003 /* AXElementSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AXElementSearch.swift; sourceTree = "<group>"; };
 		B7A500020000000000000002 /* ApprovalQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalQueue.swift; sourceTree = "<group>"; };
@@ -379,6 +381,7 @@
 				AA000002000000000000112 /* EmailDrafting.swift */,
 				AA000002000000000000113 /* EmailDraftCoordinator.swift */,
 				AA000002000000000000114 /* ActionRunEvidence.swift */,
+				B7A500020000000000000005 /* TextEntrySupport.swift */,
 				B7A500020000000000000004 /* AutonomousRunTally.swift */,
 				B7A500020000000000000003 /* AXElementSearch.swift */,
 				B7A500020000000000000002 /* ApprovalQueue.swift */,
@@ -617,6 +620,7 @@
 				AA000001000000000000112 /* EmailDrafting.swift in Sources */,
 				AA000001000000000000113 /* EmailDraftCoordinator.swift in Sources */,
 				AA000001000000000000114 /* ActionRunEvidence.swift in Sources */,
+				B7A500010000000000000005 /* TextEntrySupport.swift in Sources */,
 				B7A500010000000000000004 /* AutonomousRunTally.swift in Sources */,
 				B7A500010000000000000003 /* AXElementSearch.swift in Sources */,
 				B7A500010000000000000002 /* ApprovalQueue.swift in Sources */,

@@ -279,14 +279,19 @@ final class ConfirmationBus {
         action.isExecuting = true
         pendingAction = action
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        // On the main actor: the text entry itself is nonisolated async (off
+        // main), and any AppleScript it needs runs back on the main actor.
+        Task { @MainActor in
             var success = false
+            var verified = true
             switch action.actionType {
             case .typeMessage:
-                success = ActionExecutor.shared.sendMessageInApp(action.appName, message: action.preview)
+                let entry = await ActionExecutor.shared.sendMessageInApp(action.appName, message: action.preview)
+                success = entry.succeeded
+                verified = entry.isVerified
             case .openURL:
                 if let url = URL(string: action.preview) {
-                    DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+                    NSWorkspace.shared.open(url)
                     success = true
                 }
             case .runScript:
@@ -295,21 +300,21 @@ final class ConfirmationBus {
                 // Handled via decisionHandler above; unreachable here.
                 success = false
             case .openMeeting:
-                DispatchQueue.main.async {
-                    if let meeting = action.meeting {
-                        MeetingJoinEngine.shared.joinMeeting(meeting)
-                    } else if let url = action.meetingURL {
-                        NSWorkspace.shared.open(url)
-                    }
+                if let meeting = action.meeting {
+                    MeetingJoinEngine.shared.joinMeeting(meeting)
+                } else if let url = action.meetingURL {
+                    NSWorkspace.shared.open(url)
                 }
                 success = true
             }
 
-            DispatchQueue.main.async {
+            do {
                 guard ConfirmationBus.shared.pendingAction?.id == action.id else { return }
                 let completed: String
                 switch action.actionType {
-                case .typeMessage: completed = "✓ Inserted in \(action.appName)"
+                case .typeMessage:
+                    completed = verified ? "✓ Inserted in \(action.appName)"
+                                         : "Sent to \(action.appName), but couldn't confirm it landed. Check the field."
                 case .openMeeting: completed = "✓ Opening meeting"
                 case .openURL: completed = "✓ Opened link"
                 default: completed = "✓ Completed"
@@ -617,18 +622,19 @@ struct ConfirmationView: View {
     private func insertDraft(_ draft: ProactiveDraft, appName: String) {
         draftIsExecuting = true
         let text = draftBody
-        DispatchQueue.global(qos: .userInitiated).async {
-            let ok = ActionExecutor.shared.stageTextInApp(appName, text: text)
-            DispatchQueue.main.async {
-                // The card may have moved on (dismissed, next draft shown) while
-                // staging ran — never write result state onto a different card.
-                guard bus.pendingDraft?.id == draft.id else { return }
-                draftIsExecuting = false
-                if ok {
-                    finishDraft(draft, result: "✓ Staged in \(appName) — you press Send")
-                } else {
-                    draftResult = "Failed to insert into \(appName)"
-                }
+        Task { @MainActor in
+            let entry = await ActionExecutor.shared.stageTextInApp(appName, text: text)
+            // The card may have moved on (dismissed, next draft shown) while
+            // staging ran — never write result state onto a different card.
+            guard bus.pendingDraft?.id == draft.id else { return }
+            draftIsExecuting = false
+            switch entry {
+            case .verified:
+                finishDraft(draft, result: "✓ Staged in \(appName) — you press Send")
+            case .unverified:
+                finishDraft(draft, result: "Staged in \(appName), but couldn't confirm it landed. Check before you send.")
+            case .failed:
+                draftResult = "Failed to insert into \(appName)"
             }
         }
     }

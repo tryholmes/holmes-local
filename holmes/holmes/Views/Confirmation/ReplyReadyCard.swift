@@ -293,14 +293,11 @@ struct ReplyReadyCard: View {
         }
     }
 
-    /// ActionExecutor sleeps and waits on another process, so it must never run
-    /// on the main thread. Only strings cross the boundary.
+    /// ActionExecutor's text entry is nonisolated async: its waits and AX work
+    /// run off the main thread, and its AppleScript runs on the main actor.
+    /// Only strings cross the boundary.
     nonisolated private static func stage(text: String, into app: String) async -> Bool {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: ActionExecutor.shared.stageTextInApp(app, text: text))
-            }
-        }
+        await ActionExecutor.shared.stageTextInApp(app, text: text).succeeded
     }
 
     private func copyBody() {

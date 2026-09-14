@@ -173,15 +173,20 @@ final class HolmesBrain {
                 guard !Task.isCancelled else { return .cancelled }
                 let approved = await approve(title: "Type into \(appName)", preview: text, app: appName)
                 guard !Task.isCancelled, let approvedText = approved else { return .cancelled }
-                var typed = false
+                var entry = TextEntryResult.failed("the app isn't running")
                 if let running = ActionExecutor.shared.runningApp(named: appName) {
-                    typed = await typeIntoApp(running, text: approvedText)
+                    entry = await typeIntoAppResult(running, text: approvedText)
                 }
-                let result = typed ? "Opened \(appName) and typed it." : "Opened \(appName) but couldn't type into it — click into a note or field and try again."
+                let result: String
+                switch entry {
+                case .verified: result = "Opened \(appName) and typed it."
+                case .unverified: result = "Opened \(appName) and typed it, but couldn't confirm the text landed. Check the app."
+                case .failed: result = "Opened \(appName) but couldn't type into it — click into a note or field and try again."
+                }
                 guard !Task.isCancelled else { return .cancelled }
                 log(result)
                 if narrates { SpeechSynthesizer.shared.enqueue(result, priority: .utterance) }
-                return typed ? .text(result) : .failed(result)
+                return entry.succeeded ? .text(result) : .failed(result)
             }
             // Refused or unknown app — let the model interpret the whole goal.
         }
@@ -1047,27 +1052,34 @@ final class HolmesBrain {
         guard let running = ActionExecutor.shared.runningApp(named: app) else {
             return OllamaClient.ToolResult("Could not find app '\(app)' to type into. Open it first with the computer tool's open_app.", isError: true)
         }
-        let ok = await typeIntoApp(running, text: approved)
-        return OllamaClient.ToolResult(ok ? "Typed the text into \(app)." : "Failed to type into \(app).", isError: !ok)
+        let entry = await typeIntoAppResult(running, text: approved)
+        return OllamaClient.ToolResult(entry.describe(action: "Typed the text", app: app), isError: !entry.succeeded)
     }
 
     /// Activates the app, makes sure something editable has focus (a fresh
     /// Notes/TextEdit window with no document swallows keystrokes — ⌘N fixes
     /// that), then types.
     func typeIntoApp(_ app: NSRunningApplication, text: String) async -> Bool {
-        guard !Task.isCancelled else { return false }
+        await typeIntoAppResult(app, text: text).succeeded
+    }
+
+    /// Same as typeIntoApp, but says whether the text was verified in the field.
+    func typeIntoAppResult(_ app: NSRunningApplication, text: String) async -> TextEntryResult {
+        let stopped = TextEntryResult.failed("Stopped.")
+        guard !Task.isCancelled else { return stopped }
         app.activate(options: [.activateIgnoringOtherApps])
         do { try await Task.sleep(nanoseconds: 450_000_000) }
-        catch { return false }
-        guard !Task.isCancelled else { return false }
+        catch { return stopped }
+        guard !Task.isCancelled else { return stopped }
         let editors: Set<String> = ["com.apple.Notes", "com.apple.TextEdit", "com.apple.iWork.Pages", "com.apple.Stickies"]
         if let bundle = app.bundleIdentifier, editors.contains(bundle), !ActionExecutor.shared.hasEditableFocus(in: app) {
             _ = await ComputerUseEngine.shared.perform(action: "key", input: ["text": "cmd+n"])
             do { try await Task.sleep(nanoseconds: 600_000_000) }
-            catch { return false }
+            catch { return stopped }
         }
-        guard !Task.isCancelled else { return false }
-        return await offMain { ActionExecutor.shared.typeIntoFocusedField(in: app, text: text) }
+        guard !Task.isCancelled else { return stopped }
+        // Nonisolated async: the AX work and paced key events run off the main thread.
+        return await ActionExecutor.shared.typeIntoFocusedField(in: app, text: text)
     }
 
     private func sendMessage(_ input: [String: Any]) async -> OllamaClient.ToolResult {
@@ -1080,8 +1092,10 @@ final class HolmesBrain {
             return OllamaClient.ToolResult("User declined to send the message.")
         }
         guard !Task.isCancelled else { return OllamaClient.ToolResult("Stopped", isError: true) }
-        let ok = await offMain { ActionExecutor.shared.sendMessageInApp(app, message: approved) }
-        return OllamaClient.ToolResult(ok ? "Placed the message into \(app)'s input field." : "Failed to send.", isError: !ok)
+        // Places the text at the cursor (no select all). AppleScript inside runs on the main actor.
+        let entry = await ActionExecutor.shared.sendMessageInApp(app, message: approved)
+        return OllamaClient.ToolResult(entry.describe(action: "Placed the message into the input field", app: app),
+                                       isError: !entry.succeeded)
     }
 
     private func openURL(_ input: [String: Any]) async -> OllamaClient.ToolResult {

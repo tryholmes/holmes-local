@@ -437,12 +437,17 @@ enum BackendRouter {
             return StepResult(ok: false, text: "App '\(appName)' is not running.")
         }
         // focusAndType is nonisolated async, so its tree walk runs off the main thread.
-        let ok = await ActionExecutor.shared.focusAndType(in: app, fieldHint: fieldHint, text: text)
-        diag("ax_type into \(appName) ok=\(ok)")
-        return StepResult(
-            ok: ok,
-            text: ok ? "Typed into \(appName) via Accessibility."
-                     : "Couldn't find a writable field in \(appName)\(fieldHint.map { " matching “\($0)”" } ?? "").")
+        let entry = await ActionExecutor.shared.focusAndType(in: app, fieldHint: fieldHint, text: text)
+        diag("ax_type into \(appName) result=\(entry)")
+        switch entry {
+        case .verified:
+            return StepResult(ok: true, text: "Typed into \(appName) via Accessibility (verified).")
+        case .unverified(let why):
+            return StepResult(ok: true, text: "Typed into \(appName), but it could not be verified: \(why)")
+        case .failed(let why):
+            return StepResult(ok: false,
+                              text: "Couldn't type into \(appName)\(fieldHint.map { " field “\($0)”" } ?? ""): \(why)")
+        }
     }
 
     /// Frontmost-name match, exact first then contains.
