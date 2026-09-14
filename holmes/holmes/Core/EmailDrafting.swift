@@ -75,7 +75,14 @@ enum EmailDraftText {
               let value = object["body"] as? String else { throw EmailDraftTextError.unusable }
         let body = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty, body.count <= 8000 else { throw EmailDraftTextError.unusable }
-        let instructionPatterns = [
+        guard !instructionPatterns.contains(where: {
+            body.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil
+        }) else { throw EmailDraftTextError.unusable }
+        return body
+    }
+
+    /// Model output that teaches, refuses or holds placeholders instead of being an email.
+    static let instructionPatterns = [
             #"^(?:sure[,!.]?\s*)?(?:here(?:'s| is)|below is) (?:an? |the |your )?(?:draft(?: email)?|email(?: draft)?)(?: (?:for you|you can send|to send|to use|you requested))?\s*[:\n]"#,
             #"^you (?:can|should|need to) (?:draft|compose|write) (?:an? |the |your |this )?(?:email|reply|message)\b"#,
             #"^(?:you (?:can|should|need to)|please) (?:open|click|type|compose|write|paste)\b.{0,100}\b(?:email app|email client|compose button|mail app|send button)\b"#,
@@ -86,12 +93,7 @@ enum EmailDraftText {
             #"^as an? (?:ai|language model)\b"#,
             #"\[[^\]\n]{0,60}\b(?:name|time|reason|date|email|company|title|recipient|sender|boss|manager|insert)\b[^\]\n]{0,60}\]"#,
             #"^(?:subject|to):"#
-        ]
-        guard !instructionPatterns.contains(where: {
-            body.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil
-        }) else { throw EmailDraftTextError.unusable }
-        return body
-    }
+    ]
 
     /// One bounded repair attempt handles small models returning teaching prose.
     /// The invalid response is never published or offered for insertion.
