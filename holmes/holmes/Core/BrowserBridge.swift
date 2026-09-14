@@ -293,6 +293,14 @@ final class BrowserCommandQueue: @unchecked Sendable {
     /// The browser instance a command without `_browserInstanceID` goes to: the
     /// live instance most recently in front, falling back to the most recently
     /// seen one. Nil when no instance is known to be alive.
+    /// True when this instance polled, beat or posted context within the freshness
+    /// window during this launch. A remembered instance from a previous launch is not.
+    func isFresh(_ instance: String) -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        guard let sighting = sightings[instance] else { return false }
+        return Date().timeIntervalSince(sighting.lastSeen) < BridgeProtocol.instanceFreshness
+    }
+
     var preferredInstance: String? {
         condition.lock(); defer { condition.unlock() }
         return routeTargetLocked(now: Date())
@@ -881,7 +889,11 @@ final class BrowserBridge {
         // The instance comes from a foreground context post, a focused heartbeat or
         // poll, or the one remembered from the previous launch. Only an extension
         // that really is too old (or missing from the page) is told to reload.
-        guard let instance = lastForegroundBrowserInstance ?? commandQueue.preferredInstance else {
+        // The remembered browser wins only while it is alive this launch. A browser
+        // that was switched away from, or an extension reinstalled with a new
+        // instance, must not make the refresh wait out the undelivered deadline.
+        let liveRemembered = lastForegroundBrowserInstance.flatMap { commandQueue.isFresh($0) ? $0 : nil }
+        guard let instance = liveRemembered ?? commandQueue.preferredInstance ?? lastForegroundBrowserInstance else {
             emailComposeUnavailableReason = observedLegacyProtocol ? Self.composeReloadMessage
                 : isExtensionConnected ? "Click into your email tab in the browser so Holmes can find it, then try again."
                 : "Connect the Holmes browser extension, then refresh Gmail to enable email drafting."

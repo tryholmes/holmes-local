@@ -402,6 +402,23 @@ enum BridgeLoopbackTests {
             check(message.contains(expected) && !message.contains("chrome://extensions"),
                   "\(result) maps to an accurate message without reload advice")
         }
+
+        // The remembered browser (comet-inst, from the previous launch) is not alive
+        // now; a different browser is polling. Refresh must target the live one
+        // instead of waiting out the undelivered deadline for a dead instance.
+        let switched = BrowserBridge(testToken: token, environment: environment)
+        switched.testUseInstanceDefaults(defaults)
+        switched.commandQueue.noteSeen(instance: "new-inst", focused: false)
+        switched.commandUndeliveredTimeout = 1
+        switched.commandResultTimeout = 5
+        let switchedRead = Task { @MainActor in await switched.refreshEmailComposeContext() }
+        await waitUntil("switched refresh queued") { switched.testPendingCommandIDs.count == 1 }
+        let toLive = try! JSONSerialization.jsonObject(with: switched.testDrainCommands(instance: "new-inst")) as! [[String: Any]]
+        check(toLive.count == 1, "A remembered browser that is not alive this launch does not win over the live one")
+        if let id = toLive.first?["id"] {
+            switched.testCommandResult(try! JSONSerialization.data(withJSONObject: ["id": id, "ok": false, "error": "timeout"]))
+        }
+        _ = await switchedRead.value
     }
 }
 
