@@ -188,9 +188,76 @@ enum BridgeLoopbackTests {
         let after = await LoopbackHTTP.background { LoopbackHTTP.request(port: port, method: "GET", path: "/health") }
         check(after?.status == 200, "The server keeps serving after oversize requests")
     }
+
+    /// accept/bind resilience and handler slot limits.
+    @MainActor static func runLifecycle(check: (Bool, String) -> Void) async {
+        var backoff = BridgeBackoff(base: 0.01, cap: 1)
+        let delays = (0..<10).map { _ in backoff.failure() }
+        check(delays[0] == 0.01 && delays[1] == 0.02 && delays[2] == 0.04 && delays.last == 1 && delays.allSatisfy { $0 <= 1 },
+              "accept() failures back off exponentially and are capped at 1s instead of spinning")
+        backoff.success()
+        check(backoff.failure() == 0.01, "A successful accept resets the backoff")
+
+        // Port already taken: the error is published and the bind retried.
+        let (holder, port) = makeBridge()
+        let environment = BrowserBridge.ContextEnvironment(frontmost: { nil }, ownBundleIdentifier: "test.holmes", nameForBundle: { _ in nil })
+        let contender = BrowserBridge(testToken: token, environment: environment, port: port)
+        contender.bindBackoff = BridgeBackoff(base: 0.2, cap: 0.4)
+        contender.start()
+        check(!contender.isRunning && contender.lastError?.contains("already in use") == true,
+              "A taken port is reported through lastError: \(contender.lastError ?? "nil")")
+        holder.stop()
+        await waitUntil("contender binds after the port frees", timeout: 5) { contender.isRunning }
+        check(contender.lastError == nil && contender.boundPort == port, "Background bind retry recovers and clears the error")
+        let recovered = await LoopbackHTTP.background { LoopbackHTTP.request(port: port, method: "GET", path: "/health") }
+        check(recovered?.status == 200, "The retried listener serves requests")
+
+        // Long polls are capped so they can never occupy every handler slot.
+        let holds = (0..<BridgeProtocol.maxConcurrentLongPolls).map { index in
+            Task.detached { poll(port, instance: "hold-\(index)", wait: 4) }
+        }
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let extraStart = Date()
+        let extra = await LoopbackHTTP.background { poll(port, instance: "hold-extra", wait: 4) }
+        check(extra.0?.status == 200 && Date().timeIntervalSince(extraStart) < 1.5,
+              "A long poll beyond the cap is answered immediately")
+        let beat = await LoopbackHTTP.background {
+            LoopbackHTTP.request(port: port, method: "POST", path: "/heartbeat",
+                                 headers: ["X-Holmes-Token": token, "Content-Type": "application/json"], body: Data("{}".utf8))
+        }
+        check(beat?.status == 200, "Heartbeats are still served while long polls wait")
+        for hold in holds { _ = await hold.value }
+
+        // Stalled clients filling every slot get a quick 503 instead of a hang.
+        let idle = (0..<BridgeProtocol.maxConcurrentClients).map { _ in LoopbackHTTP.openIdle(port: port) }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let busyStart = Date()
+        let busy = await LoopbackHTTP.background { LoopbackHTTP.request(port: port, method: "GET", path: "/health", timeout: 8) }
+        let busySeconds = Date().timeIntervalSince(busyStart)
+        check(busy?.status == 503 && busySeconds < 4,
+              "With every handler stalled the accept loop answers 503 in \(String(format: "%.1f", busySeconds))s")
+        idle.forEach { close($0) }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let healthy = await LoopbackHTTP.background { LoopbackHTTP.request(port: port, method: "GET", path: "/health") }
+        check(healthy?.status == 200, "Service resumes once stalled clients go away")
+        contender.stop()
+    }
 }
 
 extension LoopbackHTTP {
+    /// Connects and sends nothing, holding a server handler slot until closed.
+    static func openIdle(port: UInt16) -> Int32 {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = INADDR_LOOPBACK.bigEndian
+        _ = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        return fd
+    }
+
     /// Opens a request, then closes the socket without reading the response.
     static func abandon(port: UInt16, path: String, headers: [String: String], after delay: TimeInterval) {
         DispatchQueue.global().async {

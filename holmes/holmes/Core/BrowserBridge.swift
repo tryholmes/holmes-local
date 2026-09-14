@@ -72,6 +72,8 @@ enum BridgeProtocol {
     /// Concurrent request handlers. The extension uses one connection at a time;
     /// this is headroom, not a throughput knob.
     static let maxConcurrentClients = 8
+    /// How long the accept loop waits for a free handler before answering 503.
+    static let slotWaitSeconds: Double = 2
 
     // ── Browser-automation command channel ──────────────────────────
     // The Mac app is the PRODUCER: it leaves commands at GET /commands, which the
@@ -575,8 +577,18 @@ final class BrowserBridge {
 
     // MARK: - Lifecycle
 
-    /// Binds + listens. Safe to call repeatedly; a second call is a no-op.
+    /// True between start() and stop(), whether or not the bind succeeded yet.
+    @ObservationIgnored private var wantsRunning = false
+    /// Pending background bind retry after the port was unavailable.
+    @ObservationIgnored private var bindRetryTask: Task<Void, Never>?
+    /// Delay schedule for bind retries. Tests shorten it.
+    @ObservationIgnored var bindBackoff = BridgeBackoff(base: 2, cap: 60)
+
+    /// Binds + listens. Safe to call repeatedly; a second call is a no-op. If the
+    /// port is taken, the reason is published through lastError (Settings and the
+    /// notch show it) and the bind is retried in the background with backoff.
     func start() {
+        wantsRunning = true
         guard !isRunning else { return }
 
         // Every callback hops to the main actor fire-and-forget. None of them
@@ -613,16 +625,35 @@ final class BrowserBridge {
             lastError = nil
             print("[Bridge] Listening on http://127.0.0.1:\(port) (loopback only, token required)")
             print("[Bridge] Token file: \(Self.tokenFileURL.path)")
+            bindBackoff.success()
+            bindRetryTask?.cancel()
+            bindRetryTask = nil
             startWatchdog()
         case .failure(let message):
-            lastError = message
-            print("[Bridge] NOT listening — \(message)")
+            let delay = bindBackoff.failure()
+            lastError = "\(message) Retrying in \(Int(delay.rounded(.up)))s."
+            print("[Bridge] NOT listening — \(message) (retry in \(delay)s)")
+            scheduleBindRetry(after: delay)
+        }
+    }
+
+    private func scheduleBindRetry(after delay: TimeInterval) {
+        bindRetryTask?.cancel()
+        bindRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let self, !Task.isCancelled, self.wantsRunning, !self.isRunning else { return }
+            self.bindRetryTask = nil
+            self.start()
         }
     }
 
     func stop() {
+        wantsRunning = false
+        bindRetryTask?.cancel()
+        bindRetryTask = nil
         server?.stopListening()
         server = nil
+        boundPort = nil
         watchdog?.invalidate()
         watchdog = nil
         isRunning = false
@@ -1268,8 +1299,12 @@ private final class BridgeServer: @unchecked Sendable {
             }
         }
         guard bound == 0 else {
+            let code = errno
             close(fd)
-            return .failure("bind() failed on 127.0.0.1:\(port) (errno \(errno)) — is another Holmes running?")
+            if code == EADDRINUSE {
+                return .failure("Port \(port) on 127.0.0.1 is already in use by another app (is another copy of Holmes running?).")
+            }
+            return .failure("bind() failed on 127.0.0.1:\(port) (errno \(code)).")
         }
         guard listen(fd, 16) == 0 else {
             close(fd)
@@ -1314,13 +1349,25 @@ private final class BridgeServer: @unchecked Sendable {
     }
 
     private func acceptLoop() {
+        // accept() can fail repeatedly (EMFILE when the process is out of file
+        // descriptors, ECONNABORTED storms). Retrying instantly spun a core at 100%;
+        // back off exponentially up to a second and reset on the next success.
+        var backoff = BridgeBackoff(base: 0.01, cap: 1)
         while isRunning {
             let fd = listeningFD
             guard fd >= 0 else { break }
             let clientFD = accept(fd, nil, nil)
             guard clientFD >= 0 else {
-                if isRunning { continue } else { break }
+                let code = errno
+                guard isRunning else { break }
+                let delay = backoff.failure()
+                if backoff.consecutiveFailures == 1 || backoff.consecutiveFailures % 100 == 0 {
+                    print("[Bridge] accept() failed (errno \(code)); backing off \(delay)s")
+                }
+                usleep(UInt32(delay * 1_000_000))
+                continue
             }
+            backoff.success()
             // SO_NOSIGPIPE: a browser that disconnects mid-write must not raise
             // SIGPIPE and kill the whole app — send() returns EPIPE instead.
             var on: Int32 = 1
@@ -1339,7 +1386,13 @@ private final class BridgeServer: @unchecked Sendable {
             // client queue. Blocking the accept loop instead means a flood of
             // stalled connections queues in the listen backlog and dies there.
             let slots = clientSlots
-            slots.wait()
+            guard slots.wait(timeout: .now() + BridgeProtocol.slotWaitSeconds) == .success else {
+                // Every handler is busy (stalled clients). Answer this one with a
+                // quick 503 instead of parking the accept loop indefinitely.
+                Self.refuseBusy(clientFD)
+                close(clientFD)
+                continue
+            }
             clientQueue.async { [weak self] in
                 // Held by the closure, not by self, so the permit is returned even
                 // if the server was torn down while this connection was queued.
@@ -1702,6 +1755,12 @@ private final class BridgeServer: @unchecked Sendable {
             }
             return true
         }
+    }
+
+    /// Minimal 503 for a connection that arrived while every handler was busy.
+    static func refuseBusy(_ fd: Int32) {
+        let reply = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\nRetry-After: 1\r\n\r\n"
+        _ = reply.withCString { send(fd, $0, strlen($0), 0) }
     }
 
     /// Non-blocking check for a client that already closed its end. A readable
