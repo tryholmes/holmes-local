@@ -111,7 +111,7 @@ enum EmailActionOffers {
         guard let tool = gmailDraftTool(), let to = compose.recipients.first else { return }
         let decision = await ConfirmationBus.shared.decide(PendingAction(
             title: "Save a copy to Gmail Drafts?",
-            preview: "To: \(compose.recipients.joined(separator: ", "))\nSubject: \(subject)\n\n\(body)",
+            preview: "Holmes sends the recipients, subject and body below through Composio to create a draft in your Gmail account. Nothing is sent to anyone.\n\nTo: \(compose.recipients.joined(separator: ", "))\nSubject: \(subject)\n\n\(body)",
             appName: "Gmail", actionType: .agentToolCall))
         guard case .approved = decision else { return }
         var arguments: [String: Any] = ["recipient_email": to, "subject": subject, "body": body, "is_html": false]

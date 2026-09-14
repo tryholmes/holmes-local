@@ -23,6 +23,9 @@ final class EmailUndoToastModel {
     var isWorking = false
     @ObservationIgnored var undo: (@MainActor () async -> String)?
     var canUndo = false
+    /// Increments for every new toast, so a late undo result for an older write
+    /// never changes a newer toast.
+    @ObservationIgnored var generation = 0
 }
 
 @MainActor
@@ -35,6 +38,7 @@ final class EmailUndoToastController {
     private init() {}
 
     func show(title: String, detail: String, undo: @escaping @MainActor () async -> String) {
+        model.generation += 1
         model.title = title
         model.detail = detail
         model.result = nil
@@ -63,8 +67,10 @@ final class EmailUndoToastController {
         guard let undo = model.undo, !model.isWorking else { return }
         hideTask?.cancel()
         model.isWorking = true
+        let generation = model.generation
         Task { @MainActor in
             let message = await undo()
+            guard model.generation == generation else { return }
             model.isWorking = false
             model.result = message
             model.undo = nil

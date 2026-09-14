@@ -25,6 +25,7 @@ enum MailComposeReader {
     }
     private static var identities: [(element: AXUIElement, id: String)] = []
     private static var undoRecords: [String: UndoRecord] = [:]
+    private static var undoOrder: [String] = []
 
     static func readCurrent() -> EmailComposeSnapshot? { readCandidate()?.snapshot }
 
@@ -96,7 +97,11 @@ enum MailComposeReader {
         undoRecords[token] = UndoRecord(identity: expected.identity, before: before, after: after.snapshot.body,
                                         subjectBefore: filled ? expected.subject : nil, subjectAfter: filled ? subject : nil,
                                         usedPaste: usedPaste)
-        if undoRecords.count > 10, let oldest = undoRecords.keys.first(where: { $0 != token }) { undoRecords.removeValue(forKey: oldest) }
+        // Evict the oldest records, never the newest, which the undo notice shows.
+        undoOrder.append(token)
+        while undoOrder.count > 10 {
+            undoRecords.removeValue(forKey: undoOrder.removeFirst())
+        }
         return EmailWriteReceipt(undoToken: token, subjectFilled: filled)
     }
 
@@ -150,12 +155,20 @@ enum MailComposeReader {
             }
             return copy
         }
+        var ourChange = -1
         defer {
-            pasteboard.clearContents()
-            if !saved.isEmpty { pasteboard.writeObjects(saved) }
+            // If the person copied something meanwhile, their clipboard wins.
+            if pasteboard.changeCount == ourChange {
+                pasteboard.clearContents()
+                if !saved.isEmpty { pasteboard.writeObjects(saved) }
+            }
         }
         pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string), focusBody(candidate) else {
+        guard pasteboard.setString(text, forType: .string) else {
+            throw EmailComposeError.unavailable("Holmes could not use the clipboard. Copy the draft instead.")
+        }
+        ourChange = pasteboard.changeCount
+        guard focusBody(candidate) else {
             throw EmailComposeError.unavailable("Mail did not move focus to the message body, so Holmes did not paste. Copy the draft instead.")
         }
         // Revalidate after focusing: the paste goes only to the same unchanged body.
