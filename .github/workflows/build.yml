@@ -63,6 +63,22 @@ jobs:
           holmes/tests/run-work-activity-tests.sh
           holmes/tests/run-extension-installer-tests.sh
 
+      - name: Test app launching, MCP transport and Ollama client settings
+        run: |
+          holmes/tests/run-app-launcher-tests.sh
+          holmes/tests/run-app-launch-intent-tests.sh
+          holmes/tests/run-mcp-http-transport-tests.sh
+          holmes/tests/run-ollama-capability-cache-tests.sh
+          holmes/tests/run-ollama-settings-tests.sh
+
+      - name: Test task pipeline reliability
+        run: |
+          holmes/tests/run-computer-use-run-tests.sh
+          holmes/tests/run-approval-queue-tests.sh
+          holmes/tests/run-ax-element-search-tests.sh
+          holmes/tests/run-text-entry-tests.sh
+          holmes/tests/run-model-json-tests.sh
+
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
