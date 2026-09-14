@@ -121,7 +121,96 @@ function loadWorker(options = {}) {
   context.self = context;
   context.importScripts = (...files) => { for (const file of files) vm.runInContext(fs.readFileSync(path.join(extension, file), 'utf8'), context, { filename: file }); };
   vm.runInContext(fs.readFileSync(path.join(extension, 'background.js'), 'utf8'), context, { filename: 'background.js' });
-  return { context, chrome, tabs, log, events, storage };
+  // Stops a finished test's worker from doing real work: every later fetch fails
+  // fast, so its loops fall back to their error backoff.
+  const dispose = () => { options.fetch = () => new Error('disposed'); };
+  return { context, chrome, tabs, log, events, storage, dispose };
+}
+
+// A fetch that never answers on its own and rejects only when aborted.
+function hangUntilAborted(init) {
+  return new Promise((_, reject) => {
+    if (init.signal) init.signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')));
+  });
+}
+
+async function transportTests() {
+  // Heartbeat with a server that accepts the connection and never answers.
+  let worker = loadWorker({
+    config: { fetchTimeoutMs: { heartbeat: 60, relay: 60, commands: 80, result: 60 }, pollErrorBackoffMs: 30 },
+    fetch: (url, init) => hangUntilAborted(init)
+  });
+  const beat = await Promise.race([worker.context.sendHeartbeat().then(() => 'done'), sleep(600).then(() => 'hung')]);
+  check(beat === 'done' && worker.log.fetches.some(f => f.url.endsWith('/heartbeat') && f.aborted),
+    'A heartbeat to a stalled bridge is aborted by its timeout instead of hanging');
+
+  const relayed = await Promise.race([
+    new Promise(resolve => worker.events.message.emit({ type: 'holmes:post', body: '{}' }, { tab: { id: 17, windowId: 23 } }, resolve)),
+    sleep(600).then(() => 'hung')
+  ]);
+  check(relayed !== 'hung' && relayed.ok === false && worker.log.fetches.some(f => f.url.endsWith('/context') && f.aborted),
+    'A relayed page context post times out and reports failure to the page');
+
+  await until('two command polls', () => worker.log.fetches.filter(f => f.url.endsWith('/commands')).length >= 2, 1500);
+  const polls = worker.log.fetches.filter(f => f.url.endsWith('/commands'));
+  check(polls[0].aborted, 'A stalled command poll is aborted by its timeout');
+  check(polls.length >= 2, 'The in flight flag clears after an aborted poll so polling continues');
+  check(Number(polls[0].init.headers['X-Holmes-Long-Poll']) > 0, 'Command polls ask the bridge to long poll');
+  worker.dispose();
+
+  // A server that supports long polling: the worker re-polls right away.
+  worker = loadWorker({
+    config: { pollIdleMs: 400 },
+    fetch: async url => {
+      if (!url.endsWith('/commands')) return { status: 200, body: {} };
+      await sleep(30);
+      return { status: 200, body: [], headers: { 'X-Holmes-Long-Poll': '1' } };
+    }
+  });
+  await sleep(300);
+  const longPolls = worker.log.fetches.filter(f => f.url.endsWith('/commands')).length;
+  check(longPolls >= 4, `With long poll support the worker re-polls immediately (${longPolls} polls in 300ms)`);
+  worker.dispose();
+
+  // An older app without long polling: idle interval, not a tight loop.
+  worker = loadWorker({
+    config: { pollIdleMs: 150 },
+    fetch: async url => ({ status: 200, body: [] })
+  });
+  await sleep(320);
+  const idlePolls = worker.log.fetches.filter(f => f.url.endsWith('/commands')).length;
+  check(idlePolls >= 2 && idlePolls <= 4, `Without long poll support polls keep an idle interval (${idlePolls} polls in 320ms)`);
+  worker.dispose();
+
+  // Holmes not running: failed polls back off instead of spinning.
+  worker = loadWorker({ config: { pollErrorBackoffMs: 100 }, fetch: () => new Error('Failed to fetch') });
+  await sleep(350);
+  const failedPolls = worker.log.fetches.filter(f => f.url.endsWith('/commands')).length;
+  check(failedPolls >= 1 && failedPolls <= 6, `Failed polls back off (${failedPolls} attempts in 350ms)`);
+  worker.dispose();
+
+  // After a command arrives the worker keeps itself awake for a while, then stops.
+  let served = false;
+  worker = loadWorker({
+    config: { keepaliveMs: 40, keepaliveWindowMs: 400 },
+    fetch: async url => {
+      if (url.endsWith('/commands')) {
+        await sleep(20);
+        if (!served) { served = true; return { status: 200, body: [{ id: 1, action: 'listTabs', params: {}, session: 's1' }], headers: { 'X-Holmes-Long-Poll': '1' } }; }
+        return { status: 200, body: [], headers: { 'X-Holmes-Long-Poll': '1' } };
+      }
+      return { status: 200, body: {} };
+    }
+  });
+  await until('command result posted', () => worker.log.fetches.some(f => f.url.endsWith('/command-result')), 1500);
+  await sleep(200);
+  const awake = worker.log.platformInfo;
+  check(awake >= 2, `The worker keeps itself awake after receiving a command (${awake} keepalive calls)`);
+  await sleep(700);
+  const settled = worker.log.platformInfo;
+  await sleep(200);
+  check(worker.log.platformInfo === settled, 'The self keepalive stops once commands have gone quiet');
+  worker.dispose();
 }
 
 const receivingEndMissing = () => new Error('Could not establish connection. Receiving end does not exist.');
@@ -196,7 +285,7 @@ module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 if (require.main === module) {
   (async () => {
     const only = process.argv[2];
-    const suites = { reinjectionTests, probeTests };
+    const suites = { reinjectionTests, probeTests, transportTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();

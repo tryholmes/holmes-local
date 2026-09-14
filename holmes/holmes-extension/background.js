@@ -39,10 +39,25 @@ const HEARTBEAT_SUPPLEMENT_MS = 15000;
 
 // Tunables. Tests shorten them through self.__holmesBridgeConfig; the browser never
 // sets that global, so production always runs with these defaults.
+const CONFIG_OVERRIDES = (typeof self !== "undefined" && self.__holmesBridgeConfig) || {};
 const CONFIG = Object.assign({
   // How often a heartbeat re-probes the active tab's content script.
-  heartbeatProbeMs: 15000
-}, (typeof self !== "undefined" && self.__holmesBridgeConfig) || {});
+  heartbeatProbeMs: 15000,
+  // Seconds the bridge may hold GET /commands open. Chrome kills a worker whose
+  // fetch waits 30s for a response, so the hold and its timeout stay below that.
+  longPollSeconds: 20,
+  // Gap between polls when the app does not support long polling.
+  pollIdleMs: COMMAND_POLL_MS,
+  // First retry delay after a failed poll; doubles up to 30s.
+  pollErrorBackoffMs: 1000,
+  // While commands are active, call a cheap extension API this often (resets the
+  // MV3 idle timer) for keepaliveWindowMs after the last command activity.
+  keepaliveMs: 20000,
+  keepaliveWindowMs: 120000
+}, CONFIG_OVERRIDES);
+// Every request to the bridge is bounded. A stalled app must never park a worker.
+CONFIG.fetchTimeoutMs = Object.assign({ heartbeat: 5000, relay: 5000, commands: 28000, result: 15000 },
+  CONFIG_OVERRIDES.fetchTimeoutMs || {});
 
 // MARK: - Token
 
@@ -109,6 +124,29 @@ function isInjectableTab(tab) {
 function isMissingReceiver(error) {
   const text = String(error && error.message ? error.message : error);
   return /receiving end does not exist|could not establish connection/i.test(text);
+}
+
+// fetch() with a hard deadline. Aborts the request (so the socket is released) and
+// rejects even if the underlying fetch ignores the abort.
+async function fetchWithTimeout(url, init, ms) {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  let timer;
+  const expiry = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (controller) { try { controller.abort(); } catch (_) { /* ignore */ } }
+      reject(new Error("request to " + url + " timed out after " + ms + "ms"));
+    }, ms);
+  });
+  try {
+    const options = Object.assign({}, init, controller ? { signal: controller.signal } : {});
+    return await Promise.race([fetch(url, options), expiry]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function withTimeout(promise, ms, label) {
@@ -311,11 +349,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         payload.tabId = sender.tab.id;
         payload.windowId = sender.tab.windowId;
         payload.isActiveTab = true;
-        const res = await fetch(ENDPOINT, {
+        const res = await fetchWithTimeout(ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
           body: JSON.stringify(payload)
-        });
+        }, CONFIG.fetchTimeoutMs.relay);
         sendResponse({ ok: res.ok, status: res.status });
       } catch (e) {
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
@@ -346,11 +384,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const token = await ensureToken();
       try {
-        const res = await fetch("http://127.0.0.1:5766/heartbeat", {
+        const res = await fetchWithTimeout(HEARTBEAT_ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
           body: "{}"
-        });
+        }, CONFIG.fetchTimeoutMs.heartbeat);
         sendResponse({ ok: res.ok, status: res.status });
       } catch (e) {
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
@@ -395,14 +433,14 @@ async function sendHeartbeat() {
     const [instanceId, focused, activeTab] = await Promise.all([
       browserInstance().catch(() => ""), browserFocused(), probeActiveTab()
     ]);
-    await fetch(HEARTBEAT_ENDPOINT, {
+    await fetchWithTimeout(HEARTBEAT_ENDPOINT, {
       method: "POST",
       headers: {
         "Content-Type": "application/json", "X-Holmes-Token": token,
         "X-Holmes-Browser-Instance": instanceId, "X-Holmes-Browser-Focused": focused ? "1" : "0"
       },
       body: JSON.stringify({ instanceId, focused, activeTab, version: extensionVersion(), browser: browserName() })
-    });
+    }, CONFIG.fetchTimeoutMs.heartbeat);
   } catch (e) {
     // Holmes app not running / port closed — expected, stay quiet.
   }
@@ -469,68 +507,139 @@ if (chrome.alarms && chrome.alarms.onAlarm) {
 // worker always restarts the loop. When the Holmes app isn't listening the GET simply
 // fails and is swallowed, costing nothing.
 
-let commandTimer = null;
+// Delivery is a long poll: GET /commands asks the bridge to hold the request until a
+// command arrives (or ~20s pass), so a command reaches a live worker immediately
+// instead of on the next 2s tick. The loop re-polls as soon as each poll returns;
+// against an older app without long polling it falls back to the 2s idle gap, and
+// when Holmes is not running it backs off. A watchdog interval restarts the loop if
+// it ever stops, and every fetch carries a timeout so the in-flight flag always clears.
+
+let commandLoopRunning = false;
+let commandWatchdog = null;
 let commandPollInFlight = false;
+let commandPollStartedAt = 0;
+let lastCommandActivityAt = 0;
+let runningCommandCount = 0;
+let selfKeepaliveTimer = null;
 
 function ensureCommandLoop() {
-  if (commandTimer !== null) return;
-  commandTimer = setInterval(pollCommands, COMMAND_POLL_MS);
-  pollCommands();
+  if (commandWatchdog === null) {
+    commandWatchdog = setInterval(() => { if (!commandLoopRunning) runCommandLoop(); }, COMMAND_POLL_MS);
+  }
+  if (!commandLoopRunning) runCommandLoop();
 }
 
+async function runCommandLoop() {
+  if (commandLoopRunning) return;
+  commandLoopRunning = true;
+  let failures = 0;
+  try {
+    for (;;) {
+      const outcome = await pollCommands();
+      if (outcome === "longpoll") { failures = 0; continue; }
+      if (outcome === "error") {
+        failures++;
+        await delay(Math.min(CONFIG.pollErrorBackoffMs * Math.pow(2, Math.min(failures - 1, 5)), 30000));
+        continue;
+      }
+      failures = 0;
+      await delay(CONFIG.pollIdleMs);  // "idle" (no long poll support) or "busy"
+    }
+  } catch (e) {
+    // Unexpected failure (timers unavailable, worker shutting down). The watchdog
+    // interval restarts the loop; never spin here.
+  } finally {
+    commandLoopRunning = false;
+  }
+}
+
+// One poll. Resolves "longpoll" | "idle" | "busy" | "error"; never throws.
 async function pollCommands() {
-  if (commandPollInFlight) return;
+  if (commandPollInFlight && Date.now() - commandPollStartedAt < CONFIG.fetchTimeoutMs.commands + 5000) return "busy";
   commandPollInFlight = true;
+  commandPollStartedAt = Date.now();
   try {
     const token = await ensureToken();
-    if (!token) return;
+    if (!token) return "error";
+    const [instanceId, focused] = await Promise.all([browserInstance().catch(() => ""), browserFocused()]);
 
     let res;
     try {
-      res = await fetch(COMMANDS_ENDPOINT, {
+      res = await fetchWithTimeout(COMMANDS_ENDPOINT, {
         method: "GET",
-        headers: { "X-Holmes-Token": token, "Accept": "application/json", "X-Holmes-Browser-Instance": await browserInstance() }
-      });
+        headers: {
+          "X-Holmes-Token": token, "Accept": "application/json",
+          "X-Holmes-Browser-Instance": instanceId, "X-Holmes-Browser-Focused": focused ? "1" : "0",
+          "X-Holmes-Long-Poll": String(CONFIG.longPollSeconds)
+        }
+      }, CONFIG.fetchTimeoutMs.commands);
     } catch (e) {
-      return; // Holmes app not running / port closed — expected, stay quiet.
+      return "error"; // Holmes app not running, port closed, or the poll timed out.
     }
-    if (!res.ok) return; // 401 (wrong token), 404 (older app without the channel), etc.
+    if (!res.ok) return "error"; // 401 (wrong token), 404 (older app without the channel), etc.
+    const longPoll = !!(res.headers && typeof res.headers.get === "function" && res.headers.get("X-Holmes-Long-Poll") === "1");
 
     let data;
-    try { data = await res.json(); } catch (e) { return; }
+    try { data = await res.json(); } catch (e) { return "error"; }
 
     const commands = Array.isArray(data)
       ? data
       : (data && Array.isArray(data.commands) ? data.commands : []);
+    if (commands.length) noteCommandActivity();
     for (const cmd of commands) {
       await runOneCommand(cmd, token);
     }
+    return longPoll ? "longpoll" : "idle";
+  } catch (e) {
+    return "error";
   } finally {
     commandPollInFlight = false;
   }
 }
 
+// Commands are "expected" for a while after one arrives: the model usually sends a
+// follow up. Calling any extension API resets the MV3 idle timer, so a cheap call on
+// an interval keeps the worker (and its long poll) alive until things go quiet.
+function noteCommandActivity() {
+  lastCommandActivityAt = Date.now();
+  if (selfKeepaliveTimer !== null) return;
+  selfKeepaliveTimer = setInterval(() => {
+    if (runningCommandCount === 0 && Date.now() - lastCommandActivityAt > CONFIG.keepaliveWindowMs) {
+      clearInterval(selfKeepaliveTimer);
+      selfKeepaliveTimer = null;
+      return;
+    }
+    try { Promise.resolve(chrome.runtime.getPlatformInfo()).catch(() => {}); } catch (_) { /* ignore */ }
+  }, CONFIG.keepaliveMs);
+}
+
 async function runOneCommand(cmd, token) {
   const id = cmd && cmd.id !== undefined ? cmd.id : null;
   const action = cmd && cmd.action;
+  const session = cmd && typeof cmd.session === "string" ? cmd.session : undefined;
 
   let outcome;
+  runningCommandCount++;
   try {
     outcome = action === "read_email_compose" || action === "fill_email_draft"
       ? await emailComposeCommand(cmd) : await HolmesAutomation.execute(cmd);
   } catch (e) {
     outcome = { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    runningCommandCount--;
+    noteCommandActivity();
   }
 
-  const body = Object.assign({ id, action, at: Date.now() }, outcome);
+  // The session echo lets the app ignore a result meant for a previous launch.
+  const body = Object.assign({ id, action, session, at: Date.now() }, outcome);
   try {
-    await fetch(RESULT_ENDPOINT, {
+    await fetchWithTimeout(RESULT_ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
       body: JSON.stringify(body)
-    });
+    }, CONFIG.fetchTimeoutMs.result);
   } catch (e) {
-    // The app went away between GET and POST — drop the result rather than retry-storm.
+    // The app went away between GET and POST.
   }
 }
 
