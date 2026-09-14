@@ -33,12 +33,24 @@ function loadWorker(options = {}) {
   // Passing options.storage shares chrome.storage between two workers, which is how
   // a test simulates the same browser after its MV3 worker was evicted and restarted.
   const storage = options.storage || { local: new Map([['holmesToken', 'synthetic-token'], ['holmesBrowserInstance', 'test-profile']]), session: new Map() };
-  const area = map => ({
+  // `quota` mimics chrome.storage.session's byte cap: a set that would exceed it
+  // throws and changes nothing, as Chrome does.
+  const area = (map, quota) => ({
     async get(keys) {
       const list = keys == null ? [...map.keys()] : Array.isArray(keys) ? keys : typeof keys === 'string' ? [keys] : Object.keys(keys);
       const out = {}; for (const key of list) if (map.has(key)) out[key] = structuredClone(map.get(key)); return out;
     },
-    async set(values) { for (const [key, value] of Object.entries(values)) map.set(key, structuredClone(value)); },
+    async set(values) {
+      if (quota) {
+        const next = new Map(map);
+        for (const [key, value] of Object.entries(values)) next.set(key, value);
+        if (JSON.stringify([...next]).length > quota) {
+          log.sessionSetFailures = (log.sessionSetFailures || 0) + 1;
+          throw new Error('QUOTA_BYTES quota exceeded');
+        }
+      }
+      for (const [key, value] of Object.entries(values)) map.set(key, structuredClone(value));
+    },
     async remove(keys) { for (const key of [].concat(keys)) map.delete(key); }
   });
   const events = {
@@ -57,7 +69,7 @@ function loadWorker(options = {}) {
       getPlatformInfo: async () => { log.platformInfo++; return { os: 'mac' }; },
       onInstalled: events.installed, onStartup: events.startup, onMessage: events.message
     },
-    storage: { local: area(storage.local), session: options.noSessionStorage ? undefined : area(storage.session), onChanged: events.storageChanged },
+    storage: { local: area(storage.local), session: options.noSessionStorage ? undefined : area(storage.session, options.sessionQuotaBytes), onChanged: events.storageChanged },
     alarms: { onAlarm: events.alarm, get: (name, cb) => cb(undefined), create() {} },
     scripting: {
       async executeScript(details) {
@@ -634,6 +646,30 @@ async function ledgerRaceTests() {
   worker.dispose();
 }
 
+async function ledgerQuotaTests() {
+  // 60 large extract results (200 KB each) must not grow the replay ledger past
+  // chrome.storage.session's 10 MB quota, where writes fail silently.
+  const text = 'L'.repeat(200 * 1024);
+  const commands = Array.from({ length: 60 }, (_, i) => ({ id: 300 + i, action: 'extract', params: { selector: 'p' }, session: 's1' }));
+  const feed = commandFeed(commands);
+  const worker = loadWorker({
+    sessionQuotaBytes: 10 * 1024 * 1024,
+    executeScript: details => details.func ? [{ result: { ok: true, count: 1, elements: [{ text }] } }] : [{}],
+    fetch: async url => url.endsWith('/commands') ? feed() : { status: 200, body: { ok: true } }
+  });
+  await until('all quota results', () => worker.log.fetches.filter(f => f.url.endsWith('/command-result')).length >= 60, 30000);
+  await sleep(200);
+  const stored = worker.storage.session.get('holmesCommandLedger') || {};
+  const bytes = JSON.stringify(stored).length;
+  const failures = worker.log.sessionSetFailures || 0;
+  check(failures === 0 && bytes < 1024 * 1024,
+    `Large results keep the ledger small and every session write succeeds (${bytes} bytes, ${failures} failed writes)`);
+  const newest = stored['s1:359'];
+  check(newest && newest.state === 'done' && newest.result && newest.result.ok === true && JSON.stringify(newest.result).length < 8192,
+    'The newest command stays in the ledger with a compact outcome');
+  worker.dispose();
+}
+
 module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 
 if (require.main === module) {
@@ -643,7 +679,7 @@ if (require.main === module) {
     setInterval(() => {}, 1000);
     const only = process.argv[2];
     const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests,
-      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests, ledgerRaceTests };
+      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests, ledgerRaceTests, ledgerQuotaTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();

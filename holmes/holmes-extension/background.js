@@ -732,7 +732,11 @@ function scheduleCommand(cmd, token) {
 const LEDGER_KEY = "holmesCommandLedger";
 const LEDGER_LIMIT = 100;
 const LEDGER_TTL_MS = 10 * 60 * 1000;
-const LEDGER_REPLAY_BYTES = 256 * 1024;
+// chrome.storage.session holds 10 MB in total, and every command rewrites the
+// ledger. So entries keep a compact outcome only, and the whole ledger stays
+// within a byte budget far below the quota.
+const LEDGER_REPLAY_BYTES = 4 * 1024;
+const LEDGER_BUDGET_BYTES = 512 * 1024;
 const ledgerMemory = new Map();
 const runningCommandKeys = new Set();
 let ledgerWrites = Promise.resolve();
@@ -750,7 +754,23 @@ function pruneLedger(ledger) {
   const keys = Object.keys(ledger).filter(key => ledger[key] && now - (ledger[key].at || 0) < LEDGER_TTL_MS);
   keys.sort((a, b) => (ledger[b].at || 0) - (ledger[a].at || 0));
   const kept = {};
-  for (const key of keys.slice(0, LEDGER_LIMIT)) kept[key] = ledger[key];
+  let bytes = 2;
+  for (const key of keys.slice(0, LEDGER_LIMIT)) {
+    let size = 0;
+    try { size = JSON.stringify(ledger[key]).length + key.length + 4; } catch (_) { continue; }
+    if (bytes + size > LEDGER_BUDGET_BYTES) break;
+    bytes += size;
+    kept[key] = ledger[key];
+  }
+  return kept;
+}
+
+// After a failed write: keep the newer half (and always `keep`) and try again.
+function shrinkLedger(ledger, keep) {
+  const keys = Object.keys(ledger).sort((a, b) => (ledger[b].at || 0) - (ledger[a].at || 0));
+  const kept = {};
+  for (const key of keys.slice(0, Math.floor(keys.length / 2))) kept[key] = ledger[key];
+  if (ledger[keep]) kept[keep] = ledger[keep];
   return kept;
 }
 
@@ -777,10 +797,18 @@ function recordLedger(key, entry) {
   ledgerWrites = ledgerWrites.then(async () => {
     try {
       const stored = await area.get(LEDGER_KEY);
-      const ledger = (stored && stored[LEDGER_KEY]) || {};
-      ledger[key] = entry;
-      await area.set({ [LEDGER_KEY]: pruneLedger(ledger) });
-    } catch (_) { /* storage full or unavailable: the memory ledger still dedupes */ }
+      let ledger = pruneLedger(Object.assign((stored && stored[LEDGER_KEY]) || {}, { [key]: entry }));
+      // A failed write used to be swallowed, so "running" markers silently stopped
+      // persisting. Shrink and retry; the memory ledger covers a final failure.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await area.set({ [LEDGER_KEY]: ledger });
+          return;
+        } catch (e) {
+          ledger = shrinkLedger(ledger, key);
+        }
+      }
+    } catch (_) { /* storage unavailable: the memory ledger still dedupes */ }
   });
   return ledgerWrites;
 }
@@ -791,8 +819,15 @@ function replayableOutcome(outcome) {
   let size = 0;
   try { size = JSON.stringify(outcome).length; } catch (_) { size = Infinity; }
   if (size <= LEDGER_REPLAY_BYTES) return outcome;
-  return { ok: false, replayTruncated: true,
-    error: "the earlier result (" + size + " bytes) was too large to keep for replay; request it again if it is still needed" };
+  // Keep the summary (ok, counts, short strings) and drop bulky payloads such as
+  // extracted elements or screenshot data.
+  const compact = { replayTruncated: true,
+    note: "the earlier result was " + size + " bytes; only its summary was kept for replay, so request the data again if it is still needed" };
+  for (const [name, value] of Object.entries(outcome || {})) {
+    if (value === null || typeof value === "boolean" || typeof value === "number") compact[name] = value;
+    else if (typeof value === "string" && value.length <= 300) compact[name] = value;
+  }
+  return compact;
 }
 
 async function runOneCommand(cmd, token) {
