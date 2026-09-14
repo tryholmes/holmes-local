@@ -57,11 +57,16 @@ enum BackendRouter {
         let ok: Bool
         let text: String
         let undo: (() async -> Void)?
+        /// The step ran but its effect could not be read back (text typed into
+        /// a field that does not expose its value). Not a failure, not a plain
+        /// success: the run summary reports it as unverified.
+        let unverified: Bool
 
-        init(ok: Bool, text: String, undo: (() async -> Void)? = nil) {
+        init(ok: Bool, text: String, undo: (() async -> Void)? = nil, unverified: Bool = false) {
             self.ok = ok
             self.text = text
             self.undo = undo
+            self.unverified = unverified
         }
     }
 
@@ -451,7 +456,7 @@ enum BackendRouter {
         case .verified:
             return StepResult(ok: true, text: "Typed into \(appName) via Accessibility (verified).")
         case .unverified(let why):
-            return StepResult(ok: true, text: "Typed into \(appName), but it could not be verified: \(why)")
+            return StepResult(ok: true, text: "Typed into \(appName), but it could not be verified: \(why)", unverified: true)
         case .failed(let why):
             return StepResult(ok: false,
                               text: "Couldn't type into \(appName)\(fieldHint.map { " field “\($0)”" } ?? ""): \(why)")

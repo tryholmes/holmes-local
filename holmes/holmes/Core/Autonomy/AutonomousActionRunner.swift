@@ -186,9 +186,9 @@ final class AutonomousActionRunner {
         let outcome: RunOutcome = Task.isCancelled || !WorkActivityCenter.shared.isActive(id) ? .cancelled : result
         if inheritedID == nil {
             WorkActivityCenter.shared.finish(id, outcome: outcome.activityOutcome,
-                                            summary: outcome.succeeded ? "Completed: \(shorten(plan.goal, max: 100))" : outcome.summary)
+                                            summary: outcome.succeeded ? successSummary(plan, max: 100) : outcome.summary)
         }
-        statusLine = outcome.succeeded ? "Done: \(shorten(plan.goal, max: 80))" : outcome.summary
+        statusLine = outcome.succeeded ? successSummary(plan, max: 80) : outcome.summary
         return outcome
     }
 
@@ -384,7 +384,10 @@ final class AutonomousActionRunner {
                     }
                 }
                 await logExecutedStep(step, playbookId: playbookId, level: level, via: "router",
-                                      ok: true, confirmed: confirmed, note: nil)
+                                      ok: true, confirmed: confirmed, note: result.unverified ? result.text : nil)
+                if result.unverified {
+                    tally.recordUnverified(summary: step.summary, reason: result.text)
+                }
                 statusLine = shorten(result.text, max: 100)
                 collectUndo(for: step, routerUndo: result.undo)
                 executedCount += 1
@@ -827,7 +830,7 @@ final class AutonomousActionRunner {
             succeeded: finalSucceeded,
             note: note)
         statusLine = finalSucceeded
-            ? "Done: \(shorten(plan.goal, max: 80))"
+            ? (note == "done" ? "Done: \(shorten(plan.goal, max: 80))" : "\(shorten(note, max: 120))")
             : "Stopped (\(note)): \(shorten(plan.goal, max: 60))"
         await MemoryStore.shared.record(
             kind: "action",
@@ -856,6 +859,14 @@ final class AutonomousActionRunner {
         }
         print("[Holmes] Autonomy: '\(playbookId)' \(succeeded ? "completed" : "stopped (\(note))") — \(executed)/\(plan.steps.count) steps")
         return outcome
+    }
+
+    /// "Completed: goal", or the unverified note when a step could not be confirmed.
+    private func successSummary(_ plan: ActionPlan, max: Int) -> String {
+        if let note = lastRun?.note, note != "done", lastRun?.goal == plan.goal {
+            return shorten(note, max: max + 60)
+        }
+        return (max >= 100 ? "Completed: " : "Done: ") + shorten(plan.goal, max: max)
     }
 
     // Same UNUserNotificationCenter idiom as PlaybookEngine / MeetingJoinEngine:

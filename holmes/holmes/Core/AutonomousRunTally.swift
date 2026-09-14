@@ -16,6 +16,8 @@ struct AutonomousRunTally {
     let plannedSteps: Int
     private(set) var completed = 0
     private(set) var skipped: [Skipped] = []
+    /// Steps that ran but whose effect could not be confirmed.
+    private(set) var unverified: [Skipped] = []
 
     init(plannedSteps: Int) {
         self.plannedSteps = plannedSteps
@@ -29,11 +31,25 @@ struct AutonomousRunTally {
         skipped.append(Skipped(summary: summary, reason: reason))
     }
 
+    mutating func recordUnverified(summary: String, reason: String) {
+        unverified.append(Skipped(summary: summary, reason: reason))
+    }
+
+    /// No required step was skipped. Unverified steps do not fail a run, but
+    /// they keep the note from reading as a plain "done".
     var succeeded: Bool { skipped.isEmpty }
+    var isFullyVerified: Bool { skipped.isEmpty && unverified.isEmpty }
 
     /// The run's outcome note: "done", or a failure that names what was skipped.
     var note: String {
-        guard let first = skipped.first else { return "done" }
+        guard let first = skipped.first else {
+            guard let firstUnverified = unverified.first else { return "done" }
+            let count = unverified.count
+            let steps = count == 1 ? "1 step" : "\(count) steps"
+            let reason = Self.clip(firstUnverified.reason, 120)
+            return "Done, but \(steps) could not be verified, starting with “\(Self.clip(firstUnverified.summary, 60))”"
+                + (reason.isEmpty ? "" : " (\(reason))")
+        }
         let count = skipped.count
         let steps = count == 1 ? "1 required step was" : "\(count) required steps were"
         let reason = Self.clip(first.reason, 120)
@@ -44,7 +60,11 @@ struct AutonomousRunTally {
     func notifyBody(undoAvailable: Bool) -> String {
         let undo = undoAvailable ? " Undo is available in the Holmes panel." : ""
         guard !succeeded else {
-            return "\(completed) of \(plannedSteps) steps completed.\(undo)"
+            guard let firstUnverified = unverified.first else {
+                return "\(completed) of \(plannedSteps) steps completed.\(undo)"
+            }
+            return "\(completed) of \(plannedSteps) steps completed, \(unverified.count) unverified "
+                + "(“\(Self.clip(firstUnverified.summary, 50))”). Check them.\(undo)"
         }
         let count = skipped.count
         return "Failed: \(completed) of \(plannedSteps) steps completed, \(count) skipped "
