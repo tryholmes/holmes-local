@@ -34,6 +34,16 @@ import Foundation
         typed.userText = "Quick note"
         typed.autoWritable = false
         precondition(typed.canAutoDraft && !typed.canAutoWrite && typed.revisionKey != signed.revisionKey)
+        // Regression: Apple Mail's body text includes its signature and quoted thread,
+        // so Replace wiped them and Insert landed below them.
+        precondition(typed.supportsReviewedWrite, "Browser composers protect signature and quote on Replace and Insert")
+        let mailEmpty = EmailComposeSnapshot(source: .accessibility, identity: "mail|1", provider: "Apple Mail", app: "Mail",
+            recipients: ["boss@example.test"], cc: [], bcc: [], subject: "", body: "", bodyReadable: true, bodyIsEmpty: true, capturedAt: now)
+        let mailWithText = EmailComposeSnapshot(source: .accessibility, identity: "mail|1", provider: "Apple Mail", app: "Mail",
+            recipients: ["boss@example.test"], cc: [], bcc: [], subject: "", body: "Alex\n\nOn Fri Dana wrote:\n> Hi",
+            bodyReadable: true, bodyIsEmpty: false, capturedAt: now)
+        precondition(mailEmpty.supportsReviewedWrite, "An empty Mail body can take a reviewed draft")
+        precondition(!mailWithText.supportsReviewedWrite, "A Mail body with any text offers Copy only")
         precondition(sample(body: " \n\u{00a0}\u{200b}").canAutoDraft)
         precondition(base.revisionKey == sample(date: now.addingTimeInterval(1)).revisionKey)
         for changed in [sample(identity: "tab2/document2/composer1"), sample(recipient: "other@example.test"),

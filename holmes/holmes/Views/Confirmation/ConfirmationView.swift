@@ -576,8 +576,12 @@ struct ConfirmationView: View {
     @ViewBuilder private func draftPrimaryControl(draft: ProactiveDraft) -> some View {
         switch draft.target {
         case .emailCompose(let expected):
-            // Both keep the signature and quoted thread. Neither ever sends.
-            if expected.isOwnTextEmpty {
+            // In browser composers both keep the signature and quoted thread. Apple
+            // Mail cannot separate them, so a Mail body with text gets Copy only.
+            // Nothing here ever sends.
+            if !expected.supportsReviewedWrite {
+                EmptyView()
+            } else if expected.isOwnTextEmpty {
                 NoirButton("Insert draft", icon: "text.insert") {
                     insertEmailDraft(draft, expected: expected, mode: .replace)
                 }

@@ -71,6 +71,11 @@ struct EmailComposeSnapshot: Codable, Equatable, Sendable {
     /// Automatic writing never touches text the person typed.
     var canAutoWrite: Bool { canAutoDraft && isOwnTextEmpty }
 
+    /// Replace and Insert keep the signature and quoted thread only where the
+    /// reader can locate them (browser composers). Apple Mail's body text mixes
+    /// them in, so a Mail body with any text offers Copy only.
+    var supportsReviewedWrite: Bool { source == .browser || bodyIsEmpty }
+
     func isFresh(at now: Date = Date(), maximumAge: TimeInterval = 8) -> Bool {
         let age = now.timeIntervalSince(capturedAt)
         return age >= -1 && age <= maximumAge

@@ -55,6 +55,11 @@ enum MailComposeReader {
         }
         let before = current.snapshot.body
         let hasText = !EmailComposeSnapshot.isBlankBody(before)
+        // Mail's body text includes its signature and quoted thread: replacing
+        // would erase them and inserting would land below them.
+        guard current.snapshot.supportsReviewedWrite else {
+            throw EmailComposeError.unavailable("This Mail message already has text, including any signature or quote, so Holmes will not change it. Copy the draft instead.")
+        }
         let target = mode == .insert && hasText ? before + "\n\n" + text : text
         let usedPaste: Bool
         if current.match.bodyValueSettable {
