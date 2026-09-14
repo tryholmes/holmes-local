@@ -95,6 +95,28 @@ f.w.document.querySelector('[email]').setAttribute('email', 'other@example.test'
 check(!f.w.HolmesEmailCompose.stage('Wrong person', snapshot).ok, 'Changed recipient invalidates insertion');
 f.close();
 
+// Regression: Gmail's editor uses normal white space, so one text node with
+// "\n" collapsed into a single line and the readback then failed after writing.
+f = fixture('<style>[contenteditable]{white-space:normal}</style>' + compose());
+const raw = f.w.document.createElement('div');
+raw.textContent = 'Hi,\n\nSecond paragraph';
+f.w.document.body.appendChild(raw);
+check(f.w.HolmesEmailCompose.renderedText(raw) === 'Hi, Second paragraph', 'Normal white space renders a raw newline as a space, like Gmail');
+raw.remove();
+const multiline = "Hi Dana,\n\nThanks for the update.\nI'll review it today.";
+snapshot = f.read();
+result = f.w.HolmesEmailCompose.stage(multiline, snapshot);
+check(result.ok, 'Multiline draft verifies in a normal white space editor');
+check(f.body().children.length === 4 && f.body().children[1].innerHTML === '<br>', 'Each line is its own block and the blank line keeps a <br>');
+check(f.w.HolmesEmailCompose.renderedText(f.body()) === multiline, 'Rendered body keeps every line break and the blank line');
+f.body().innerHTML = '';
+snapshot = f.read();
+const rejectOnce = () => { f.body().removeEventListener('input', rejectOnce); f.body().replaceChildren(f.w.document.createTextNode('collapsed')); };
+f.body().addEventListener('input', rejectOnce);
+result = f.w.HolmesEmailCompose.stage(multiline, snapshot);
+check(!result.ok && /restored/.test(result.reason) && f.body().innerHTML === '', 'Unconfirmed write is rolled back to the saved body');
+f.close();
+
 f = fixture(compose('one', '<div><br></div>'));
 check(f.read().bodyIsEmpty, 'Structural blank line is empty');
 f.body().innerHTML = '&nbsp;\u200b';
