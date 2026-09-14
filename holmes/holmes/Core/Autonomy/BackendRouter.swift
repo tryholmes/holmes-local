@@ -408,17 +408,19 @@ enum BackendRouter {
         if matchesSendVerb(label), !userConfirmed {
             return needsConfirm(step, "pressing “\(label)” looks like a send/submit-class action")
         }
-        return await MainActor.run {
-            guard let app = runningApp(named: appName) else {
-                return StepResult(ok: false, text: "App '\(appName)' is not running.")
-            }
-            let ok = ActionExecutor.shared.clickButton(label: label, in: app)
-            diag("ax_press '\(label)' in \(appName) ok=\(ok)")
-            return StepResult(
-                ok: ok,
-                text: ok ? "Pressed “\(label)” in \(appName)."
-                         : "No accessible button labeled “\(label)” in \(appName) — a visible click may be needed instead.")
+        guard let app = runningApp(named: appName) else {
+            return StepResult(ok: false, text: "App '\(appName)' is not running.")
         }
+        // The lookup is a bounded tree walk of blocking IPC calls: run it on
+        // the concurrency pool so a slow app never stalls the main thread.
+        let ok = await Task.detached(priority: .userInitiated) {
+            ActionExecutor.shared.clickButton(label: label, in: app)
+        }.value
+        diag("ax_press '\(label)' in \(appName) ok=\(ok)")
+        return StepResult(
+            ok: ok,
+            text: ok ? "Pressed “\(label)” in \(appName)."
+                     : "Couldn't press a control labeled “\(label)” in \(appName) (not found, or it refused the press). A visible click may be needed instead.")
     }
 
     /// AX type: set the field's value through Accessibility — atomic and
@@ -431,17 +433,16 @@ enum BackendRouter {
             return StepResult(ok: false, text: "ax_type needs {\"app\":\"AppName\",\"text\":\"…\"} (optional \"fieldHint\").")
         }
         let fieldHint = (input["fieldHint"] as? String) ?? (input["field"] as? String)
-        return await MainActor.run {
-            guard let app = runningApp(named: appName) else {
-                return StepResult(ok: false, text: "App '\(appName)' is not running.")
-            }
-            let ok = ActionExecutor.shared.focusAndType(in: app, fieldHint: fieldHint, text: text)
-            diag("ax_type into \(appName) ok=\(ok)")
-            return StepResult(
-                ok: ok,
-                text: ok ? "Typed into \(appName) via Accessibility."
-                         : "Couldn't find a writable field in \(appName)\(fieldHint.map { " matching “\($0)”" } ?? "").")
+        guard let app = runningApp(named: appName) else {
+            return StepResult(ok: false, text: "App '\(appName)' is not running.")
         }
+        // focusAndType is nonisolated async, so its tree walk runs off the main thread.
+        let ok = await ActionExecutor.shared.focusAndType(in: app, fieldHint: fieldHint, text: text)
+        diag("ax_type into \(appName) ok=\(ok)")
+        return StepResult(
+            ok: ok,
+            text: ok ? "Typed into \(appName) via Accessibility."
+                     : "Couldn't find a writable field in \(appName)\(fieldHint.map { " matching “\($0)”" } ?? "").")
     }
 
     /// Frontmost-name match, exact first then contains.

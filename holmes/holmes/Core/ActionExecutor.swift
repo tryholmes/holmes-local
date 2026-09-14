@@ -62,39 +62,50 @@ final class ActionExecutor {
 
     // MARK: - Click a button by label in the frontmost app
 
+    /// Roles a "press the control named X" request may target.
+    private static let pressableRoles: Set<String> = [
+        kAXButtonRole as String, kAXMenuButtonRole as String, kAXPopUpButtonRole as String,
+        kAXCheckBoxRole as String, kAXRadioButtonRole as String, kAXMenuItemRole as String, "AXLink"
+    ]
+
+    /// Presses the best matching control (exact, then case insensitive, then
+    /// substring, across title/description/help/identifier). Returns true only
+    /// when AXPress itself reported success. Does a bounded tree walk with
+    /// blocking IPC: call it OFF the main thread.
     @discardableResult
     func clickButton(label: String, in app: NSRunningApplication) -> Bool {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
-        if let button = findElement(in: axApp, role: kAXButtonRole, label: label) {
-            AXUIElementPerformAction(button, kAXPressAction as CFString)
-            return true
+        guard let button = findElement(in: axApp, roles: Self.pressableRoles, label: label) else { return false }
+        let result = AXUIElementPerformAction(button, kAXPressAction as CFString)
+        guard result == .success else {
+            print("[Holmes] AXPress on “\(label)” failed: AXError \(result.rawValue)")
+            return false
         }
-        return false
+        return true
     }
 
     // MARK: - Find and focus a text field in an app, then type
 
+    /// Nonisolated async: runs on the concurrency pool, never the main thread,
+    /// and waits for focus with Task.sleep instead of blocking a thread.
     @discardableResult
-    func focusAndType(in app: NSRunningApplication, fieldHint: String? = nil, text: String) -> Bool {
+    func focusAndType(in app: NSRunningApplication, fieldHint: String? = nil, text: String) async -> Bool {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
 
-        // Try to find a text area / text field
-        let roles = [kAXTextAreaRole, kAXTextFieldRole]
-        for role in roles {
-            if let field = findElement(in: axApp, role: role, label: fieldHint) {
-                // Focus it
-                AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, true as CFTypeRef)
-                // Small delay for focus to settle
-                Thread.sleep(forTimeInterval: 0.1)
-                // Set value
-                var settable: DarwinBoolean = false
-                AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &settable)
-                if settable.boolValue {
-                    AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, text as CFTypeRef)
-                    return true
-                }
+        // Find the best matching text area / text field in one bounded walk.
+        let roles: Set<String> = [kAXTextAreaRole as String, kAXTextFieldRole as String]
+        if let field = findElement(in: axApp, roles: roles, label: fieldHint) {
+            AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, true as CFTypeRef)
+            // Small delay for focus to settle, without blocking a thread.
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !Task.isCancelled else { return false }
+            var settable: DarwinBoolean = false
+            AXUIElementIsAttributeSettable(field, kAXValueAttribute as CFString, &settable)
+            if settable.boolValue,
+               AXUIElementSetAttributeValue(field, kAXValueAttribute as CFString, text as CFTypeRef) == .success {
+                return true
             }
         }
         // Fallback to clipboard paste
@@ -214,7 +225,7 @@ end tell
         // 3. Try to AX-focus the text input area
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
-        if let textArea = findTextAreaDeep(in: axApp) {
+        if let textArea = findElement(in: axApp, roles: [kAXTextAreaRole as String], label: nil) {
             AXUIElementSetAttributeValue(textArea, kAXFocusedAttribute as CFString, true as CFTypeRef)
             Thread.sleep(forTimeInterval: 0.15)
         }
@@ -274,54 +285,46 @@ end tell
         return true
     }
 
-    private func findElement(in element: AXUIElement, role: String, label: String?) -> AXUIElement? {
-        var roleRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
-        if let r = roleRef as? String, r == role {
-            if let label {
-                var titleRef: CFTypeRef?
-                AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &titleRef)
-                if let title = titleRef as? String, title.lowercased().contains(label.lowercased()) {
-                    return element
+    /// Wall clock budget for one element lookup, on top of the depth and
+    /// element count limits in AXElementSearch.
+    private static let searchTimeBudget: TimeInterval = 2.5
+
+    /// Bounded breadth first lookup. With a label, the best ranked match wins
+    /// (exact title/description/help/identifier/placeholder beats case
+    /// insensitive beats substring); without one, the first element of a role.
+    private func findElement(in root: AXUIElement, roles: Set<String>, label: String?) -> AXUIElement? {
+        let deadline = Date().addingTimeInterval(Self.searchTimeBudget)
+        let result = AXElementSearch.best(
+            from: root,
+            stopScore: label == nil ? 1 : AXLabelMatch.exact.rawValue,
+            children: { element in
+                guard Date() < deadline else { return [] }
+                var childrenRef: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+                      let children = childrenRef as? [AXUIElement] else { return [] }
+                for child in children { AXUIElementSetMessagingTimeout(child, 1.0) }
+                return children
+            },
+            score: { element in
+                guard let role = Self.stringAttribute(element, kAXRoleAttribute as String), roles.contains(role) else {
+                    return nil
                 }
-            } else {
-                return element
-            }
+                guard let label else { return 1 }
+                let names = [kAXTitleAttribute as String, kAXDescriptionAttribute as String,
+                             kAXHelpAttribute as String, "AXIdentifier", kAXPlaceholderValueAttribute as String]
+                    .map { Self.stringAttribute(element, $0) }
+                return AXElementSearch.labelMatch(label, names: names)?.rawValue
+            })
+        if result.node == nil, result.truncated {
+            print("[Holmes] AX lookup stopped at its limit after \(result.visited) elements")
         }
-
-        var childrenRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-              let children = childrenRef as? [AXUIElement]
-        else { return nil }
-
-        for child in children {
-            if let found = findElement(in: child, role: role, label: label) {
-                return found
-            }
-        }
-        return nil
+        return result.node
     }
 
-    private func findTextAreaDeep(in element: AXUIElement, depth: Int = 0) -> AXUIElement? {
-        guard depth < 12 else { return nil }
-
-        var roleRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
-        if let role = roleRef as? String, role == kAXTextAreaRole as String {
-            return element
-        }
-
-        var childrenRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-              let children = childrenRef as? [AXUIElement]
-        else { return nil }
-
-        for child in children {
-            if let found = findTextAreaDeep(in: child, depth: depth + 1) {
-                return found
-            }
-        }
-        return nil
+    private static func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &ref) == .success else { return nil }
+        return ref as? String
     }
 
     func runningApp(named name: String) -> NSRunningApplication? {

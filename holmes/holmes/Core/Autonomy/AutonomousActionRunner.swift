@@ -295,7 +295,9 @@ final class AutonomousActionRunner {
         }
 
         var executedCount = 0
-        var failedStepCount = 0   // steps that failed even after a retry — skipped, not fatal
+        // Steps that failed even after a retry are skipped, not fatal, but a
+        // skipped step is required work that did not happen: the tally fails the run.
+        var tally = AutonomousRunTally(plannedSteps: plan.steps.count)
         undoActionsForLastRun = []
 
         for segment in Self.segmentize(plan.steps) {
@@ -360,7 +362,7 @@ final class AutonomousActionRunner {
                 let retrySafe = !BackendRouter.requiresConfirmation(step, composioApps: composioApps)
                     && step.action != "type" && step.action != "applescript" && step.action != "ax_type"
                 if !result.ok, !retrySafe {
-                    failedStepCount += 1
+                    tally.recordSkipped(summary: step.summary, reason: result.text)
                     await logExecutedStep(step, playbookId: playbookId, level: level, via: "router",
                                           ok: false, confirmed: confirmed, note: result.text)
                     continue
@@ -375,7 +377,7 @@ final class AutonomousActionRunner {
                     if retry.ok {
                         result = retry
                     } else {
-                        failedStepCount += 1
+                        tally.recordSkipped(summary: step.summary, reason: retry.text)
                         await logExecutedStep(step, playbookId: playbookId, level: level, via: "router",
                                               ok: false, confirmed: confirmed, note: retry.text)
                         continue
@@ -430,11 +432,10 @@ final class AutonomousActionRunner {
             }
         }
 
-        let undoHint = undoActionsForLastRun.isEmpty ? "" : " Undo is available in the Holmes panel."
-        let skipHint = failedStepCount == 0 ? "" : " \(failedStepCount) step\(failedStepCount == 1 ? "" : "s") skipped."
+        tally.recordCompleted(executedCount)
         return await finishRun(plan: plan, playbookId: playbookId, executed: executedCount,
-                        succeeded: failedStepCount == 0, note: failedStepCount == 0 ? "done" : "\(failedStepCount) step(s) could not be completed",
-                        notifyBody: "\(executedCount) of \(plan.steps.count) steps completed.\(skipHint)\(undoHint)")
+                        succeeded: tally.succeeded, note: tally.note,
+                        notifyBody: tally.notifyBody(undoAvailable: !undoActionsForLastRun.isEmpty))
     }
 
     // MARK: - Undo
