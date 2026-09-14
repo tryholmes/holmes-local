@@ -136,6 +136,13 @@ enum EmailPredictionPrompt {
             sections.append("USER REQUEST: \(clip(context.instruction, 600))")
         }
 
+        // Facts go before the thread: small models use what they read first.
+        let memory = context.memory.map { clip($0, 240) }.reduce(into: [String]()) { rows, line in
+            if rows.joined(separator: "\n").count + line.count <= memoryBudget { rows.append(line) }
+        }
+        sections.append("MEMORY (facts Holmes knows; use them when the email needs them): "
+                        + (memory.isEmpty ? "(nothing relevant)" : "\n" + memory.map { "- " + $0 }.joined(separator: "\n")))
+
         if !compose.thread.isEmpty {
             var used = 0
             var rows: [String] = []
@@ -163,10 +170,6 @@ enum EmailPredictionPrompt {
             sections.append("CALENDAR: not available")
         }
 
-        let memory = context.memory.map { clip($0, 240) }.reduce(into: [String]()) { rows, line in
-            if rows.joined(separator: "\n").count + line.count <= memoryBudget { rows.append(line) }
-        }
-        sections.append("MEMORY: " + (memory.isEmpty ? "(nothing relevant)" : "\n" + memory.map { "- " + $0 }.joined(separator: "\n")))
 
         let samples = context.sentSamples.prefix(sentSamples).map { sample in
             "To \(sample.to)\(sample.date.isEmpty ? "" : " (\(sample.date))"), subject \"\(clip(sample.subject, 80))\":\n\(clip(sample.text, sentBudget))"
@@ -487,6 +490,11 @@ enum EmailGrounding {
             let digits = normalizeNumber(number.text)
             guard digits.count >= 2 || number.text.hasPrefix("$") || number.text.hasPrefix("€") || number.text.hasPrefix("£") || number.text.hasSuffix("%") else { continue }
             if sourceNumbers.contains(digits) { continue }
+            // "60 minutes" restates "an hour"; common durations are not new facts.
+            let following = text[number.range.upperBound...].prefix(9).lowercased()
+            if let value = Int(digits), [15, 30, 45, 60, 90, 120].contains(value),
+               following.hasPrefix(" min") || following.hasPrefix("min") || following.hasPrefix(" hour"),
+               sourceLower.contains("hour") || sourceLower.contains("minute") { continue }
             if let value = Int(digits), value == year || value == year + 1 { continue }
             issues.append(number.text)
         }
@@ -663,7 +671,9 @@ enum EmailPredictionParser {
 
     static func validatedActions(_ object: [String: Any], body: String, context: EmailPredictionContext) -> [EmailActionCandidate] {
         var actions: [EmailActionCandidate] = []
-        if let event = validatedEvent(object, body: body, context: context) { actions.append(event) }
+        if let event = validatedEvent(object, body: body, context: context) ?? inferredEvent(body: body, context: context) {
+            actions.append(event)
+        }
         // Small models often leave follow_up_days at 0 for a clear request, so
         // an explicit request in the email itself also qualifies.
         let days = integer(object["follow_up_days"])
@@ -692,6 +702,15 @@ enum EmailPredictionParser {
         var issues: [String] = []
         for sentence in EmailGrounding.sentences(body) {
             let sentenceDays = EmailGrounding.mentionedWeekdays(in: sentence.lowercased(), context: context)
+            let parts = clauses(sentence).map { $0.lowercased().replacingOccurrences(of: "’", with: "'") }
+            // "I'm available at 11am, but my calendar shows that time as busy."
+            let accepts = parts.contains { !EmailGrounding.times(in: $0).isEmpty && !EmailBodySanitizer.matches($0, negativeAvailability)
+                && EmailBodySanitizer.matches($0, positiveAvailability) }
+            let declinesSameTime = parts.contains { EmailGrounding.times(in: $0).isEmpty && EmailGrounding.mentionedWeekdays(in: $0, context: context).all.isEmpty
+                && EmailBodySanitizer.matches($0, negativeAvailability + #"|\bshows? (that|this|it)\b"#) }
+            if accepts, declinesSameTime {
+                issues.append("it both accepts and declines the same time; compare it with CALENDAR and say one thing")
+            }
             for clause in clauses(sentence) {
                 let lower = clause.lowercased().replacingOccurrences(of: "’", with: "'")
                 let times = EmailGrounding.times(in: clause)
@@ -727,6 +746,45 @@ enum EmailPredictionParser {
             }
         }
         return issues
+    }
+
+    /// The model often leaves the event fields empty when it accepts a time the
+    /// thread proposed. Such an acceptance still yields a candidate, validated
+    /// exactly like a model supplied one.
+    static func inferredEvent(body: String, context: EmailPredictionContext) -> EmailActionCandidate? {
+        guard context.calendarAvailable, let latest = context.compose.thread.first else { return nil }
+        let proposed = Set(EmailGrounding.times(in: latest.text).map(\.minutes))
+        guard !proposed.isEmpty else { return nil }
+        let calendar = EmailDates.calendar(context.timeZone)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = context.timeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        for sentence in EmailGrounding.sentences(body) {
+            let sentenceDays = EmailGrounding.mentionedWeekdays(in: sentence.lowercased(), context: context)
+            for clause in clauses(sentence) {
+                let lower = clause.lowercased().replacingOccurrences(of: "’", with: "'")
+                guard !EmailBodySanitizer.matches(lower, negativeAvailability),
+                      EmailBodySanitizer.matches(lower, positiveAvailability + #"|\bworks\b|\bconfirm"#) else { continue }
+                let times = EmailGrounding.times(in: clause).filter { proposed.contains($0.minutes) }
+                guard times.count == 1 else { continue }
+                var day: Date?
+                if let date = EmailGrounding.dates(in: clause).first ?? EmailGrounding.dates(in: sentence).first {
+                    let parts = date.key.split(separator: "/").compactMap { Int($0) }
+                    var components = calendar.dateComponents([.year], from: context.now)
+                    components.month = parts.first
+                    components.day = parts.last
+                    day = calendar.date(from: components)
+                } else {
+                    var days = EmailGrounding.mentionedWeekdays(in: lower, context: context)
+                    if days.all.isEmpty { days = sentenceDays }
+                    day = EmailDates.upcomingDays(context).dropFirst().first { days.all.contains(calendar.component(.weekday, from: $0) - 1) }
+                }
+                guard let day, let start = calendar.date(byAdding: .minute, value: times[0].minutes, to: calendar.startOfDay(for: day)) else { continue }
+                return validatedEvent(["event_start": formatter.string(from: start), "event_minutes": 30, "event_title": ""], body: body, context: context)
+            }
+        }
+        return nil
     }
 
     static func validatedEvent(_ object: [String: Any], body: String, context: EmailPredictionContext) -> EmailActionCandidate? {
@@ -775,7 +833,8 @@ enum EmailPredictionParser {
     }
 
     static func isDirectRequest(_ body: String) -> Bool {
-        EmailBodySanitizer.matches(body, #"\b(could you|can you|would you|will you|if you could|i'd appreciate it if|i would appreciate it if|please (send|share|confirm|let me know|review|sign|reply|introduce)|when would (you|it)|can we (set up|schedule|find))\b"#)
+        let text = body.replacingOccurrences(of: "’", with: "'")
+        return EmailBodySanitizer.matches(text, #"\b(could you|can you|would you|will you|if you could|i'd appreciate it if|i would appreciate it if|please (send|share|confirm|let me know|review|sign|reply|introduce)|when would (you|it)|can we (set up|schedule|find)|could we|shall we|following up on|checking in on|any update|let me know your thoughts|let me know (if|whether) you('d| would) like to (discuss|meet|talk|chat|move forward|proceed))\b"#)
     }
 
     static func jsonObject(_ raw: String) -> [String: Any]? {
