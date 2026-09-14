@@ -608,6 +608,32 @@ async function longPollSpinTests() {
   check(total < 60, `Empty long polls that return immediately back off instead of spinning (${total} polls from 5 workers in 1s)`);
 }
 
+async function ledgerRaceTests() {
+  // Two copies of one command id land in different tab lanes at the same moment.
+  // Only one may run; the check and the running marker must not race.
+  let executions = 0;
+  const executeScript = async details => {
+    if (!details.func) return [{}];
+    executions++;
+    await sleep(50);
+    return [{ result: { ok: true, filled: { tag: 'input' }, length: 1 } }];
+  };
+  const tabs = [{ id: 1, windowId: 23, url: 'https://a.test/', active: true }, { id: 2, windowId: 23, url: 'https://b.test/' }];
+  let served = false;
+  const worker = loadWorker({ tabs, executeScript, fetch: async url => {
+    if (!url.endsWith('/commands')) return { status: 200, body: { ok: true } };
+    await sleep(15);
+    if (served) return { status: 200, body: [], headers: { 'X-Holmes-Long-Poll': '1' } };
+    served = true;
+    const copy = tabId => ({ id: 51, action: 'fillField', params: { tabId, selector: '#a', value: 'x' }, session: 's1' });
+    return { status: 200, body: [copy(1), copy(2)], headers: { 'X-Holmes-Long-Poll': '1' } };
+  } });
+  await until('result for 51', () => resultPosts(worker, 51).some(p => !p.body._holmesStarted), 2000);
+  await sleep(200);
+  check(executions === 1, `Two copies of one id in different lanes execute once (${executions} executions)`);
+  worker.dispose();
+}
+
 module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 
 if (require.main === module) {
@@ -617,7 +643,7 @@ if (require.main === module) {
     setInterval(() => {}, 1000);
     const only = process.argv[2];
     const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests,
-      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests };
+      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests, ledgerRaceTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();

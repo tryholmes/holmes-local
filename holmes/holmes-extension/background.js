@@ -803,8 +803,12 @@ async function runOneCommand(cmd, token) {
 
   if (key !== null) {
     if (runningCommandKeys.has(key)) return; // already running here; that run posts the result
+    // Claim the key BEFORE any await: a second copy of this id in another lane
+    // could otherwise pass the check above while this one reads the ledger.
+    runningCommandKeys.add(key);
     const prior = await ledgerEntry(key);
     if (prior && prior.state === "done") {
+      runningCommandKeys.delete(key);
       await postResult(Object.assign({ id, action, session, at: Date.now(), replayed: true }, prior.result), token);
       return;
     }
@@ -812,10 +816,10 @@ async function runOneCommand(cmd, token) {
       const interrupted = { ok: false, interrupted: true,
         error: "interrupted: the browser extension restarted while running this command, so it was not run again. Check the page before retrying." };
       await recordLedger(key, { state: "done", action, at: Date.now(), result: interrupted });
+      runningCommandKeys.delete(key);
       await postResult(Object.assign({ id, action, session, at: Date.now() }, interrupted), token);
       return;
     }
-    runningCommandKeys.add(key);
     // Recorded before anything runs, so a restart mid-command is detectable.
     await recordLedger(key, { state: "running", action, at: Date.now() });
   }
