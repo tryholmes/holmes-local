@@ -12,7 +12,8 @@ function compose(id = 'one', body = '', recipient = 'boss@example.test') {
     <input name="subjectbox" value="I'm gonna be late"><div contenteditable="true" aria-label="Message Body">${body}</div>
     <button type="submit" id="send-${id}">Send</button></div>`;
 }
-function fixture(html, { tabId = 17, windowId = 23, instanceId = 'test-profile', url = 'https://mail.google.com/mail/u/0/#inbox' } = {}) {
+function fixture(html, { tabId = 17, windowId = 23, instanceId = 'test-profile', url = 'https://mail.google.com/mail/u/0/#inbox', helloFailures = 0 } = {}) {
+  let hellos = 0;
   const dom = new JSDOM(`<title>Inbox — this is not a subject</title>${html}`, { url, pretendToBeVisual: true, runScripts: 'outside-only' });
   const w = dom.window;
   Object.defineProperties(w.HTMLElement.prototype, {
@@ -27,7 +28,12 @@ function fixture(html, { tabId = 17, windowId = 23, instanceId = 'test-profile',
       onMessage: { addListener(listener) { listeners.push(listener); } },
       sendMessage(message, callback) {
         messages.push(message);
-        if (message.type === 'holmes:hello') callback({ token: 'synthetic-token', tabId, windowId, instanceId, isActiveTab: true });
+        if (message.type === 'holmes:hello') {
+          hellos++;
+          // A worker that is still starting answers nothing.
+          if (hellos <= helloFailures) callback(undefined);
+          else callback({ token: 'synthetic-token', tabId, windowId, instanceId, isActiveTab: true });
+        }
         else if (callback) callback({ ok: true });
       }
     },
@@ -36,8 +42,8 @@ function fixture(html, { tabId = 17, windowId = 23, instanceId = 'test-profile',
   // No network, including accidental transport calls while testing content.js.
   w.fetch = async () => ({ ok: true, status: 200 });
   w.eval(fs.readFileSync(path.join(extension, 'email-compose.js'), 'utf8'));
-  w.HolmesEmailCompose.setEnvironment({ tabId, windowId, instanceId, app: 'Google Chrome' });
-  return { dom, w, read: () => w.HolmesEmailCompose.read(),
+  if (!helloFailures) w.HolmesEmailCompose.setEnvironment({ tabId, windowId, instanceId, app: 'Google Chrome' });
+  return { dom, w, read: () => w.HolmesEmailCompose.read(), hellos: () => hellos,
     body: () => w.document.querySelector('[aria-label="Message Body"]'),
     close: () => dom.window.close(),
     loadContent() { w.eval(fs.readFileSync(path.join(extension, 'content.js'), 'utf8')); },
@@ -203,5 +209,122 @@ f.close();
 f = fixture(`<div data-testid="compose-form"><input aria-label="To" value="sam@contoso.com"><input aria-label="Subject" value="Plans">
   <div role="textbox" contenteditable="true"></div></div>`, { url: 'https://outlook.live.com/mail/0/' });
 check(f.read() && f.read().bodyIsEmpty && f.read().subject === 'Plans', 'Outlook body exposed only as a textbox in the compose pane is recognized');
+f.close();
+
+// Signature and quoted thread are never edited; automatic writes go above them.
+const gmailSignature = '<div dir="ltr"><br clear="all"><div><br></div><span class="gmail_signature_prefix">-- </span><br><div dir="ltr" class="gmail_signature" data-smartmail="gmail_signature">Alex Rivera<br>Acme Corp</div></div>';
+f = fixture('<style>[contenteditable]{white-space:normal}</style>' + compose('one', gmailSignature));
+snapshot = f.read();
+check(!snapshot.bodyIsEmpty && snapshot.autoWritable && snapshot.hasSignature && snapshot.userText === '', 'A body holding only a signature is writable automatically');
+const signatureHTML = f.w.document.querySelector('.gmail_signature').outerHTML;
+result = f.w.HolmesEmailCompose.stage('Hi,\n\nI am running late.', snapshot, { mode: 'auto' });
+check(result.ok && typeof result.undoToken === 'string', 'Automatic write succeeds above the signature and returns an undo token');
+check(f.w.document.querySelector('.gmail_signature').outerHTML === signatureHTML && f.read().userText.trim() === 'Hi,\n\nI am running late.', 'Signature is byte for byte intact and the new text sits above it');
+check(/I am running late\.\n+--\nAlex Rivera\nAcme Corp$/.test(f.w.HolmesEmailCompose.renderedText(f.body())), 'Signature still renders after the written email');
+const signedToken = result.undoToken;
+result = f.w.HolmesEmailCompose.undo(signedToken);
+check(result.ok && result.undone && f.body().innerHTML === gmailSignature, 'Undo restores exactly what was there');
+check(!f.w.HolmesEmailCompose.undo(signedToken).ok, 'Undo is single use');
+snapshot = f.read();
+f.w.HolmesEmailCompose.noteUserInput();
+result = f.w.HolmesEmailCompose.stage('Hi,\n\nText.', snapshot, { mode: 'auto' });
+check(!result.ok && result.typing && f.body().innerHTML === gmailSignature, 'No automatic write while the person is typing');
+f.w.HolmesEmailCompose.noteUserInput(0);
+f.w.document.querySelector('[name="subjectbox"]').dispatchEvent(new f.w.KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+check(f.w.HolmesEmailCompose.check(snapshot, { mode: 'auto' }).typing === true, 'A keydown anywhere in the page counts as typing');
+f.w.HolmesEmailCompose.noteUserInput(0);
+check(f.w.HolmesEmailCompose.check(snapshot, { mode: 'auto' }).ok && f.body().innerHTML === gmailSignature, 'Check validates without writing');
+f.body().innerHTML = '<div>Running late, sorry</div>' + gmailSignature;
+snapshot = f.read();
+check(!snapshot.autoWritable && snapshot.userText.trim() === 'Running late, sorry', 'Typed text is the person\'s own, not a signature');
+check(f.w.HolmesEmailCompose.stage('Hi,\n\nSomething else.', snapshot, { mode: 'auto' }).hasOwnText && f.read().userText.trim() === 'Running late, sorry', 'Automatic mode never overwrites typed text');
+// Regression: Replace body used to erase the signature along with the notes.
+result = f.w.HolmesEmailCompose.stage('Hi,\n\nI am running late, sorry.', f.read(), { mode: 'replace' });
+check(result.ok && f.w.document.querySelector('.gmail_signature').outerHTML === signatureHTML && f.read().userText.trim() === 'Hi,\n\nI am running late, sorry.', 'Replace body replaces only the person\'s text and keeps the signature');
+result = f.w.HolmesEmailCompose.stage('Back by noon.', f.read(), { mode: 'insert' });
+check(result.ok && /I am running late, sorry\.\n+Back by noon\.$/.test(f.read().userText.trim()) && f.w.document.querySelector('.gmail_signature').outerHTML === signatureHTML, 'Insert adds below the person\'s text and above the signature');
+f.close();
+
+f = fixture(compose('one', '', 'dana@example.test'));
+f.w.document.querySelector('[name="subjectbox"]').value = '';
+snapshot = f.read();
+result = f.w.HolmesEmailCompose.stage('Hi,\n\nAre we still on for Friday?', snapshot, { mode: 'auto', subject: 'Friday plans' });
+check(result.ok && result.subjectFilled && f.read().subject === 'Friday plans', 'An empty subject is filled with the predicted subject');
+check(f.w.HolmesEmailCompose.undo(result.undoToken).ok && f.read().subject === '' && f.read().bodyIsEmpty, 'Undo also clears the subject Holmes filled');
+f.w.document.querySelector('[name="subjectbox"]').value = 'My subject';
+snapshot = f.read();
+result = f.w.HolmesEmailCompose.stage('Hi,\n\nText here.', snapshot, { mode: 'auto', subject: 'Other' });
+check(result.ok && !result.subjectFilled && f.read().subject === 'My subject', 'A subject the person wrote is never changed');
+f.body().appendChild(f.w.document.createTextNode(' edited'));
+result = f.w.HolmesEmailCompose.undo(result.undoToken);
+check(!result.ok && result.edited && f.w.HolmesEmailCompose.renderedText(f.body()).includes('edited'), 'Undo refuses once the person edited what Holmes wrote');
+f.close();
+
+// Thread context: newest message first, nested quotes removed, names kept.
+f = fixture(`<div class="nH"><h2 class="hP">Budget review</h2>
+  <div class="adn ads"><span class="gD" email="sam@example.test" name="Sam Ortiz">Sam Ortiz</span><span class="g3" title="Sep 10, 2026, 9:00 AM">Sep 10</span><div class="a3s aiL">Kicking off the budget review.</div></div>
+  <div class="adn ads"><span class="gD" email="dana@example.test" name="Dana Lee">Dana Lee</span><span class="g3" title="Sep 12, 2026, 4:12 PM">Sep 12</span><div class="a3s aiL">Can you send the Q3 numbers by Friday?<div class="gmail_quote">On Sep 10 Sam wrote: Kicking off</div></div></div>
+  <div class="M9"><input type="hidden" name="to" value="Dana Lee <dana@example.test>"><input type="hidden" name="subjectbox" value="Re: Budget review">
+    <div contenteditable="true" aria-label="Message Body" g_editable="true"><div><br></div><div class="gmail_quote">On Sat, Sep 12, 2026 at 4:12 PM Dana Lee &lt;dana@example.test&gt; wrote:<blockquote class="gmail_quote">Can you send the Q3 numbers by Friday?</blockquote></div></div></div></div>`);
+snapshot = f.read();
+check(snapshot.isReply && snapshot.hasQuote && snapshot.autoWritable && snapshot.threadSubject === 'Budget review', 'Inline reply holding only quoted text is a writable reply');
+check(snapshot.thread.length === 2 && snapshot.thread[0].fromEmail === 'dana@example.test' && snapshot.thread[0].text === 'Can you send the Q3 numbers by Friday?'
+  && snapshot.thread[0].date === 'Sep 12, 2026, 4:12 PM' && snapshot.thread[1].from === 'Sam Ortiz', 'Conversation is read newest first without nested quotes');
+check(snapshot.recipientNames['dana@example.test'] === 'Dana Lee', 'Recipient display names come from the header');
+const quoteHTML = f.body().querySelector('.gmail_quote').outerHTML;
+result = f.w.HolmesEmailCompose.stage('Hi Dana,\n\nI will send them Friday.', snapshot, { mode: 'auto' });
+check(result.ok && f.body().querySelector('.gmail_quote').outerHTML === quoteHTML && f.body().firstElementChild.textContent === 'Hi Dana,', 'Reply text goes above the untouched quote');
+f.close();
+
+f = fixture(compose('one', '<div><br></div><div class="gmail_quote">On Fri, Sep 11, 2026 at 9:00 AM Dana Lee &lt;dana@example.test&gt; wrote:<br><blockquote class="gmail_quote">Lunch next week?</blockquote></div>'));
+f.w.document.querySelector('[name="subjectbox"]').value = 'Re: Lunch';
+snapshot = f.read();
+check(snapshot.isReply && snapshot.thread.length === 1 && snapshot.thread[0].from === 'Dana Lee' && snapshot.thread[0].fromEmail === 'dana@example.test'
+  && snapshot.thread[0].text === 'Lunch next week?', 'A popped out reply without a visible conversation still yields the message it answers');
+f.close();
+
+f = fixture(`<div data-app-section="ConversationContainer"><div role="listitem"><span title="Dana Lee &lt;dana@contoso.com&gt;">Dana Lee</span><time datetime="2026-09-12T16:12">Sat 4:12 PM</time><div id="UniqueMessageBody_1">Are we still on for Friday at 3pm?</div></div>
+  <div class="compose-inline"><div role="textbox" contenteditable="true" aria-label="To"><span title="Dana Lee &lt;dana@contoso.com&gt;">Dana Lee</span></div><input aria-label="Add a subject" value="RE: Friday">
+  <div role="textbox" contenteditable="true" aria-label="Message body"><div><br></div><div id="Signature"><div>Alex Rivera</div></div><div id="appendonsend"></div><hr><div id="divRplyFwdMsg"><b>From:</b> Dana Lee</div><div>Are we still on for Friday at 3pm?</div></div></div></div>`, { url: 'https://outlook.office.com/mail/' });
+snapshot = f.read();
+check(snapshot.isReply && snapshot.hasSignature && snapshot.hasQuote && snapshot.autoWritable && snapshot.thread.length === 1
+  && snapshot.thread[0].fromEmail === 'dana@contoso.com' && snapshot.thread[0].text === 'Are we still on for Friday at 3pm?', 'Outlook reply reads the conversation and treats signature and quote as protected');
+const outlookTail = f.w.document.querySelector('#Signature').outerHTML + f.w.document.querySelector('#divRplyFwdMsg').outerHTML;
+result = f.w.HolmesEmailCompose.stage('Hi Dana,\n\nYes, Friday at 3pm works.', snapshot, { mode: 'auto' });
+check(result.ok && f.w.document.querySelector('#Signature').outerHTML + f.w.document.querySelector('#divRplyFwdMsg').outerHTML === outlookTail
+  && f.read().userText.trim() === 'Hi Dana,\n\nYes, Friday at 3pm works.', 'Outlook write lands above its signature and reply header');
+f.close();
+
+f = fixture(`<div class="composer"><input data-testid="composer:to" value="sam@proton.me"><input data-testid="composer:subject" value="">
+  <div data-testid="composer:body" contenteditable="true"><div><br></div><div class="protonmail_signature_block"><div>Sent with Proton Mail secure email.</div></div></div></div>`, { url: 'https://mail.proton.me/u/0/inbox' });
+snapshot = f.read();
+check(snapshot.autoWritable && snapshot.hasSignature && snapshot.subjectEditable && snapshot.subject === '', 'Proton composer holding only its signature is writable');
+result = f.w.HolmesEmailCompose.stage('Hi Sam,\n\nThanks for the files.', snapshot, { mode: 'auto', subject: 'Thanks for the files' });
+check(result.ok && f.w.document.querySelector('.protonmail_signature_block').textContent === 'Sent with Proton Mail secure email.'
+  && f.read().subject === 'Thanks for the files', 'Proton write keeps its signature and fills the empty subject');
+f.close();
+
+// Production handlers: precheck, write mode, undo.
+f = fixture(compose());
+f.loadContent();
+snapshot = f.read();
+let response = f.message({ type: 'holmes:checkEmailDraft', expected: snapshot, body: 'Hi', options: { mode: 'auto' } });
+check(response.ok && f.body().textContent === '', 'Production precheck validates without writing');
+response = f.message({ type: 'holmes:fillEmailDraft', body: 'Hi,\n\nOn my way.', expected: snapshot, options: { mode: 'auto' } });
+check(response.ok && typeof response.undoToken === 'string', 'Production fill passes the write mode and returns an undo token');
+response = f.message({ type: 'holmes:undoEmailDraft', token: response.undoToken });
+check(response.ok && response.undone && f.body().textContent === '', 'Production undo restores the body');
+f.close();
+
+// Regression: a hello that raced the starting worker left an empty identity forever.
+f = fixture(compose(), { helloFailures: 1 });
+f.loadContent();
+check(f.read().identity === '' && f.hellos() === 1, 'A failed hello leaves the composer without identity');
+f.message({ type: 'holmes:active', isActiveTab: true });
+const realNow = f.w.Date.now;
+f.w.Date.now = () => realNow() + 5000;
+f.message({ type: 'holmes:readEmailCompose' });
+f.w.Date.now = realNow;
+check(f.hellos() === 2 && f.read().identity !== '', 'Reading a composer without identity retries the handshake');
 f.close();
 console.log(`Email compose DOM: ${assertions} checks passed (synthetic fixtures; no network or mail account).`);

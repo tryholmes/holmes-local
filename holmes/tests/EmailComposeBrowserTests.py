@@ -89,7 +89,7 @@ try:
     # HOLMES_COMPOSE_SCRIPT runs this same test against another writer build,
     # e.g. an older revision, to confirm the fixture still catches a regression.
     production = Path(os.environ.get('HOLMES_COMPOSE_SCRIPT', ROOT / 'holmes-extension/email-compose.js')).read_text()
-    evaluate(production + '\nHolmesEmailCompose.setEnvironment({tabId:71,windowId:8,instanceId:"synthetic-chrome",app:"Google Chrome"}); window.sendCount=0; window.inputCount=0; document.querySelector("#send").addEventListener("click",()=>sendCount++); document.addEventListener("input",()=>inputCount++); true')
+    evaluate(production + '\nHolmesEmailCompose.setEnvironment({tabId:71,windowId:8,instanceId:"synthetic-chrome",app:"Google Chrome"}); window.sendCount=0; window.inputCount=0; window.keyCount=0; document.querySelector("#send").addEventListener("click",()=>sendCount++); document.addEventListener("input",()=>inputCount++); document.addEventListener("keydown",()=>keyCount++,true); true')
     snapshot = browser('snapshot', '-i')
     check('textbox "To"' in snapshot and 'textbox "Subject"' in snapshot and 'textbox "Message Body"' in snapshot, 'real browser renders labeled compose controls')
     check(evaluate('window.expected=HolmesEmailCompose.read(); expected.recipients[0]==="boss@gmail.com" && expected.subject==="Im gonna be late" && expected.bodyIsEmpty'), 'literal recipient + subject with verified empty body')
@@ -103,7 +103,12 @@ try:
     check(evaluate('document.querySelector("[aria-label=\\"Message Body\\"]").innerText.split("\\n").filter(Boolean).length === 3'),
           'normal white space editor shows three separate lines (no collapsed newlines)')
     check(evaluate('document.querySelector("[name=subjectbox]").value==="Im gonna be late" && document.querySelector("[name=to]").value==="boss@gmail.com"'), 'headers unchanged after body insertion')
-    check(evaluate('sendCount===0 && inputCount===1'), 'one input event; Send never clicked')
+    print('stage ' + json.dumps(stage), flush=True)
+    counts = evaluate('({sends: sendCount, inputs: inputCount, keys: keyCount})')
+    print('counts ' + json.dumps(counts), flush=True)
+    # Native insertText may emit more than one input event; what matters is that
+    # nothing but input events happened: no Send click and no synthesized keys.
+    check(counts['sends'] == 0 and counts['inputs'] >= 1 and counts['keys'] == 0, 'input events only; Send never clicked and no keys synthesized')
     check(not evaluate('HolmesEmailCompose.stage("duplicate",expected)').get('ok'), 'old empty-body approval cannot overwrite inserted text')
     evaluate('window.rewriteExpected=HolmesEmailCompose.read(); true')
     check(evaluate('HolmesEmailCompose.stage("Hi, I am running late. Apologies for the delay.",rewriteExpected)').get('ok'), 'explicit rewrite uses unchanged nonempty body')
@@ -118,6 +123,19 @@ try:
     evaluate('window.longExpected=HolmesEmailCompose.read(); true')
     check(evaluate('HolmesEmailCompose.stage("L".repeat(8000),longExpected)').get('ok'), '8000-character reviewed draft verifies full body after writing')
     check(evaluate('!HolmesEmailCompose.read().bodyReadable'), 'oversize existing body prevents incomplete future rewrites')
+    # Automatic prediction writes above a Gmail signature in the real editor, and undo restores it.
+    signature = '<div dir="ltr"><br clear="all"><div><br></div><span class="gmail_signature_prefix">-- </span><br><div class="gmail_signature">Alex Rivera</div></div>'
+    evaluate('(() => { const box = document.activeElement.closest("[role=dialog]").querySelector("[aria-label=\\"Message Body\\"]");'
+             ' box.innerHTML = ' + json.dumps(signature) + '; window.signedBox = box; window.signatureBefore = box.innerHTML;'
+             ' HolmesEmailCompose.noteUserInput(0); return true; })()')
+    predicted = "Hi Dana,\n\nThanks, I will review it today."
+    auto = evaluate('(() => { const expected = HolmesEmailCompose.read(); const result = HolmesEmailCompose.stage(' + json.dumps(predicted)
+                    + ', expected, { mode: "auto" }); window.autoResult = result; return { ok: result.ok, method: result.method, reason: result.reason || "", writable: expected.autoWritable }; })()')
+    print('auto ' + json.dumps(auto), flush=True)
+    check(auto['writable'] and auto['ok'], 'automatic write accepted for a body holding only a signature')
+    check(evaluate('signedBox.querySelector(".gmail_signature").outerHTML === "<div class=\\"gmail_signature\\">Alex Rivera</div>" && HolmesEmailCompose.read().userText.trim() === '
+                   + json.dumps(predicted)), 'real editor keeps the signature and puts the prediction above it')
+    check(evaluate('HolmesEmailCompose.undo(autoResult.undoToken).ok && signedBox.innerHTML === signatureBefore'), 'one click undo restores exactly the signature only body')
     check(evaluate('sendCount===0'), 'all cases completed without Send')
     browser('screenshot', str(OUTPUT / 'compose-fixture.png'))
     (OUTPUT / 'browser-snapshot.txt').write_text(browser('snapshot', '-i'))

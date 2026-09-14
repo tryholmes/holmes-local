@@ -2397,7 +2397,9 @@
 
   function scopeComposeRead() {
     if (!window.HolmesEmailCompose || isExcludedHost()) return null;
-    return window.HolmesEmailCompose.read();
+    var compose = window.HolmesEmailCompose.read();
+    if (compose && !compose.identity && Date.now() - lastHelloAt > 1500) sayHello();
+    return compose;
   }
 
   function extensionVersion() {
@@ -2552,6 +2554,16 @@
         }
       });
     } catch (e) { /* storage unavailable — the app can still accept an empty token */ }
+    sayHello();
+  }
+
+  // The composer identity needs this tab's id, window and browser instance from
+  // the worker. A hello that raced a starting worker is retried (see
+  // scopeComposeRead) instead of silently leaving email drafting blocked.
+  var lastHelloAt = 0;
+  function sayHello() {
+    if (!hasRuntime()) return;
+    lastHelloAt = Date.now();
     try {
       chrome.runtime.sendMessage({ type: "holmes:hello" }, function (res) {
         // Reading lastError suppresses the "unchecked runtime.lastError" console noise
@@ -2754,7 +2766,24 @@
         chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           if (!msg || typeof msg.type !== "string") return false;
 
-          if (msg.type === "holmes:readEmailCompose" || msg.type === "holmes:fillEmailDraft") {
+          // Read only precheck, answered before the worker changes any focus. A
+          // background tab may still be the right composer for an explicit insert.
+          if (msg.type === "holmes:checkEmailDraft") {
+            var checkMode = msg.options && msg.options.mode;
+            if (isExcludedHost() || !window.HolmesEmailCompose) {
+              sendResponse({ ok: false, refused: true, reason: "Reload the extension to enable precise draft insertion." });
+            } else if (document.visibilityState !== "visible" || !IS_ACTIVE_TAB) {
+              sendResponse(checkMode === "auto"
+                ? { ok: false, refused: true, reason: "The composer is no longer in the active tab." }
+                : { ok: true, deferred: true });
+            } else {
+              if (msg.environment) window.HolmesEmailCompose.setEnvironment(Object.assign({ app: BROWSER }, msg.environment));
+              sendResponse(window.HolmesEmailCompose.check(msg.expected, Object.assign({ body: msg.body }, msg.options || {})));
+            }
+            return false;
+          }
+
+          if (msg.type === "holmes:readEmailCompose" || msg.type === "holmes:fillEmailDraft" || msg.type === "holmes:undoEmailDraft") {
             if (isExcludedHost() || !IS_ACTIVE_TAB || document.visibilityState !== "visible") {
               sendResponse({ ok: false, refused: true, reason: "The composer is no longer in the active tab." });
               return false;
@@ -2765,12 +2794,14 @@
             if (msg.type === "holmes:readEmailCompose") {
               sendResponse({ ok: true, payload: buildPayload() });
             } else {
-              var staged = window.HolmesEmailCompose
-                ? window.HolmesEmailCompose.stage(msg.body, msg.expected)
-                : { ok: false, refused: true, reason: "Reload the extension to enable precise draft insertion." };
+              var composeApi = window.HolmesEmailCompose;
+              var written = !composeApi
+                ? { ok: false, refused: true, reason: "Reload the extension to enable precise draft insertion." }
+                : msg.type === "holmes:undoEmailDraft" ? composeApi.undo(msg.token)
+                : composeApi.stage(msg.body, msg.expected, msg.options);
               lastHash = "";
               schedule(true);
-              sendResponse(staged);
+              sendResponse(written);
             }
             return false;
           }
