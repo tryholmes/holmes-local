@@ -147,6 +147,7 @@ enum AXElementSearch {
                            maxDepth: Int = defaultMaxDepth,
                            maxNodes: Int = defaultMaxNodes,
                            stopScore: Int = Int.max,
+                           shouldStop: () -> Bool = { false },
                            children: (Node) -> [Node],
                            score: (Node) -> Int?) -> Result<Node> {
         var frontier: [(node: Node, depth: Int)] = [(root, 0)]
@@ -156,6 +157,12 @@ enum AXElementSearch {
         var bestScore = Int.min
         var truncated = false
         while head < frontier.count {
+            // A wall clock budget bounds the WHOLE walk: attribute reads on
+            // already queued nodes are IPC calls too, not just child reads.
+            if shouldStop() {
+                truncated = true
+                break
+            }
             if visited >= maxNodes {
                 truncated = true
                 break

@@ -378,6 +378,7 @@ final class ActionExecutor {
         let result = AXElementSearch.best(
             from: root,
             stopScore: stopScore,
+            shouldStop: { Date() >= deadline },
             children: { element in
                 guard Date() < deadline else { return [] }
                 var childrenRef: CFTypeRef?

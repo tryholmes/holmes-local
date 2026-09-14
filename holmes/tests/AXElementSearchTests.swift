@@ -136,6 +136,19 @@ struct AXElementSearchTests {
                || CommitControlGate.looksLikeCommit("Don't Save"),
                "Don't Save counts as a commit")
 
+        // The time budget stops the whole walk, including scoring of nodes
+        // already queued, not only further child reads.
+        let budgetRoot = FakeElement("AXWindow")
+        budgetRoot.children = (0..<50).map { _ in FakeElement("AXStaticText") }
+        var scoredBeforeBudget = 0
+        var budgetChecks = 0
+        let budgeted = AXElementSearch.best(from: budgetRoot,
+                                            shouldStop: { budgetChecks += 1; return budgetChecks > 5 },
+                                            children: { $0.children },
+                                            score: { _ -> Int? in scoredBeforeBudget += 1; return nil })
+        expect(budgeted.truncated && budgeted.visited == 5 && scoredBeforeBudget == 5,
+               "An expired budget ends the walk before scoring more queued elements (scored \(scoredBeforeBudget))")
+
         print("Passed \(checks) bounded accessibility search and label ranking checks")
     }
 }
