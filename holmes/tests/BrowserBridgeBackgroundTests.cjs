@@ -166,7 +166,7 @@ async function transportTests() {
 
   // A server that supports long polling: the worker re-polls right away.
   worker = loadWorker({
-    config: { pollIdleMs: 400 },
+    config: { pollIdleMs: 400, longPollMinMs: 20 },
     fetch: async url => {
       if (!url.endsWith('/commands')) return { status: 200, body: {} };
       await sleep(30);
@@ -582,6 +582,32 @@ async function navigateTests() {
   worker.dispose();
 }
 
+async function longPollSpinTests() {
+  // Five paired browsers against a bridge that holds only three long polls. The
+  // other two get an immediate empty answer; they must wait instead of spinning.
+  let held = 0;
+  const polls = [0, 0, 0, 0, 0];
+  const workers = polls.map((_, index) => loadWorker({
+    config: { pollIdleMs: 200, longPollMinMs: 150 },
+    fetch: async url => {
+      if (!url.endsWith('/commands')) return { status: 200, body: {} };
+      polls[index]++;
+      if (held < 3) {
+        held++;
+        await sleep(300);
+        held--;
+      } else {
+        await sleep(1);
+      }
+      return { status: 200, body: [], headers: { 'X-Holmes-Long-Poll': '1' } };
+    }
+  }));
+  await sleep(1000);
+  workers.forEach(worker => worker.dispose());
+  const total = polls.reduce((a, b) => a + b, 0);
+  check(total < 60, `Empty long polls that return immediately back off instead of spinning (${total} polls from 5 workers in 1s)`);
+}
+
 module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 
 if (require.main === module) {
@@ -591,7 +617,7 @@ if (require.main === module) {
     setInterval(() => {}, 1000);
     const only = process.argv[2];
     const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests,
-      concurrencyTests, visibilityTests, navigateTests };
+      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();

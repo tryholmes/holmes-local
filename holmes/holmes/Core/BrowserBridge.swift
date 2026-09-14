@@ -303,6 +303,14 @@ final class BrowserCommandQueue: @unchecked Sendable {
     /// arrives, the wait elapses, or `clientGone` reports the extension hung up.
     func drain(instance: String?, focused: Bool?, wait: TimeInterval,
                clientGone: () -> Bool = { false }) -> [Delivery] {
+        drainDetailed(instance: instance, focused: focused, wait: wait, clientGone: clientGone).batch
+    }
+
+    /// Same as drain, plus whether the request was actually held as a long poll.
+    /// A poll refused a hold (the long poll cap was reached) must not be told it
+    /// was held, or the worker would re-poll at once and spin.
+    func drainDetailed(instance: String?, focused: Bool?, wait: TimeInterval,
+                       clientGone: () -> Bool = { false }) -> (batch: [Delivery], held: Bool) {
         condition.lock()
         let start = Date()
         if let instance, !instance.isEmpty { noteSeenLocked(instance: instance, focused: focused, at: start) }
@@ -319,11 +327,11 @@ final class BrowserCommandQueue: @unchecked Sendable {
         }
         while true {
             let batch = takeDeliverableLocked(instance: instance)
-            if !batch.isEmpty { return batch }
+            if !batch.isEmpty { return (batch, holdsLongPoll) }
             let now = Date()
-            if now >= deadline { return [] }
+            if now >= deadline { return ([], holdsLongPoll) }
             _ = condition.wait(until: min(deadline, now.addingTimeInterval(0.5)))
-            if clientGone() { return [] }
+            if clientGone() { return ([], holdsLongPoll) }
             if let instance, !instance.isEmpty {
                 noteSeenLocked(instance: instance, focused: nil, at: Date())
             }
@@ -1726,11 +1734,13 @@ private final class BridgeServer: @unchecked Sendable {
             onSighting(BridgeSighting(token: matchedToken, instance: instance, focused: focused, body: nil))
             let wait = max(0, min(Double(request.headers[BridgeProtocol.longPollHeaderKey] ?? "") ?? 0,
                                   BridgeProtocol.longPollMaxSeconds))
-            let batch = commandQueue.drain(instance: instance, focused: focused, wait: wait,
-                                           clientGone: { Self.peerClosed(fd) })
+            let (batch, held) = commandQueue.drainDetailed(instance: instance, focused: focused, wait: wait,
+                                                           clientGone: { Self.peerClosed(fd) })
             var headers = corsHeaders(origin: origin)
             headers["Content-Type"] = "application/json"
-            headers["X-Holmes-Long-Poll"] = "1"
+            // "1" only when this request was really held. A poll over the long poll
+            // cap gets "0" so the worker waits its idle gap instead of spinning.
+            headers["X-Holmes-Long-Poll"] = held ? "1" : "0"
             let body = BrowserCommandQueue.encode(batch, session: commandQueue.session)
             // The extension hung up while we waited: hand the commands to the next
             // poll instead of losing them in a dead socket.

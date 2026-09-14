@@ -221,6 +221,8 @@ enum BridgeLoopbackTests {
         let extra = await LoopbackHTTP.background { poll(port, instance: "hold-extra", wait: 4) }
         check(extra.0?.status == 200 && Date().timeIntervalSince(extraStart) < 1.5,
               "A long poll beyond the cap is answered immediately")
+        check(extra.0?.headers["x-holmes-long-poll"] != "1",
+              "A long poll beyond the cap is not reported as held, so the worker backs off")
         let beat = await LoopbackHTTP.background {
             LoopbackHTTP.request(port: port, method: "POST", path: "/heartbeat",
                                  headers: ["X-Holmes-Token": token, "Content-Type": "application/json"], body: Data("{}".utf8))

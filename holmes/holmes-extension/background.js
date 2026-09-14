@@ -46,8 +46,12 @@ const CONFIG = Object.assign({
   // Seconds the bridge may hold GET /commands open. Chrome kills a worker whose
   // fetch waits 30s for a response, so the hold and its timeout stay below that.
   longPollSeconds: 20,
-  // Gap between polls when the app does not support long polling.
+  // Gap between polls when the app does not support long polling, or did not
+  // actually hold this poll.
   pollIdleMs: COMMAND_POLL_MS,
+  // An empty long poll answered faster than this was not really held (the bridge
+  // was at its long poll cap); wait pollIdleMs rather than re-polling at once.
+  longPollMinMs: 1000,
   // First retry delay after a failed poll; doubles up to 30s.
   pollErrorBackoffMs: 1000,
   // While commands are active, call a cheap extension API this often (resets the
@@ -621,7 +625,12 @@ async function pollCommands() {
     // bounds concurrency, so a long waitForSelector never stalls other tabs or the
     // next poll.
     for (const cmd of commands) scheduleCommand(cmd, token);
-    return longPoll ? "longpoll" : "idle";
+    // Commands arrived: poll again right away, follow ups are likely.
+    if (commands.length) return "longpoll";
+    // An empty answer only counts as a long poll if the bridge said it held it AND
+    // it really took a while. Otherwise wait, so several browsers over the bridge's
+    // long poll cap never spin both sides.
+    return longPoll && Date.now() - commandPollStartedAt >= CONFIG.longPollMinMs ? "longpoll" : "idle";
   } catch (e) {
     return "error";
   } finally {
