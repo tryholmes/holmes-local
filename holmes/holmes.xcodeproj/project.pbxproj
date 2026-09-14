@@ -15,8 +15,8 @@
 		AA000001000000000000109 /* EmailComposeSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000109 /* EmailComposeSnapshot.swift */; };
 		AA000001000000000000108 /* WorkActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000108 /* WorkActivity.swift */; };
 		AA000001000000000000107 /* GuidedDemoWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000107 /* GuidedDemoWindow.swift */; };
-		AA000001000000000000108 /* LaunchIntroView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000108 /* LaunchIntroView.swift */; };
-		AA000001000000000000109 /* holmes-launch-intro.mov in Resources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000109 /* holmes-launch-intro.mov */; };
+		B7A500010000000000000F01 /* LaunchIntroView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000F01 /* LaunchIntroView.swift */; };
+		B7A500010000000000000F02 /* holmes-launch-intro.mov in Resources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000F02 /* holmes-launch-intro.mov */; };
 		AA000001000000000000106 /* GuidedDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000106 /* GuidedDemoView.swift */; };
 		AA000001000000000000105 /* GuidedDemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000105 /* GuidedDemo.swift */; };
 		AA000001000000000000104 /* AppLaunchIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000104 /* AppLaunchIntent.swift */; };
@@ -128,8 +128,8 @@
 		AA000002000000000000109 /* EmailComposeSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailComposeSnapshot.swift; sourceTree = "<group>"; };
 		AA000002000000000000108 /* WorkActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkActivity.swift; sourceTree = "<group>"; };
 		AA000002000000000000107 /* GuidedDemoWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidedDemoWindow.swift; sourceTree = "<group>"; };
-		AA000002000000000000108 /* LaunchIntroView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchIntroView.swift; sourceTree = "<group>"; };
-		AA000002000000000000109 /* holmes-launch-intro.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "holmes-launch-intro.mov"; sourceTree = "<group>"; };
+		B7A500020000000000000F01 /* LaunchIntroView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchIntroView.swift; sourceTree = "<group>"; };
+		B7A500020000000000000F02 /* holmes-launch-intro.mov */ = {isa = PBXFileReference; lastKnownFileType = video.quicktime; path = "holmes-launch-intro.mov"; sourceTree = "<group>"; };
 		AA000002000000000000106 /* GuidedDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidedDemoView.swift; sourceTree = "<group>"; };
 		AA000002000000000000105 /* GuidedDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GuidedDemo.swift; sourceTree = "<group>"; };
 		AA000002000000000000104 /* AppLaunchIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLaunchIntent.swift; sourceTree = "<group>"; };
@@ -448,7 +448,7 @@
 				AA000002000000000000035 /* Info.plist */,
 				AA000002000000000000036 /* holmes.entitlements */,
 				AA000002000000000000040 /* noireye.json */,
-				AA000002000000000000109 /* holmes-launch-intro.mov */,
+				B7A500020000000000000F02 /* holmes-launch-intro.mov */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -457,7 +457,7 @@
 			isa = PBXGroup;
 			children = (
 				AA000002000000000000107 /* GuidedDemoWindow.swift */,
-				AA000002000000000000108 /* LaunchIntroView.swift */,
+				B7A500020000000000000F01 /* LaunchIntroView.swift */,
 				AA000002000000000000106 /* GuidedDemoView.swift */,
 				AA000002000000000000011 /* OnboardingFlow.swift */,
 				AA000002000000000000012 /* OnboardingViewModel.swift */,
@@ -582,7 +582,7 @@
 			files = (
 				AA000001000000000000034 /* Assets.xcassets in Resources */,
 				AA000001000000000000038 /* noireye.json in Resources */,
-				AA000001000000000000109 /* holmes-launch-intro.mov in Resources */,
+				B7A500010000000000000F02 /* holmes-launch-intro.mov in Resources */,
 				AA000001000000000000101 /* holmes-extension in Resources */,
 				AA000001000000000000102 /* Fonts in Resources */,
 			);
@@ -596,7 +596,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA000001000000000000107 /* GuidedDemoWindow.swift in Sources */,
-				AA000001000000000000108 /* LaunchIntroView.swift in Sources */,
+				B7A500010000000000000F01 /* LaunchIntroView.swift in Sources */,
 				AA000001000000000000106 /* GuidedDemoView.swift in Sources */,
 				AA000001000000000000108 /* WorkActivity.swift in Sources */,
 				AA000001000000000000109 /* EmailComposeSnapshot.swift in Sources */,
