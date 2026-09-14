@@ -227,7 +227,9 @@ final class EmailDraftCoordinator {
             deferred = prepared
             return
         }
-        if compose.canAutoWrite, prepared.prediction != nil {
+        // An explicit request is reviewed before anything is written; only
+        // automatic prediction writes directly.
+        if !prepared.isUserInitiated, compose.canAutoWrite, prepared.prediction != nil {
             writeTask?.cancel()
             writeTask = Task { [weak self] in await self?.autoWrite(prepared) }
         } else {
@@ -267,11 +269,12 @@ final class EmailDraftCoordinator {
             WorkActivityCenter.shared.cancel(activity)
         } catch {
             WorkActivityCenter.shared.cancel(activity)
-            // The person started typing or the email changed: never overwrite.
-            // If their own text is now there, offer the prediction as a card once.
-            guard !Task.isCancelled, let fresh = await Self.refresh(expected: expected)?.emailCompose,
-                  fresh.identity == expected.identity, !fresh.isOwnTextEmpty else { return }
-            offerCardOnce(prepared, target: fresh)
+            // Never overwrite and never end silently: whatever refused the write,
+            // the prediction is offered once on the review card instead.
+            guard !Task.isCancelled, !isStopped else { return }
+            let fresh = await Self.refresh(expected: expected)?.emailCompose
+            guard !Task.isCancelled, !isStopped else { return }
+            offerCardOnce(prepared, target: fresh.flatMap { $0.identity == expected.identity ? $0 : nil } ?? expected)
         }
     }
 

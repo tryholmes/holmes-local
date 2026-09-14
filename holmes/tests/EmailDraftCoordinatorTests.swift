@@ -272,11 +272,12 @@ struct EmailDraftCoordinatorTests {
         let explicitResult = await coordinator.request(instruction: "Draft this email", context: context(automatic))
         guard case .ready = explicitResult else { fatalError("Explicit drafting should succeed") }
         await eventually { heldAutomatic.cancelled }
-        await eventually { browser.insertions == 1 }
-        expect(browser.writes[0].body == "Explicit email draft", "Explicit request preempts background generation and writes its own prediction")
+        expect(cards.offered.count == 1 && cards.offered[0].prioritized && browser.insertions == 0,
+               "An explicit request on an empty composer gets the review card, never an automatic write")
         heldAutomatic.release(#"{"body":"Old automatic draft"}"#)
         await pause(0.05)
-        expect(browser.insertions == 1 && cards.offered.isEmpty, "Preempted automatic result is never written")
+        expect(cards.offered.count == 1 && cards.offered[0].draft.body == "Explicit email draft" && browser.insertions == 0,
+               "Preempted automatic result cannot replace the explicit card")
 
         reset()
         let initialRefresh = CoordinatorHold<LiveContext?>()
@@ -316,8 +317,7 @@ struct EmailDraftCoordinatorTests {
         expect(center.activeCount == 1, "Old request cleanup preserves the newer initial refresh owner")
         secondRefresh.release(newContext)
         guard case .ready = await newRequest.value else { fatalError("Newest refresh should draft") }
-        await eventually { browser.insertions == 1 }
-        expect(model.calls[0].prompt.contains("Second request"), "Only the newest refreshed email is written")
+        expect(cards.offered.count == 1 && model.calls[0].prompt.contains("Second request"), "Only the newest refreshed email publishes")
 
         reset()
         browser.emailComposeUnavailableReason = "Reload the Holmes browser extension to read email compose fields."
@@ -411,8 +411,7 @@ struct EmailDraftCoordinatorTests {
         expect(model.calls.isEmpty && center.activeCount == 1, "Manual preemption cancels held automatic refresh while preserving its own reading activity")
         manualReading.release(preemptContext)
         guard case .ready = await preempting.value else { fatalError("Explicit request must survive an old debounce callback") }
-        await eventually { browser.insertions == 1 }
-        expect(model.calls.count == 1, "Only the manual request writes after held refresh preemption")
+        expect(cards.offered.count == 1 && cards.offered[0].prioritized && browser.insertions == 0, "Only the manual request publishes after held refresh preemption")
 
         reset()
         let disabledReading = CoordinatorHold<LiveContext?>()
@@ -503,6 +502,16 @@ struct EmailDraftCoordinatorTests {
         await eventually { cards.offered.count == 1 }
         expect(EmailUndoPresenter.shown == 0 && cards.offered[0].draft.contextSummary.contains("did not change it"),
                "A refused automatic write keeps the person's text and becomes one review card")
+
+        reset()
+        // Regression: a refusal for any reason other than typed text used to end silently.
+        let refused = compose()
+        browser.writeError = EmailComposeError.unavailable("The composer or its headers changed. Refresh the draft.")
+        show(refused)
+        coordinator.observe(context(refused))
+        await eventually { browser.insertions == 1 }
+        await eventually { cards.offered.count == 1 }
+        expect(EmailUndoPresenter.shown == 0, "Every refused automatic write falls back to the review card")
 
         coordinator.stop()
         center.invalidateAll()

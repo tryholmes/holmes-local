@@ -312,7 +312,8 @@ final class EmailDraftSession {
             try Task.checkCancellation()
             dependencies.publish(PreparedEmailDraft(id: UUID(), input: input, body: body, isUserInitiated: origin == .user,
                                                     prediction: prediction))
-            result = .ready(input.compose?.canAutoWrite == true ? "Holmes predicted your email." : "Your email draft is ready to review.")
+            result = .ready(origin == .background && input.compose?.canAutoWrite == true
+                            ? "Holmes is writing your email." : "Your email draft is ready to review.")
         } catch is CancellationError {
             if requestID == id, let reason = cancellationReason { result = .needsContext(reason) }
         } catch {
