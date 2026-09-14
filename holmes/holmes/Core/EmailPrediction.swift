@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 
 // Predictive email writing: the prompt, the output contract and every check a
 // model answer must pass before Holmes writes it into a composer. Foundation
@@ -69,6 +70,9 @@ enum EmailPredictionPrompt {
     - Replying: answer the newest THREAD message. Write in the language of the newest THREAD message. Without a thread, write in the language of USER NOTES or the subject.
     - USER NOTES are the user's own words: keep their meaning and turn them into the finished email.
     - Availability: only accept or offer a time when CALENDAR shows it free. A time that overlaps a busy block is a conflict: say so and, if possible, suggest a time that is free. If CALENDAR says "not available", do not claim to be free; say you will confirm.
+    - If THREAD asks for something that MEMORY or PAST EMAILS state (an address, a date, a decision), answer with that fact.
+    - When WRITE IN names a language, write the whole email in that language, greeting included.
+    - Times: noon is 12:00. Compare every offered time with CALENDAR before accepting or declining it.
     - Keep it short: two to five sentences.
 
     SUBJECT: if CURRENT SUBJECT is "(empty)", write a short subject line of at most eight words grounded in the email. Otherwise return "".
@@ -109,6 +113,8 @@ enum EmailPredictionPrompt {
         }.joined(separator: ", "))
         let kind = compose.isReply || !compose.thread.isEmpty ? "reply" : "new email"
         sections.append("EMAIL: \(kind) in \(compose.provider)")
+        let languageSample = compose.thread.first.map { stripQuoted($0.text) } ?? compose.ownText
+        if let language = languageName(languageSample) { sections.append("WRITE IN: \(language)") }
 
         func person(_ address: String) -> String {
             if let name = compose.recipientNames[address.lowercased()], !name.isEmpty, name.lowercased() != address.lowercased() {
@@ -186,6 +192,17 @@ enum EmailPredictionPrompt {
             }
             return "\(EmailDates.dayLabel(day, calendar)): busy " + parts.joined(separator: "; ")
         }
+    }
+
+    /// The dominant language of a message, when the recognizer is confident.
+    static func languageName(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 20 else { return nil }
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(trimmed)
+        guard let language = recognizer.dominantLanguage,
+              let confidence = recognizer.languageHypotheses(withMaximum: 1)[language], confidence >= 0.6 else { return nil }
+        return Locale(identifier: "en_US").localizedString(forLanguageCode: language.rawValue)
     }
 
     /// The first name of the first To recipient when a real display name is known.
@@ -314,14 +331,14 @@ enum EmailBodySanitizer {
             if isTrailingChatter(last) || isPlaceholderLine(last) || last.range(of: #"^[-_=*]{2,}$"#, options: .regularExpression) != nil {
                 lines.removeLast(); dropTrailingBlank(); continue
             }
-            if matches(last, "^" + signOffWord + #"\s*,?$"#) {
+            if matches(last, "^" + signOffWord + #"\s*[,.]?$"#) {
                 lines.removeLast(); dropTrailingBlank(); continue
             }
             // "Best,\nDana" or "Best, Dana": a sign off followed by a short name.
             if matches(last, "^" + signOffWord + #"\s*,\s*\p{L}[\p{L}.'’ ]{0,40}$"#) {
                 lines.removeLast(); dropTrailingBlank(); continue
             }
-            if lines.count >= 2, isShortName(last), matches(lines[lines.count - 2], "^" + signOffWord + #"\s*,?$"#) {
+            if lines.count >= 2, isShortName(last), matches(lines[lines.count - 2], "^" + signOffWord + #"\s*[,.]?$"#) {
                 lines.removeLast(2); dropTrailingBlank(); continue
             }
             break
@@ -372,7 +389,7 @@ enum EmailBodySanitizer {
             issues.append("it contains instructions or commentary instead of the email")
         }
         if matches(body, #"(?m)^(subject|to|cc)\s*:"#) { issues.append("it contains a Subject or To header") }
-        if let last = body.components(separatedBy: "\n").last, matches(last, "^" + signOffWord + #"\s*,?$"#) {
+        if let last = body.components(separatedBy: "\n").last, matches(last, "^" + signOffWord + #"\s*[,.]?$"#) {
             issues.append("it ends with a sign off")
         }
         return issues
@@ -525,6 +542,17 @@ enum EmailGrounding {
 
     struct Weekdays { var named: [Int] = []; var all: Set<Int> = [] }
 
+    /// Spanish, French, German, Italian and Portuguese names, Sunday first.
+    static let foreignWeekdays: [[String]] = [
+        ["domingo", "dimanche", "sonntag", "domenica"],
+        ["lunes", "lundi", "montag", "lunedì", "segunda"],
+        ["martes", "mardi", "dienstag", "martedì", "terça"],
+        ["miércoles", "mercredi", "mittwoch", "mercoledì", "quarta"],
+        ["jueves", "jeudi", "donnerstag", "giovedì", "quinta"],
+        ["viernes", "vendredi", "freitag", "venerdì", "sexta"],
+        ["sábado", "samedi", "samstag", "sabato"]
+    ]
+
     /// Weekday indexes (0 = Sunday) named or implied (today, tomorrow) in text.
     static func mentionedWeekdays(in lower: String, context: EmailPredictionContext) -> Weekdays {
         var result = Weekdays()
@@ -533,6 +561,12 @@ enum EmailGrounding {
             let short = String(name.prefix(3))
             if lower.range(of: "\\b(\(name)|\(short))s?\\b", options: .regularExpression) != nil {
                 result.named.append(index)
+                result.all.insert(index)
+            }
+        }
+        // A thread in another language names the same day ("viernes" is Friday).
+        for (index, names) in foreignWeekdays.enumerated() where !result.all.contains(index) {
+            if names.contains(where: { lower.range(of: "\\b\($0)\\b", options: .regularExpression) != nil }) {
                 result.all.insert(index)
             }
         }
@@ -603,6 +637,7 @@ enum EmailPredictionParser {
         if !invented.isEmpty {
             issues.append("it states things that are not in the context: " + invented.prefix(6).joined(separator: ", "))
         }
+        issues += availabilityIssues(body, context: context)
 
         let compose = context.compose
         let wantsSubject = compose.subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && compose.subjectEditable
@@ -629,11 +664,69 @@ enum EmailPredictionParser {
     static func validatedActions(_ object: [String: Any], body: String, context: EmailPredictionContext) -> [EmailActionCandidate] {
         var actions: [EmailActionCandidate] = []
         if let event = validatedEvent(object, body: body, context: context) { actions.append(event) }
+        // Small models often leave follow_up_days at 0 for a clear request, so
+        // an explicit request in the email itself also qualifies.
         let days = integer(object["follow_up_days"])
-        if days > 0, asksForReply(body) {
-            actions.append(.followUp(days: min(14, max(1, days))))
+        if asksForReply(body), days > 0 || isDirectRequest(body) {
+            actions.append(.followUp(days: min(14, max(1, days > 0 ? days : 3))))
         }
         return actions
+    }
+
+    /// Splits a sentence where it changes direction ("Tuesday doesn't work, but Wednesday does").
+    static func clauses(_ sentence: String) -> [String] {
+        sentence.replacingOccurrences(of: #"\bbut\b|;|,\s*(and|although|though|while|however)\b"#, with: "\n",
+                                      options: [.regularExpression, .caseInsensitive])
+            .components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    static let negativeAvailability = #"\b(can't|cannot|can not|won't be able|unable|not available|unavailable|doesn't work|does not work|don't work|won't work|conflict|busy|no longer|not free|not make it|can't make)\b"#
+    static let positiveAvailability = #"\b(available|free|works for me|work for me|that works|works well|count me in|see you|i can (do|make|join|meet)|i'll be there|i will be there|sounds good|looking forward to (it|seeing|meeting))\b"#
+
+    /// Claims about the person's time must match the calendar, and without a
+    /// calendar the email must not claim availability or a conflict at all.
+    static func availabilityIssues(_ body: String, context: EmailPredictionContext) -> [String] {
+        let notes = (context.compose.ownText + " " + context.instruction).lowercased()
+        let notesSpeakToAvailability = EmailBodySanitizer.matches(notes, #"available|free|busy|can't|cannot|works|out of office|conflict|make it"#)
+        let calendar = EmailDates.calendar(context.timeZone)
+        var issues: [String] = []
+        for sentence in EmailGrounding.sentences(body) {
+            let sentenceDays = EmailGrounding.mentionedWeekdays(in: sentence.lowercased(), context: context)
+            for clause in clauses(sentence) {
+                let lower = clause.lowercased().replacingOccurrences(of: "’", with: "'")
+                let times = EmailGrounding.times(in: clause)
+                guard !times.isEmpty else { continue }
+                let negative = EmailBodySanitizer.matches(lower, negativeAvailability)
+                let positive = !negative && EmailBodySanitizer.matches(lower, positiveAvailability)
+                guard negative || positive else { continue }
+                guard context.calendarAvailable else {
+                    if !notesSpeakToAvailability {
+                        issues.append("it claims the user is \(negative ? "busy" : "free") at \(times[0].text), but the calendar is not available; say the user will check and confirm")
+                    }
+                    continue
+                }
+                var days = EmailGrounding.mentionedWeekdays(in: lower, context: context)
+                if days.all.isEmpty { days = sentenceDays }
+                let dates = EmailGrounding.dates(in: clause)
+                guard let day = EmailDates.upcomingDays(context).first(where: { day in
+                    let parts = calendar.dateComponents([.month, .day, .weekday], from: day)
+                    return days.all.contains((parts.weekday ?? 1) - 1) || dates.contains { $0.key == "\(parts.month ?? 0)/\(parts.day ?? 0)" }
+                }) else { continue }
+                for time in times {
+                    guard let start = calendar.date(byAdding: .minute, value: time.minutes, to: day), start > context.now else { continue }
+                    let end = start.addingTimeInterval(30 * 60)
+                    let busy = context.calendar.contains { block in
+                        block.isAllDay ? calendar.isDate(block.start, inSameDayAs: start) : (block.start < end && block.end > start)
+                    }
+                    if positive, busy {
+                        issues.append("it accepts \(time.text) but the calendar is busy then; decline that time and offer a free one")
+                    } else if negative, !busy, !notesSpeakToAvailability {
+                        issues.append("it says \(time.text) is not possible but the calendar shows that time free")
+                    }
+                }
+            }
+        }
+        return issues
     }
 
     static func validatedEvent(_ object: [String: Any], body: String, context: EmailPredictionContext) -> EmailActionCandidate? {
@@ -649,12 +742,15 @@ enum EmailPredictionParser {
         let weekday = (parts.weekday ?? 1) - 1
         let dateKey = "\(parts.month ?? 0)/\(parts.day ?? 0)"
         let supporting = EmailGrounding.sentences(body).first { sentence in
-            let lower = sentence.lowercased()
-            guard EmailGrounding.times(in: sentence).contains(where: { $0.minutes == minutes }) else { return false }
-            guard lower.range(of: #"\b(can't|cannot|can not|won't|unable|not available|unavailable|doesn't work|does not work|don't work|conflict|busy|no longer|not free|instead of)\b"#,
-                              options: .regularExpression) == nil else { return false }
-            let days = EmailGrounding.mentionedWeekdays(in: lower, context: context)
-            return days.all.contains(weekday) || EmailGrounding.dates(in: sentence).contains { $0.key == dateKey }
+            let sentenceDays = EmailGrounding.mentionedWeekdays(in: sentence.lowercased(), context: context)
+            return clauses(sentence).contains { clause in
+                let lower = clause.lowercased().replacingOccurrences(of: "’", with: "'")
+                guard EmailGrounding.times(in: clause).contains(where: { $0.minutes == minutes }),
+                      !EmailBodySanitizer.matches(lower, negativeAvailability + #"|\binstead of\b"#) else { return false }
+                let days = EmailGrounding.mentionedWeekdays(in: lower, context: context)
+                return (days.all.isEmpty ? sentenceDays : days).all.contains(weekday)
+                    || EmailGrounding.dates(in: sentence).contains { $0.key == dateKey }
+            }
         }
         guard supporting != nil else { return nil }
         let end = start.addingTimeInterval(TimeInterval(max(15, min(240, integer(object["event_minutes"]) == 0 ? 30 : integer(object["event_minutes"])))) * 60)
@@ -671,8 +767,15 @@ enum EmailPredictionParser {
     }
 
     static func asksForReply(_ body: String) -> Bool {
-        body.contains("?") || EmailBodySanitizer.matches(body,
-            #"\b(could you|can you|would you|will you|please (send|share|confirm|let me know|review|sign|reply)|let me know (if|whether|when|what)|are you able|do you have|looking forward to (hearing|your reply))\b"#)
+        // "Let me know if you need anything" offers help; it does not wait for an answer.
+        let text = body.replacingOccurrences(of: #"let me know if (you|there)('s| is)? ?(need|have|anything|any questions|is anything)[^.?!\n]*[.!?]?"#,
+                                             with: "", options: [.regularExpression, .caseInsensitive])
+        return text.contains("?") || isDirectRequest(text) || EmailBodySanitizer.matches(text,
+            #"\b(let me know (if|whether|when|what|your)|are you able|do you have|looking forward to (hearing|your (reply|response|input|thoughts|feedback)))\b"#)
+    }
+
+    static func isDirectRequest(_ body: String) -> Bool {
+        EmailBodySanitizer.matches(body, #"\b(could you|can you|would you|will you|if you could|i'd appreciate it if|i would appreciate it if|please (send|share|confirm|let me know|review|sign|reply|introduce)|when would (you|it)|can we (set up|schedule|find))\b"#)
     }
 
     static func jsonObject(_ raw: String) -> [String: Any]? {

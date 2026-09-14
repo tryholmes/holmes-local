@@ -91,22 +91,37 @@ struct EmailPredictionTests {
 
         // Actions come from the structured fields and are validated against the email.
         switch EmailPredictionParser.parse(answer(["body": "Hi Dana,\n\nWednesday at 10am works for me. See you then.",
-                                                   "event_title": "Budget sync", "event_start": "2026-09-16 10:00", "event_minutes": 30]), context: reply) {
+                                                   "event_title": "Budget sync", "event_start": "2026-09-16 10:00", "event_minutes": 30]),
+                                           context: context(compose(thread: scheduling), calendar: busyTuesday)) {
         case .success(let prediction):
             expect(prediction.actions == [.calendarEvent(title: "Budget sync", start: at(16, 10), minutes: 30)], "An accepted time becomes a calendar candidate")
             expect(prediction.subject == nil || prediction.subject?.isEmpty == false, "Subject handling does not break a reply")
         case .failure(let rejection): fatalError("Valid scheduling reply rejected: \(rejection.issues)")
         }
         let declined = EmailPredictionParser.parse(answer(["body": "Hi Dana,\n\nTuesday at 2pm doesn't work for me. I'll check other times.",
-                                                           "subject": "Budget meeting", "event_start": "2026-09-15 14:00", "event_minutes": 30]), context: reply)
+                                                           "subject": "Budget meeting", "event_start": "2026-09-15 14:00", "event_minutes": 30]),
+                                                    context: context(compose(thread: scheduling), calendar: busyTuesday))
         if case .success(let prediction) = declined {
             expect(prediction.actions.isEmpty, "A declined time is never offered as an event")
         } else { fatalError("Declining reply should parse") }
+        // Availability claims must match the calendar, and need one at all.
+        let noCalendarIssues = EmailPredictionParser.availabilityIssues("Hi Dana,\n\nWednesday at 10am works for me.", context: reply)
+        expect(noCalendarIssues.count == 1 && noCalendarIssues[0].contains("calendar is not available"), "Without calendar access the email may not claim the user is free")
+        let mixed = context(compose(thread: scheduling), calendar: busyTuesday)
+        expect(EmailPredictionParser.availabilityIssues("Hi Dana,\n\nTuesday at 2pm doesn't work, but Wednesday at 10am works for me.", context: mixed).isEmpty,
+               "Declining a busy slot and accepting a free one in one sentence is consistent")
+        expect(EmailPredictionParser.availabilityIssues("Hi Dana,\n\nTuesday at 2pm works for me.", context: mixed).first?.contains("busy") == true, "Accepting a busy slot is rejected")
+        expect(EmailPredictionParser.availabilityIssues("Hi Dana,\n\nI'm busy Wednesday at 10am.", context: mixed).first?.contains("free") == true, "Inventing a conflict at a free time is rejected")
+        expect(EmailGrounding.mentionedWeekdays(in: "¿puedes enviarlo antes del viernes?", context: reply).all == [5], "Weekdays in other languages are recognized")
+        expect(EmailPredictionParser.validatedActions(["follow_up_days": 0], body: "Hi Omar,\n\nI'd appreciate it if you could introduce me to Kate.", context: reply) == [.followUp(days: 3)],
+               "A direct request gets a follow up even when the model left the field at 0")
+        expect(EmailPredictionParser.validatedActions(["follow_up_days": 3], body: "Hi,\n\nThanks for the reminder. Let me know if you need anything else.", context: reply).isEmpty,
+               "Offering help is not waiting for a reply")
         let conflicted = context(compose(thread: scheduling), calendar: busyTuesday)
-        if case .success(let prediction) = EmailPredictionParser.parse(answer(["body": "Hi Dana,\n\nTuesday at 2pm works for me.", "subject": "Budget",
-                                                                               "event_start": "2026-09-15 14:00", "event_minutes": 30]), context: conflicted) {
-            expect(prediction.actions.isEmpty, "An event overlapping a busy block is not offered")
-        } else { fatalError("Conflicted reply should parse") }
+        if case .failure(let rejection) = EmailPredictionParser.parse(answer(["body": "Hi Dana,\n\nTuesday at 2pm works for me.", "subject": "Budget",
+                                                                              "event_start": "2026-09-15 14:00", "event_minutes": 30]), context: conflicted) {
+            expect(rejection.issues.contains { $0.contains("busy") }, "Accepting a busy slot is rejected before any event is offered")
+        } else { fatalError("Accepting a busy slot must be rejected") }
         if case .success(let prediction) = EmailPredictionParser.parse(answer(["body": "Hi Dana,\n\nCould you send the Q3 numbers?", "subject": "Q3 numbers", "follow_up_days": 3]),
                                                                        context: context(compose())) {
             expect(prediction.actions == [.followUp(days: 3)] && prediction.subject == "Q3 numbers", "A request gets a follow up candidate and the empty subject is filled")
