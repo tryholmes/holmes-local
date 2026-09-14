@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Holmes",
-  "version": "2.2",
+  "version": "2.3",
   "description": "Gives Holmes an exact, literal read of the page you are actually looking at.",
   "permissions": ["tabs", "storage", "scripting", "activeTab", "alarms"],
   "host_permissions": [
