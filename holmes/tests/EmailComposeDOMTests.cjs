@@ -327,4 +327,19 @@ f.message({ type: 'holmes:readEmailCompose' });
 f.w.Date.now = realNow;
 check(f.hellos() === 2 && f.read().identity !== '', 'Reading a composer without identity retries the handshake');
 f.close();
+
+// Regression: a worker that never answers was asked every 1.5 seconds forever.
+f = fixture(compose(), { helloFailures: 1000 });
+f.loadContent();
+f.message({ type: 'holmes:active', isActiveTab: true });
+const systemNow = f.w.Date.now;
+let clock = systemNow();
+f.w.Date.now = () => clock;
+clock += 5000; f.message({ type: 'holmes:readEmailCompose' });
+clock += 2000; f.message({ type: 'holmes:readEmailCompose' });
+check(f.hellos() === 2, 'Handshake retries back off instead of repeating every 1.5 seconds');
+for (let i = 0; i < 30; i++) { clock += 120000; f.message({ type: 'holmes:readEmailCompose' }); }
+check(f.hellos() <= 9, 'Handshake retries stop after a bounded number of attempts');
+f.w.Date.now = systemNow;
+f.close();
 console.log(`Email compose DOM: ${assertions} checks passed (synthetic fixtures; no network or mail account).`);

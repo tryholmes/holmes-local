@@ -2398,7 +2398,12 @@
   function scopeComposeRead() {
     if (!window.HolmesEmailCompose || isExcludedHost()) return null;
     var compose = window.HolmesEmailCompose.read();
-    if (compose && !compose.identity && Date.now() - lastHelloAt > 1500) sayHello();
+    // Back off 1.5s, 3s, 6s and so on up to a minute, and stop after 8 attempts.
+    if (compose && !compose.identity && helloRetries < 8
+        && Date.now() - lastHelloAt > Math.min(60000, 1500 * Math.pow(2, helloRetries))) {
+      helloRetries++;
+      sayHello();
+    }
     return compose;
   }
 
@@ -2560,7 +2565,7 @@
   // The composer identity needs this tab's id, window and browser instance from
   // the worker. A hello that raced a starting worker is retried (see
   // scopeComposeRead) instead of silently leaving email drafting blocked.
-  var lastHelloAt = 0;
+  var lastHelloAt = 0, helloRetries = 0;
   function sayHello() {
     if (!hasRuntime()) return;
     lastHelloAt = Date.now();
@@ -2570,6 +2575,7 @@
         // when the service worker is still starting up.
         var err = chrome.runtime.lastError;
         if (err || !res) return;
+        helloRetries = 0;
         if (res.token) TOKEN = res.token;
         if (typeof res.tabId === "number") TAB_ID = res.tabId;
         if (typeof res.windowId === "number") WINDOW_ID = res.windowId;
