@@ -90,7 +90,11 @@ function loadWorker(options = {}) {
         if (message.type === 'holmes:ping') return { ok: true, visible: true, isActiveTab: true };
         return { ok: true };
       },
-      async captureVisibleTab(windowId, opts) { log.capture = opts; return options.capture ? options.capture(opts) : 'data:image/jpeg;base64,AAAA'; }
+      async captureVisibleTab(windowId, opts) {
+        log.captures = log.captures || [];
+        log.captures.push(opts);
+        return options.capture ? options.capture(opts) : 'data:image/jpeg;base64,AAAA';
+      }
     },
     windows: {
       onFocusChanged: events.focus,
@@ -280,16 +284,126 @@ async function probeTests() {
     'Heartbeat headers carry the instance and focus for routing');
 }
 
+// Serves each queued command once through a long polling /commands, then idles.
+function commandFeed(commands) {
+  const queue = commands.slice();
+  return async () => {
+    await sleep(15);
+    return { status: 200, body: queue.length ? [queue.shift()] : [], headers: { 'X-Holmes-Long-Poll': '1' } };
+  };
+}
+
+function resultPosts(worker, id) {
+  return worker.log.fetches.filter(f => f.url.endsWith('/command-result'))
+    .map(f => ({ entry: f, body: JSON.parse(f.init.body) }))
+    .filter(p => id === undefined || p.body.id === id);
+}
+
+async function resultDeliveryTests() {
+  // A result POST that fails is retried with backoff until it lands.
+  let attempts = 0;
+  let feed = commandFeed([{ id: 7, action: 'listTabs', params: {}, session: 's1' }]);
+  let worker = loadWorker({
+    config: { resultRetryDelaysMs: [20, 40, 80] },
+    fetch: async (url) => {
+      if (url.endsWith('/commands')) return feed();
+      if (url.endsWith('/command-result')) {
+        attempts++;
+        if (attempts === 1) return new Error('Failed to fetch');
+        if (attempts === 2) return { status: 503, body: {} };
+        return { status: 200, body: { ok: true } };
+      }
+      return { status: 200, body: {} };
+    }
+  });
+  await until('result delivered after retries', () => attempts >= 3, 2000);
+  await sleep(150);
+  const posts = resultPosts(worker, 7);
+  check(posts.length === 3 && posts.every(p => p.body.ok === true && p.body.session === 's1'),
+    `A failed result POST is retried with backoff until it lands (${posts.length} attempts)`);
+  worker.dispose();
+
+  // A refused token is not retried.
+  let unauthorized = 0;
+  feed = commandFeed([{ id: 8, action: 'listTabs', params: {} }]);
+  worker = loadWorker({
+    config: { resultRetryDelaysMs: [20, 40, 80] },
+    fetch: async (url) => {
+      if (url.endsWith('/commands')) return feed();
+      if (url.endsWith('/command-result')) { unauthorized++; return { status: 401, body: {} }; }
+      return { status: 200, body: {} };
+    }
+  });
+  await until('401 result attempt', () => unauthorized >= 1, 2000);
+  await sleep(250);
+  check(unauthorized === 1, 'A 401 result POST is not retried');
+  worker.dispose();
+
+  // The bridge answers 413: the worker sends a compact error explaining the size.
+  const huge = 'X'.repeat(200000);
+  let bigAttempts = 0;
+  feed = commandFeed([{ id: 9, action: 'extract', params: { selector: 'p' }, session: 's1' }]);
+  worker = loadWorker({
+    executeScript: details => details.func ? [{ result: { ok: true, count: 1, elements: [{ text: huge }] } }] : [{}],
+    fetch: async (url, init) => {
+      if (url.endsWith('/commands')) return feed();
+      if (url.endsWith('/command-result')) {
+        bigAttempts++;
+        return init.body.length > 100000 ? { status: 413, body: { error: 'Body exceeds', limit: 100000 } } : { status: 200, body: { ok: true } };
+      }
+      return { status: 200, body: {} };
+    }
+  });
+  await until('compact error posted', () => resultPosts(worker, 9).length >= 2, 2000);
+  const compact = resultPosts(worker, 9).at(-1);
+  check(compact.entry.init.body.length < 4096 && compact.body.ok === false && /too large/i.test(compact.body.error)
+    && compact.body.bytes > 200000 && compact.body.session === 's1',
+    'After a 413 the worker posts a compact error that names the result size');
+  worker.dispose();
+
+  // A result already over the configured cap is never sent in full.
+  feed = commandFeed([{ id: 10, action: 'extract', params: { selector: 'p' } }]);
+  worker = loadWorker({
+    config: { maxResultBytes: 50000 },
+    executeScript: details => details.func ? [{ result: { ok: true, count: 1, elements: [{ text: huge }] } }] : [{}],
+    fetch: async (url) => url.endsWith('/commands') ? feed() : { status: 200, body: { ok: true } }
+  });
+  await until('proactive compact error', () => resultPosts(worker, 10).length >= 1, 2000);
+  await sleep(50);
+  const proactive = resultPosts(worker, 10);
+  check(proactive.length === 1 && proactive[0].body.ok === false && proactive[0].entry.init.body.length < 4096,
+    'A result over the size cap is replaced by a compact error before sending');
+  worker.dispose();
+
+  // Screenshots are JPEG, stepping quality down until they fit.
+  feed = commandFeed([{ id: 11, action: 'screenshotTab', params: {} }]);
+  worker = loadWorker({
+    config: { maxScreenshotChars: 45000 },
+    capture: opts => 'data:image/jpeg;base64,' + 'A'.repeat((opts.quality || 100) * 1000),
+    fetch: async (url) => url.endsWith('/commands') ? feed() : { status: 200, body: { ok: true } }
+  });
+  await until('screenshot result', () => resultPosts(worker, 11).length >= 1, 2000);
+  const shot = resultPosts(worker, 11)[0].body;
+  const qualities = worker.log.captures.map(c => c.quality);
+  check(worker.log.captures.every(c => c.format === 'jpeg') && shot.format === 'jpeg',
+    'screenshot_tab captures JPEG instead of PNG');
+  check(shot.ok === true && shot.dataUrl.length <= 45000 && qualities[0] > qualities.at(-1),
+    `screenshot_tab compresses until the image fits (qualities ${qualities.join(', ')})`);
+  worker.dispose();
+}
+
 module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 
 if (require.main === module) {
   (async () => {
     const only = process.argv[2];
-    const suites = { reinjectionTests, probeTests, transportTests };
+    const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();
     }
     console.log(`Browser bridge worker: ${checks} checks passed (mock chrome, scripted bridge).`);
-  })().catch(error => { console.error(error); process.exitCode = 1; });
+    // Simulated workers keep polling forever; exit explicitly on pass and on failure.
+    process.exit(0);
+  })().catch(error => { console.error(error); process.exit(1); });
 }

@@ -53,7 +53,11 @@ const CONFIG = Object.assign({
   // While commands are active, call a cheap extension API this often (resets the
   // MV3 idle timer) for keepaliveWindowMs after the last command activity.
   keepaliveMs: 20000,
-  keepaliveWindowMs: 120000
+  keepaliveWindowMs: 120000,
+  // Result POST retry schedule: one attempt plus one per delay.
+  resultRetryDelaysMs: [250, 1000, 3000],
+  // The bridge accepts 16 MB of result; stay a little under it.
+  maxResultBytes: 16 * 1024 * 1024 - 64 * 1024
 }, CONFIG_OVERRIDES);
 // Every request to the bridge is bounded. A stalled app must never park a worker.
 CONFIG.fetchTimeoutMs = Object.assign({ heartbeat: 5000, relay: 5000, commands: 28000, result: 15000 },
@@ -632,15 +636,56 @@ async function runOneCommand(cmd, token) {
 
   // The session echo lets the app ignore a result meant for a previous launch.
   const body = Object.assign({ id, action, session, at: Date.now() }, outcome);
-  try {
-    await fetchWithTimeout(RESULT_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
-      body: JSON.stringify(body)
-    }, CONFIG.fetchTimeoutMs.result);
-  } catch (e) {
-    // The app went away between GET and POST.
+  await postResult(body, token);
+}
+
+function byteLength(text) {
+  try { return new TextEncoder().encode(text).length; } catch (_) { return text.length; }
+}
+
+// A result the bridge cannot take is replaced by a small, explicit error, so the
+// app reports "too large" instead of timing out on a result that never arrived.
+function compactSizeError(body, bytes, limit) {
+  return JSON.stringify({
+    id: body.id, action: body.action, session: body.session, at: Date.now(), ok: false,
+    error: "result too large (" + bytes + " bytes; the Holmes bridge accepts " + limit + "). Narrow the selector or request less.",
+    bytes, limit
+  });
+}
+
+// POSTs one command result. Transient failures (network error, timeout, 5xx) are
+// retried with backoff; a 413 is answered with a compact size error; an auth or
+// protocol refusal is not retried. Never throws. Resolves true once delivered.
+async function postResult(body, token) {
+  const bytes = byteLength(JSON.stringify(body));
+  let text = bytes > CONFIG.maxResultBytes ? compactSizeError(body, bytes, CONFIG.maxResultBytes) : JSON.stringify(body);
+  const delays = CONFIG.resultRetryDelaysMs || [];
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    let status = 0;
+    let limit = CONFIG.maxResultBytes;
+    try {
+      const res = await fetchWithTimeout(RESULT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
+        body: text
+      }, CONFIG.fetchTimeoutMs.result);
+      status = res.status;
+      if (res.ok) return true;
+      if (status === 413) {
+        try { const info = await res.json(); if (info && Number(info.limit) > 0) limit = Number(info.limit); } catch (_) { /* ignore */ }
+      }
+    } catch (e) {
+      status = 0; // network failure or timeout: retry below
+    }
+    if (status === 413) {
+      if (byteLength(text) < 4096) return false; // even the compact error was refused
+      text = compactSizeError(body, bytes, limit);
+      continue; // resend the small version right away
+    }
+    if (status === 400 || status === 401 || status === 403 || status === 404) return false;
+    if (attempt < delays.length) await delay(delays[attempt]);
   }
+  return false;
 }
 
 async function emailComposeCommand(cmd) {

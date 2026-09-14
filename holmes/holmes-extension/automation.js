@@ -343,6 +343,48 @@ self.HolmesAutomation = (function () {
 
   var PAGE_ACTIONS = { click: 1, fillField: 1, readSelection: 1, extract: 1, scrollTo: 1, waitForSelector: 1 };
 
+  // Tunables (tests shorten them through self.__holmesBridgeConfig). Local to this
+  // closure so they never collide with the worker's own names.
+  var TUNING = (typeof self !== "undefined" && self.__holmesBridgeConfig) || {};
+  // A PNG of a Retina viewport is easily 5 to 15 MB of base64; results travel
+  // over the loopback bridge, so screenshots are JPEG and kept under this size.
+  var MAX_SCREENSHOT_CHARS = Number(TUNING.maxScreenshotChars) || 4 * 1024 * 1024;
+  var SCREENSHOT_MAX_WIDTH = 1600;
+
+  function toBase64(buffer) {
+    var bytes = new Uint8Array(buffer), binary = "";
+    for (var i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+  }
+
+  // Downscales a captured image to at most SCREENSHOT_MAX_WIDTH wide and re-encodes
+  // it as JPEG until it fits. Null when the worker has no OffscreenCanvas.
+  async function downscaleDataUrl(dataUrl, maxChars) {
+    try {
+      if (typeof OffscreenCanvas !== "function" || typeof createImageBitmap !== "function") return null;
+      var blob = await (await fetch(dataUrl)).blob();
+      var bitmap = await createImageBitmap(blob);
+      var scale = Math.min(1, SCREENSHOT_MAX_WIDTH / bitmap.width);
+      var width = Math.max(1, Math.round(bitmap.width * scale));
+      var height = Math.max(1, Math.round(bitmap.height * scale));
+      var canvas = new OffscreenCanvas(width, height);
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+      if (bitmap.close) bitmap.close();
+      var quality = 0.7, out = "";
+      for (;;) {
+        var jpeg = await canvas.convertToBlob({ type: "image/jpeg", quality: quality });
+        out = "data:image/jpeg;base64," + toBase64(await jpeg.arrayBuffer());
+        if (out.length <= maxChars || quality <= 0.3) break;
+        quality -= 0.2;
+      }
+      return { dataUrl: out, width: width, height: height };
+    } catch (e) {
+      return null;
+    }
+  }
+
   async function resolveTabId(params) {
     if (params && typeof params.tabId === "number" && params.tabId >= 0) return params.tabId;
     try {
@@ -407,8 +449,20 @@ self.HolmesAutomation = (function () {
           var windowId = shotTab ? shotTab.windowId : undefined;
           // captureVisibleTab grabs the ACTIVE tab of the window; note that if the
           // requested tab isn't active this returns whatever is frontmost there.
-          var dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
-          return { ok: true, tabId: shotTab ? shotTab.id : -1, format: "png", dataUrl: dataUrl, bytes: dataUrl ? dataUrl.length : 0 };
+          var quality = 70;
+          var dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "jpeg", quality: quality });
+          var downscaled = false;
+          if (dataUrl && dataUrl.length > MAX_SCREENSHOT_CHARS) {
+            var scaled = await downscaleDataUrl(dataUrl, MAX_SCREENSHOT_CHARS);
+            if (scaled && scaled.dataUrl.length < dataUrl.length) { dataUrl = scaled.dataUrl; downscaled = true; }
+          }
+          // No canvas in this worker: fall back to recapturing at lower quality.
+          while (!downscaled && dataUrl && dataUrl.length > MAX_SCREENSHOT_CHARS && quality > 30) {
+            quality -= 20;
+            dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "jpeg", quality: quality });
+          }
+          return { ok: true, tabId: shotTab ? shotTab.id : -1, format: "jpeg", quality: quality, downscaled: downscaled,
+            dataUrl: dataUrl, bytes: dataUrl ? dataUrl.length : 0 };
         }
 
         default: {
