@@ -8,6 +8,7 @@ xcrun swiftc -swift-version 5 \
   holmes/holmes/Core/WorkActivity.swift \
   holmes/holmes/Core/EmailComposeSnapshot.swift \
   holmes/holmes/Core/EmailDrafting.swift \
+  holmes/holmes/Core/EmailPrediction.swift \
   holmes/tests/EmailDraftingTests.swift \
   -o "$email_drafting_test_dir/email-drafting-tests"
 "$email_drafting_test_dir/email-drafting-tests"

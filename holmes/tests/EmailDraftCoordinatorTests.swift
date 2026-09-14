@@ -43,6 +43,20 @@ struct LiveContext {
         insertions += 1
         return true
     }
+    var writes: [(body: String, mode: EmailWriteMode, subject: String?)] = []
+    var writeError: Error?
+    var afterFailedWrite: LiveContext?
+    var undos = 0
+    func writeEmailDraft(_ body: String, subject: String?, mode: EmailWriteMode, expected: EmailComposeSnapshot) async throws -> EmailWriteReceipt {
+        insertions += 1
+        writes.append((body, mode, subject))
+        if let writeError {
+            if let afterFailedWrite { current = afterFailedWrite }
+            throw writeError
+        }
+        return EmailWriteReceipt(undoToken: "undo-\(insertions)", subjectFilled: subject != nil)
+    }
+    func undoEmailDraft(token: String, expected: EmailComposeSnapshot) async throws { undos += 1 }
 }
 @MainActor enum MailComposeReader {
     static var current: LiveContext?
@@ -51,6 +65,29 @@ struct LiveContext {
     static func stageEmailDraft(_ body: String, expected: EmailComposeSnapshot) async throws -> Bool {
         insertions += 1
         return true
+    }
+    static func writeEmailDraft(_ body: String, subject: String?, mode: EmailWriteMode, expected: EmailComposeSnapshot) async throws -> EmailWriteReceipt {
+        insertions += 1
+        return EmailWriteReceipt(undoToken: "mail-undo", subjectFilled: false)
+    }
+    static func undoEmailDraft(token: String, expected: EmailComposeSnapshot) async throws {}
+}
+@MainActor enum EmailUndoPresenter {
+    static var shown = 0
+    static func show(title: String, detail: String, undo: @escaping @MainActor () async -> String) { shown += 1 }
+    static func hide() {}
+}
+@MainActor enum EmailActionOffers {
+    static var offered: [[EmailActionCandidate]] = []
+    static func offer(_ actions: [EmailActionCandidate], compose: EmailComposeSnapshot, body: String, subject: String) async {
+        offered.append(actions)
+    }
+}
+@MainActor enum EmailContextGatherer {
+    static func gather(for compose: EmailComposeSnapshot, instruction: String) async -> EmailPredictionContext {
+        var context = EmailPredictionContext(compose: compose)
+        context.instruction = instruction
+        return context
     }
 }
 @MainActor final class MenuBarManager {
@@ -147,16 +184,20 @@ struct EmailDraftCoordinatorTests {
         show(first)
         coordinator.observe(context(first))
         expect(model.calls.isEmpty && cards.offered.isEmpty, "Observing headers must wait for the stable dwell")
-        await eventually { cards.offered.count == 1 }
+        await eventually { browser.insertions == 1 && center.activeCount == 0 }
         expect(model.calls.count == 1 && model.calls[0].priority == .background, "First stable automatic draft uses background model priority")
-        expect(model.calls[0].owner != nil && center.activeCount == 0, "Automatic generation owns and finishes one activity")
-        expect(browser.refreshes == 2, "Automatic draft reads fresh context before claiming and again before publishing")
-        expect(!cards.offered[0].prioritized && cards.offered[0].draft.body.contains("running late"), "Automatic draft publishes the actual editable email body")
-        expect(browser.insertions == 0 && MailComposeReader.insertions == 0, "Generating a card never inserts or sends")
+        expect(model.calls[0].owner != nil, "Automatic generation owns its activity")
+        expect(browser.refreshes == 2, "Automatic draft reads fresh context before claiming and again before writing")
+        expect(cards.offered.isEmpty && browser.writes[0].mode == .auto && browser.writes[0].body.contains("running late"),
+               "An empty composer gets the predicted email written directly in automatic mode, with no review card")
+        expect(MailComposeReader.insertions == 0 && EmailUndoPresenter.shown == 1 && coordinator.lastWrite?.token == "undo-1",
+               "Every automatic write offers one click undo")
+        let undoMessage = await coordinator.undo(coordinator.lastWrite!)
+        expect(browser.undos == 1 && undoMessage.hasPrefix("Undone") && coordinator.lastWrite == nil, "Undo reaches the original composer")
         show(first)
         coordinator.observe(context(first))
         await pause(1.7)
-        expect(model.calls.count == 1 && cards.offered.count == 1, "Unchanged composer is drafted only once")
+        expect(model.calls.count == 1 && browser.insertions == 1, "Unchanged composer is predicted and written only once")
 
         reset()
         let typing = compose()
@@ -171,6 +212,14 @@ struct EmailDraftCoordinatorTests {
         await eventually { cards.offered.count == 1 }
         expect(model.calls.count == 1, "Pausing on existing notes generates a draft suggestion")
         expect(browser.insertions == 0, "Existing notes remain untouched until review")
+        for extra in ["My own email text, more", "My own email text, more words"] {
+            let more = compose(identity: typing.identity, body: extra)
+            show(more)
+            coordinator.observe(context(more))
+            await pause(0.3)
+        }
+        await pause(1.7)
+        expect(model.calls.count == 1 && cards.offered.count == 1, "Typing pauses after a card never pile up more cards or model calls")
 
         reset()
         let beforeEdit = compose(subject: "Old subject")
@@ -180,7 +229,7 @@ struct EmailDraftCoordinatorTests {
         let afterEdit = compose(identity: beforeEdit.identity, subject: "New subject")
         show(afterEdit)
         coordinator.observe(context(afterEdit))
-        await eventually { cards.offered.count == 1 }
+        await eventually { browser.insertions == 1 }
         expect(model.calls.count == 1 && model.calls[0].prompt.contains("New subject"), "Editing subject during debounce drafts only the final stable header")
 
         reset()
@@ -196,7 +245,7 @@ struct EmailDraftCoordinatorTests {
         await eventually { heldModel.cancelled }
         heldModel.release(#"{"body":"Old generated body"}"#)
         await eventually { center.activeCount == 0 }
-        expect(cards.offered.isEmpty, "Typing during generation prevents publication even if the model completes late")
+        expect(cards.offered.isEmpty && browser.insertions == 0, "Typing during generation prevents publication even if the model completes late")
 
         reset()
         let queued = compose()
@@ -205,10 +254,10 @@ struct EmailDraftCoordinatorTests {
         coordinator.observe(context(queued))
         await eventually { center.selectedActivity?.phase == .queued }
         expect(model.calls.count == 1, "Busy automatic drafting reports queued work")
-        coordinator.observe(LiveContext(source: .none, confidence: .inferred, app: "Finder"))
+        coordinator.observe(LiveContext(source: .browserExtension, confidence: .exact, app: "Chrome"))
         await eventually { center.activeCount == 0 }
         await pause(1.1)
-        expect(model.calls.count == 1 && cards.offered.isEmpty, "Leaving the email cancels queued retries")
+        expect(model.calls.count == 1 && cards.offered.isEmpty, "Closing the composer in the same app cancels queued retries")
 
         reset()
         let automatic = compose()
@@ -223,10 +272,11 @@ struct EmailDraftCoordinatorTests {
         let explicitResult = await coordinator.request(instruction: "Draft this email", context: context(automatic))
         guard case .ready = explicitResult else { fatalError("Explicit drafting should succeed") }
         await eventually { heldAutomatic.cancelled }
-        expect(cards.offered.count == 1 && cards.offered[0].prioritized, "Explicit request preempts background generation and gets the foreground card")
+        await eventually { browser.insertions == 1 }
+        expect(browser.writes[0].body == "Explicit email draft", "Explicit request preempts background generation and writes its own prediction")
         heldAutomatic.release(#"{"body":"Old automatic draft"}"#)
         await pause(0.05)
-        expect(cards.offered.count == 1 && cards.offered[0].draft.body == "Explicit email draft", "Preempted automatic result cannot replace the explicit card")
+        expect(browser.insertions == 1 && cards.offered.isEmpty, "Preempted automatic result is never written")
 
         reset()
         let initialRefresh = CoordinatorHold<LiveContext?>()
@@ -266,7 +316,8 @@ struct EmailDraftCoordinatorTests {
         expect(center.activeCount == 1, "Old request cleanup preserves the newer initial refresh owner")
         secondRefresh.release(newContext)
         guard case .ready = await newRequest.value else { fatalError("Newest refresh should draft") }
-        expect(cards.offered.count == 1 && model.calls[0].prompt.contains("Second request"), "Only the newest refreshed email publishes")
+        await eventually { browser.insertions == 1 }
+        expect(model.calls[0].prompt.contains("Second request"), "Only the newest refreshed email is written")
 
         reset()
         browser.emailComposeUnavailableReason = "Reload the Holmes browser extension to read email compose fields."
@@ -336,7 +387,7 @@ struct EmailDraftCoordinatorTests {
         await pause(0.05)
         expect(model.calls.isEmpty, "A replaced debounce response cannot claim the old headers")
         newDebounceRead.release(context(debounceNew))
-        await eventually { cards.offered.count == 1 }
+        await eventually { browser.insertions == 1 }
         expect(model.calls.count == 1 && model.calls[0].prompt.contains("New held header"), "Old refresh cleanup cannot clear the replacement debounce owner")
 
         reset()
@@ -360,7 +411,8 @@ struct EmailDraftCoordinatorTests {
         expect(model.calls.isEmpty && center.activeCount == 1, "Manual preemption cancels held automatic refresh while preserving its own reading activity")
         manualReading.release(preemptContext)
         guard case .ready = await preempting.value else { fatalError("Explicit request must survive an old debounce callback") }
-        expect(cards.offered.count == 1 && cards.offered[0].prioritized, "Only the manual request publishes after held-refresh preemption")
+        await eventually { browser.insertions == 1 }
+        expect(model.calls.count == 1, "Only the manual request writes after held refresh preemption")
 
         reset()
         let disabledReading = CoordinatorHold<LiveContext?>()
@@ -426,6 +478,32 @@ struct EmailDraftCoordinatorTests {
         currentModel.release(#"{"body":"The current email draft"}"#)
         guard case .ready = await currentEntry.value else { fatalError("Current entry must survive cancelled stale entry") }
 
+        reset()
+        // Regression: any app switch used to cancel generation.
+        let away = compose()
+        let heldAway = CoordinatorHold<String>()
+        model.handler = { _ in await heldAway.wait() }
+        show(away)
+        coordinator.observe(context(away))
+        await eventually { heldAway.started }
+        coordinator.observe(LiveContext(source: .accessibility, confidence: .structural, app: "Slack"))
+        await pause(0.1)
+        expect(!heldAway.cancelled, "Switching to another app does not cancel generation")
+        heldAway.release(#"{"body":"Hi, I'm running late. I'm sorry for the delay."}"#)
+        await eventually { browser.insertions == 1 }
+        expect(cards.offered.isEmpty, "The prediction is still written into the unchanged composer")
+
+        reset()
+        let racing = compose()
+        let typedMeanwhile = compose(identity: racing.identity, body: "Actually I will write this myself")
+        browser.writeError = EmailComposeError.unavailable("You were typing, so Holmes did not write into the email.")
+        browser.afterFailedWrite = context(typedMeanwhile)
+        show(racing)
+        coordinator.observe(context(racing))
+        await eventually { cards.offered.count == 1 }
+        expect(EmailUndoPresenter.shown == 0 && cards.offered[0].draft.contextSummary.contains("did not change it"),
+               "A refused automatic write keeps the person's text and becomes one review card")
+
         coordinator.stop()
         center.invalidateAll()
         print("Passed \(checks) production email coordinator routing and debounce checks")
@@ -440,6 +518,12 @@ struct EmailDraftCoordinatorTests {
         BrowserBridge.shared.emailComposeUnavailableReason = nil
         BrowserBridge.shared.refreshes = 0
         BrowserBridge.shared.insertions = 0
+        BrowserBridge.shared.writes = []
+        BrowserBridge.shared.writeError = nil
+        BrowserBridge.shared.afterFailedWrite = nil
+        BrowserBridge.shared.undos = 0
+        EmailUndoPresenter.shown = 0
+        EmailActionOffers.offered = []
         OllamaClient.shared.handler = nil
         OllamaClient.shared.calls = []
         OllamaConfig.isConfigured = true

@@ -36,7 +36,7 @@ import Foundation
         generate: { input, _ in
             self.generated += 1
             self.modelOwners.append(WorkActivityScope.id)
-            return try await self.generator(input)
+            return EmailPrediction(subject: nil, body: try await self.generator(input), actions: [])
         },
         refresh: { expected in
             self.refreshed += 1
@@ -162,6 +162,16 @@ struct EmailDraftingTests {
         var insertedTrigger = EmailComposeTrigger()
         insertedTrigger.didInsert(into: original, now: now)
         expect(insertedTrigger.observe(snapshot(body: "Inserted draft", now: now), now: now) == nil, "Inserted draft does not trigger another automatic rewrite")
+
+        // Regression: every typing pause used to publish another review card.
+        var offeredTrigger = EmailComposeTrigger()
+        offeredTrigger.didOffer(for: snapshot(body: "My notes", now: now), now: now)
+        expect(offeredTrigger.hasOffered(snapshot(now: now), now: now), "A composer that got a card is remembered")
+        expect(offeredTrigger.observe(snapshot(body: "My notes, more", now: now), now: now) == nil
+               && offeredTrigger.observe(snapshot(body: "My notes, more words", now: now), now: now) == nil, "Further typing never triggers another card")
+        expect(offeredTrigger.observe(snapshot(now: now), now: now) == EmailComposeTrigger.dwell, "Clearing the body makes the composer predictable again")
+        expect(snapshot(subject: "", body: "", now: now).canAutoDraft && EmailDraftInput(instruction: "", compose: snapshot(subject: "")).hasContent,
+               "A recipient alone is enough to predict, with an empty subject and no notes")
 
         let center = WorkActivityCenter.shared
         center.invalidateAll()

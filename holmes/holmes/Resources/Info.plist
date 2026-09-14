@@ -44,6 +44,12 @@
     <string>Holmes uses automation to execute tasks across multiple applications.</string>
     <key>NSCalendarsUsageDescription</key>
     <string>Holmes reads your calendar to detect upcoming meetings and auto-join video calls 2 minutes before they start.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>Holmes reads your calendar to detect upcoming meetings, check your availability when writing an email, and add events you approve.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>Holmes adds a follow up reminder only when you approve one for an email you wrote.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>Holmes adds a follow up reminder only when you approve one for an email you wrote.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Holmes listens when you hold the talk hotkey, so you can ask about your screen out loud.</string>
     <key>NSAppTransportSecurity</key>
