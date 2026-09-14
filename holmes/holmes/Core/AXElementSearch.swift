@@ -48,6 +48,26 @@ enum AXElementSearch {
         return best
     }
 
+    /// Score for "the field to type into". A text AREA (a message or document
+    /// body) always outranks a text FIELD (a toolbar search box) of the same
+    /// label quality, so a shallow search field never wins over the body just
+    /// because a breadth first walk meets it first. With a hint, label quality
+    /// comes first and the area preference breaks ties.
+    static func textEntryScore(role: String, hint: String?, names: () -> [String?]) -> Int? {
+        let isArea = role == "AXTextArea"
+        guard isArea || role == "AXTextField" else { return nil }
+        let areaBonus = isArea ? 1 : 0
+        guard let hint else { return 1 + areaBonus }
+        guard let match = labelMatch(hint, names: names()) else { return nil }
+        return match.rawValue * 2 + areaBonus
+    }
+
+    /// The score at which a text entry search can stop: a text area (no hint),
+    /// or an exact label match on a text area (hint).
+    static func textEntryStopScore(hasHint: Bool) -> Int {
+        hasHint ? AXLabelMatch.exact.rawValue * 2 + 1 : 2
+    }
+
     struct Result<Node> {
         let node: Node?
         let visited: Int

@@ -83,6 +83,31 @@ struct AXElementSearchTests {
                                          })
         expect(early.node === replyAll && scored == 2, "An exact match ends the walk immediately")
 
+        // ax_type with no field hint: the message body, not a shallow search field.
+        let composeWindow = FakeElement("AXWindow")
+        let composeToolbar = FakeElement("AXToolbar")
+        let searchField = FakeElement("AXTextField", description: "Search")
+        composeToolbar.children = [searchField]
+        let split = FakeElement("AXSplitGroup")
+        let scroll = FakeElement("AXScrollArea")
+        let body = FakeElement("AXTextArea", description: "Message body")
+        scroll.children = [body]
+        split.children = [scroll]
+        composeWindow.children = [composeToolbar, split]
+        func findTextEntry(_ hint: String?) -> FakeElement? {
+            AXElementSearch.best(from: composeWindow,
+                                 stopScore: AXElementSearch.textEntryStopScore(hasHint: hint != nil),
+                                 children: { $0.children },
+                                 score: { node in
+                                     AXElementSearch.textEntryScore(role: node.role, hint: hint, names: { node.names })
+                                 }).node
+        }
+        expect(findTextEntry(nil) === body, "With no hint, a deeper text area beats a shallower search field")
+        expect(findTextEntry("Search") === searchField, "A hint naming the search field still selects it")
+        expect(findTextEntry("message") === body, "A hint matching the body selects the body")
+        expect(AXElementSearch.textEntryScore(role: "AXButton", hint: nil, names: { [] }) == nil,
+               "Only text areas and text fields are typing targets")
+
         print("Passed \(checks) bounded accessibility search and label ranking checks")
     }
 }

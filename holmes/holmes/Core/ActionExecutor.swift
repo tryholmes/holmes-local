@@ -94,9 +94,9 @@ final class ActionExecutor {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
 
-        // Find the best matching text area / text field in one bounded walk.
-        let roles: Set<String> = [kAXTextAreaRole as String, kAXTextFieldRole as String]
-        if let field = findElement(in: axApp, roles: roles, label: fieldHint) {
+        // One bounded walk that prefers a text area (the body) over a text
+        // field (a search box) at equal label quality.
+        if let field = findTextEntryField(in: axApp, hint: fieldHint) {
             AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, true as CFTypeRef)
             // Small delay for focus to settle, without blocking a thread.
             try? await Task.sleep(nanoseconds: 100_000_000)
@@ -350,10 +350,27 @@ final class ActionExecutor {
     /// (exact title/description/help/identifier/placeholder beats case
     /// insensitive beats substring); without one, the first element of a role.
     private func findElement(in root: AXUIElement, roles: Set<String>, label: String?) -> AXUIElement? {
+        findBest(in: root, stopScore: label == nil ? 1 : AXLabelMatch.exact.rawValue) { role, names in
+            guard roles.contains(role) else { return nil }
+            guard let label else { return 1 }
+            return AXElementSearch.labelMatch(label, names: names())?.rawValue
+        }
+    }
+
+    /// The field ax_type should fill: text areas beat text fields.
+    private func findTextEntryField(in root: AXUIElement, hint: String?) -> AXUIElement? {
+        findBest(in: root, stopScore: AXElementSearch.textEntryStopScore(hasHint: hint != nil)) { role, names in
+            AXElementSearch.textEntryScore(role: role, hint: hint, names: names)
+        }
+    }
+
+    /// Bounded walk scoring each element by role and (lazily read) names.
+    private func findBest(in root: AXUIElement, stopScore: Int,
+                          score: (String, () -> [String?]) -> Int?) -> AXUIElement? {
         let deadline = Date().addingTimeInterval(Self.searchTimeBudget)
         let result = AXElementSearch.best(
             from: root,
-            stopScore: label == nil ? 1 : AXLabelMatch.exact.rawValue,
+            stopScore: stopScore,
             children: { element in
                 guard Date() < deadline else { return [] }
                 var childrenRef: CFTypeRef?
@@ -363,14 +380,12 @@ final class ActionExecutor {
                 return children
             },
             score: { element in
-                guard let role = Self.stringAttribute(element, kAXRoleAttribute as String), roles.contains(role) else {
-                    return nil
+                guard let role = Self.stringAttribute(element, kAXRoleAttribute as String) else { return nil }
+                return score(role) {
+                    [kAXTitleAttribute as String, kAXDescriptionAttribute as String,
+                     kAXHelpAttribute as String, "AXIdentifier", kAXPlaceholderValueAttribute as String]
+                        .map { Self.stringAttribute(element, $0) }
                 }
-                guard let label else { return 1 }
-                let names = [kAXTitleAttribute as String, kAXDescriptionAttribute as String,
-                             kAXHelpAttribute as String, "AXIdentifier", kAXPlaceholderValueAttribute as String]
-                    .map { Self.stringAttribute(element, $0) }
-                return AXElementSearch.labelMatch(label, names: names)?.rawValue
             })
         if result.node == nil, result.truncated {
             print("[Holmes] AX lookup stopped at its limit after \(result.visited) elements")
