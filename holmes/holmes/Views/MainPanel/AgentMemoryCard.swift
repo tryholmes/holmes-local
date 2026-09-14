@@ -551,7 +551,18 @@ struct MemoryRowView: View {
 
 struct ExtensionStatusRow: View {
     @State private var bridge = BrowserBridge.shared
-    @State private var connected = false
+    @State private var state: BrowserBridge.LinkState = .disconnected
+
+    private var connected: Bool { state == .connected }
+
+    private var label: String {
+        switch state {
+        case .connected: return "Browser extension connected"
+        case .pageContextStale: return "Extension connected, but this tab isn't sending page context. Refresh the tab."
+        case .notListening(let reason): return "Browser bridge not listening: \(reason)"
+        case .disconnected: return "Browser extension not connected — context is OCR-guessed"
+        }
+    }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -559,9 +570,7 @@ struct ExtensionStatusRow: View {
                 .font(NoirFonts.font(size: 9, weight: .bold, design: .monospaced))
                 .foregroundColor(connected ? NoirColors.success : memoryAmber)
 
-            Text(connected
-                 ? "Browser extension connected"
-                 : "Browser extension not connected — context is OCR-guessed")
+            Text(label)
                 .font(NoirFonts.font(size: 10, weight: .regular, design: .default))
                 .foregroundColor(connected ? NoirColors.textSecondary : memoryAmber.opacity(0.85))
                 .lineLimit(2)
@@ -569,18 +578,32 @@ struct ExtensionStatusRow: View {
 
             Spacer(minLength: 0)
         }
-        .help(connected ? Self.connectedHelp : Self.disconnectedHelp)
+        .help(help)
         .task {
             // Connectivity is "did the extension post within the heartbeat
             // window", so it goes stale on the clock rather than on an event —
             // poll it, otherwise the row would keep claiming "connected" long
             // after the browser was quit.
             while !Task.isCancelled {
-                connected = bridge.isExtensionConnected
+                state = bridge.linkState
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
             }
         }
     }
+
+    private var help: String {
+        switch state {
+        case .connected: return Self.connectedHelp
+        case .pageContextStale: return Self.staleHelp
+        case .notListening, .disconnected: return Self.disconnectedHelp
+        }
+    }
+
+    private static let staleHelp = """
+    The extension's background worker is talking to Holmes, but the page in \
+    front is not sending its contents (its content script is missing or was \
+    left behind by an extension update). Refresh the tab so Holmes can read it.
+    """
 
     private static let connectedHelp = """
     The Holmes extension is POSTing page context to localhost:5766. \

@@ -933,17 +933,20 @@ struct PrivacySettingsView: View {
 
     private var bridgeIcon: String {
         if bridge.lastError != nil { return "exclamationmark.triangle.fill" }
+        if bridge.isExtensionConnected && bridge.isPageContextStale { return "exclamationmark.circle.fill" }
         return bridge.isExtensionConnected ? "checkmark.circle.fill" : "xmark.circle.fill"
     }
 
     private var bridgeColor: Color {
         if bridge.lastError != nil { return .red }
+        if bridge.isExtensionConnected && bridge.isPageContextStale { return .orange }
         return bridge.isExtensionConnected ? .green : .orange
     }
 
     private var bridgeStatus: String {
         if bridge.lastError != nil { return "Not listening" }
         if bridge.isPairing { return "Pairing — waiting for the extension" }
+        if bridge.isExtensionConnected && bridge.isPageContextStale { return "Extension connected, page context stale" }
         if bridge.isExtensionConnected { return "Extension connected" }
         // Not connected: name WHICH failure it is, so the short line is actionable
         // instead of an ambiguous "Waiting…". A token being rejected outranks
@@ -965,6 +968,9 @@ struct PrivacySettingsView: View {
         }
         if bridge.unauthorizedRequests > 0 {
             return "\(bridge.unauthorizedRequests) request\(bridge.unauthorizedRequests == 1 ? "" : "s") rejected: something is posting to 127.0.0.1:\(BrowserBridge.port) with a token Holmes doesn't know. If that's your extension, click Pair browser extension — Holmes never adopts a secret on its own, because every process on this Mac can reach a loopback port."
+        }
+        if bridge.isExtensionConnected && bridge.isPageContextStale {
+            return "Listening on 127.0.0.1:\(BrowserBridge.port). The extension's background worker is connected, but the tab in front is not sending page context (its content script is missing or was orphaned by an extension update). Refresh that tab; Holmes will read it again on the next post."
         }
         if bridge.isExtensionConnected {
             let paired = bridge.pairedToken == nil ? "" : " Paired with the extension's own token."

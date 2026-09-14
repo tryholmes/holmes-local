@@ -442,6 +442,38 @@ final class BrowserBridge {
     @ObservationIgnored private var lastForegroundBrowserInstance: String?
     private(set) var emailComposeUnavailableReason: String?
     private(set) var extensionVersion: String?
+    /// True while the extension's worker is alive (heartbeats arrive) but the page
+    /// itself is not sending context: the active tab's content script is missing
+    /// or orphaned. isExtensionConnected keeps its worker-liveness meaning for
+    /// existing callers; this is the extra truth the UI must not paper over.
+    private(set) var isPageContextStale = false
+    /// The worker's latest report about the active tab's content script.
+    @ObservationIgnored private var lastActiveTabProbe: (script: String, at: Date)?
+    /// When isExtensionConnected last turned true.
+    @ObservationIgnored private var connectedSince: Date?
+    /// A page context post from an extension too old to draft email was seen.
+    @ObservationIgnored private var observedLegacyProtocol = false
+    /// Where the last foreground browser instance is remembered across launches.
+    @ObservationIgnored private var instanceDefaults: UserDefaults? = .standard
+    static let lastInstanceDefaultsKey = "HolmesLastForegroundBrowserInstance"
+    /// Legacy extensions (no active tab probe): how long a frontmost browser may
+    /// stay silent while its worker beats before the page counts as stale.
+    static let pageContextTimeout: TimeInterval = 180
+
+    /// One state for the notch and Settings, so they never claim a full connection
+    /// from worker heartbeats alone or hide a bridge that is not listening.
+    enum LinkState: Equatable {
+        case notListening(String)
+        case disconnected
+        case connected
+        case pageContextStale
+    }
+
+    var linkState: LinkState {
+        if !isRunning, let lastError { return .notListening(lastError) }
+        guard isExtensionConnected else { return .disconnected }
+        return isPageContextStale ? .pageContextStale : .connected
+    }
     private static let composeReloadMessage = "Reload Holmes on chrome://extensions, then refresh Gmail to enable email drafting."
 
     // ── Observable state the UI reads ───────────────────────────────
@@ -577,6 +609,24 @@ final class BrowserBridge {
     private init() {
         token = BridgeToken.loadOrCreate()
         pairedExtensions = pairingStore.load()
+        loadRememberedInstance()
+    }
+
+    /// Restores the browser instance that was last in front, so the first compose
+    /// refresh after an app restart targets it instead of claiming a reload is needed.
+    private func loadRememberedInstance() {
+        guard let remembered = instanceDefaults?.string(forKey: Self.lastInstanceDefaultsKey), !remembered.isEmpty else { return }
+        lastForegroundBrowserInstance = remembered
+        commandQueue.rememberInstance(remembered)
+    }
+
+    private func rememberForeground(_ instance: String, fromApp: Bool) {
+        guard !instance.isEmpty else { return }
+        if lastForegroundBrowserInstance != instance {
+            lastForegroundBrowserInstance = instance
+            instanceDefaults?.set(instance, forKey: Self.lastInstanceDefaultsKey)
+        }
+        if fromApp { commandQueue.noteForeground(instance: instance) }
     }
 
     #if DEBUG
@@ -590,7 +640,14 @@ final class BrowserBridge {
         listenPort = port
         self.pairingStore = pairingStore
         pairedExtensions = pairingStore.load()
+        instanceDefaults = nil
     }
+    func testUseInstanceDefaults(_ defaults: UserDefaults) {
+        instanceDefaults = defaults
+        loadRememberedInstance()
+    }
+    func testSighting(_ sighting: BridgeSighting) { noteSighting(sighting) }
+    func testRefreshConnectionState(now: Date) { refreshConnectionState(now: now) }
     func testIngest(_ data: Data) -> LiveContext? { ingest(data) }
     func testDrainCommands(instance: String?) -> Data { drainCommandsJSON(forInstance: instance) }
     func testCommandResult(_ data: Data) { recordCommandResult(data) }
@@ -695,8 +752,7 @@ final class BrowserBridge {
         }
     }
 
-    private func refreshConnectionState() {
-        let now = Date()
+    private func refreshConnectionState(now: Date = Date()) {
         // Liveness comes from EITHER signal: a recent /heartbeat, OR a recent real
         // /context POST. A page actively posting context is obviously connected even
         // if a bare heartbeat was missed, so we don't demand both. (ingest() also
@@ -710,6 +766,7 @@ final class BrowserBridge {
             consecutiveStaleTicks = 0
             if !isExtensionConnected {
                 isExtensionConnected = true
+                connectedSince = now
                 print("[Bridge] Extension connected")
             }
         } else {
@@ -722,6 +779,7 @@ final class BrowserBridge {
                 print("[Bridge] Extension disconnected")
             }
         }
+        refreshPageContextState(now: now)
         // An expired pairing window has to stop reading as open in Settings. The
         // socket layer enforces the deadline itself; this only republishes it.
         if let ends = pairingWindowEnds, ends <= Date() {
@@ -812,8 +870,12 @@ final class BrowserBridge {
             emailComposeUnavailableReason = "Return to the email composer to refresh its contents."
             return nil
         }
-        guard let instance = lastForegroundBrowserInstance else {
-            emailComposeUnavailableReason = isExtensionConnected ? Self.composeReloadMessage
+        // The instance comes from a foreground context post, a focused heartbeat or
+        // poll, or the one remembered from the previous launch. Only an extension
+        // that really is too old (or missing from the page) is told to reload.
+        guard let instance = lastForegroundBrowserInstance ?? commandQueue.preferredInstance else {
+            emailComposeUnavailableReason = observedLegacyProtocol ? Self.composeReloadMessage
+                : isExtensionConnected ? "Click into your email tab in the browser so Holmes can find it, then try again."
                 : "Connect the Holmes browser extension, then refresh Gmail to enable email drafting."
             return nil
         }
@@ -822,7 +884,7 @@ final class BrowserBridge {
         guard result["ok"] as? Bool == true,
               let payload = result["payload"] as? [String: Any],
               let data = try? JSONSerialization.data(withJSONObject: payload) else {
-            emailComposeUnavailableReason = (result["reason"] as? String) ?? Self.composeReloadMessage
+            emailComposeUnavailableReason = Self.browserFailureMessage(result)
             return nil
         }
         // onLiveContext runs synchronously inside ingest. An observer may publish
@@ -860,8 +922,9 @@ final class BrowserBridge {
         if result["cancelled"] as? Bool == true { throw CancellationError() }
         guard result["ok"] as? Bool == true, result["inserted"] as? Bool == true,
               result["identity"] as? String == expected.identity else {
-            throw EmailComposeError.unavailable((result["reason"] ?? result["error"]) as? String
-                ?? "The composer could not confirm insertion. Your draft is still available to copy.")
+            throw EmailComposeError.unavailable(result["reason"] != nil || result["error"] != nil
+                ? Self.browserFailureMessage(result)
+                : "The composer could not confirm insertion. Your draft is still available to copy.")
         }
         return true
     }
@@ -1000,7 +1063,69 @@ final class BrowserBridge {
         // A fresh beat clears any accumulated stale count so the hysteresis window
         // always starts over from a known-good state.
         consecutiveStaleTicks = 0
-        if !isExtensionConnected { isExtensionConnected = true }
+        if !isExtensionConnected {
+            isExtensionConnected = true
+            connectedSince = Date()
+        }
+    }
+
+    /// Page context health. With the worker's active tab probe, stale means the
+    /// probe found no content script and no page has posted since. Without a probe
+    /// (older extension), stale means a browser is in front yet its page has been
+    /// silent for pageContextTimeout while the worker keeps beating.
+    private func refreshPageContextState(now: Date) {
+        let stale: Bool
+        if !isExtensionConnected {
+            stale = false
+        } else if let probe = lastActiveTabProbe {
+            stale = probe.script == "missing" && (lastContextPost.map { $0 < probe.at } ?? true)
+        } else {
+            let frontIsBrowser = Self.isBrowserName((contextEnvironment.frontmost()?.name ?? "").lowercased())
+            let quietSince = lastContextPost ?? connectedSince
+            stale = frontIsBrowser && (quietSince.map { now.timeIntervalSince($0) > Self.pageContextTimeout } ?? false)
+        }
+        guard stale != isPageContextStale else { return }
+        isPageContextStale = stale
+        print(stale ? "[Bridge] Extension worker is alive but the page is not sending context"
+                    : "[Bridge] Page context is flowing again")
+    }
+
+    /// Turns a failed browser command result into one accurate, actionable line.
+    /// Only a content script that is genuinely missing or orphaned is told to reload.
+    nonisolated static func browserFailureMessage(_ result: [String: Any]) -> String {
+        let error = result["error"] as? String ?? ""
+        let reason = result["reason"] as? String ?? ""
+        let text = (reason + " " + error).lowercased()
+        switch error {
+        case "extension_asleep":
+            return "The Holmes extension isn't picking up requests right now (its background worker may be asleep). Click into your browser tab, then try again."
+        case "timeout":
+            return "Your browser received the request but didn't answer in time. Click into the email tab, then try again."
+        case "queue_full":
+            return "Holmes has too many browser requests waiting. Wait a few seconds, then try again."
+        case "cancelled":
+            return "The request was cancelled."
+        default:
+            break
+        }
+        if text.contains("receiving end does not exist") || text.contains("could not establish connection")
+            || text.contains("content script is missing") {
+            return "Holmes isn't loaded in that tab. Refresh the email tab; if that doesn't help, reload Holmes on chrome://extensions."
+        }
+        if text.contains("result too large") {
+            return "The browser's answer was too large to send. Try again with a smaller page or selection."
+        }
+        if text.contains("no longer in the active tab") || text.contains("active tab changed")
+            || text.contains("no active browser tab") || text.contains("did not become visible") {
+            return "Bring the email tab to the front in your browser, then try again."
+        }
+        if text.contains("no active compose window") || text.contains("compose reader did not respond") || text.contains("no composer") {
+            return "Open the email you're writing in the browser, then try again."
+        }
+        if !reason.isEmpty { return reason }
+        if let message = result["message"] as? String, !message.isEmpty { return message }
+        if !error.isEmpty { return "The browser couldn't finish that request: \(error)" }
+        return "The browser didn't return a composer reading. Try again."
     }
 
     private func noteUnauthorized(_ path: String) {
@@ -1038,6 +1163,18 @@ final class BrowserBridge {
     /// fresh and labels that pairing with the browser instance it came from.
     private func noteSighting(_ sighting: BridgeSighting) {
         noteHeartbeat()
+        // A worker reporting OS focus identifies the browser in front, even when no
+        // page has posted context since Holmes launched.
+        if sighting.focused == true, let instance = sighting.instance, !instance.isEmpty {
+            rememberForeground(instance, fromApp: false)
+        }
+        if let body = sighting.body, !body.isEmpty,
+           let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+           let activeTab = object["activeTab"] as? [String: Any],
+           let script = activeTab["script"] as? String {
+            lastActiveTabProbe = (script, Date())
+            refreshPageContextState(now: Date())
+        }
         guard let index = pairedExtensions.firstIndex(where: { $0.token == sighting.token }) else { return }
         var entry = pairedExtensions[index]
         let now = Date()
@@ -1067,6 +1204,7 @@ final class BrowserBridge {
         // — is proof the extension is alive and posting, so it counts as an independent
         // liveness signal for refreshConnectionState().
         lastContextPost = Date()
+        refreshPageContextState(now: Date())
 
         guard var payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             print("[Bridge] Dropped a payload that wasn't a JSON object (\(data.count) bytes)")
@@ -1080,7 +1218,10 @@ final class BrowserBridge {
         if let isActiveTab = payload["isActiveTab"] as? Bool, !isActiveTab { return nil }
         if let visible = payload["visible"] as? Bool, !visible { return nil }
         if (payload["emailComposeProtocolVersion"] as? Int ?? 0) < 1 {
+            observedLegacyProtocol = true
             emailComposeUnavailableReason = Self.composeReloadMessage
+        } else {
+            observedLegacyProtocol = false
         }
         let instanceID = payload["browserInstanceId"] as? String ?? ""
         if payload["capturedAt"] != nil {
@@ -1115,7 +1256,7 @@ final class BrowserBridge {
                     browserBundlesByInstance[instanceID] = bundle
                 }
                 guard browserBundlesByInstance[instanceID] == bundle else { return nil }
-                lastForegroundBrowserInstance = instanceID
+                rememberForeground(instanceID, fromApp: true)
             } else {
                 // Holmes's review card owns focus. Keep only the previously
                 // identified originating browser, not a background browser's tab.

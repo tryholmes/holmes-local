@@ -323,6 +323,84 @@ enum BridgeLoopbackTests {
         check(cometAfterRemoval == 200 && store.load().map(\.token) == [comet], "Removing one pairing keeps the other")
         relaunched.stop()
     }
+
+    /// Page context health, instance tracking without a context post, persistence
+    /// across launches, and accurate per error messages.
+    @MainActor static func runLiveness(check: (Bool, String) -> Void) async {
+        var frontmost = BrowserBridge.AppIdentity(name: "Google Chrome", bundleIdentifier: "com.google.Chrome")
+        let environment = BrowserBridge.ContextEnvironment(frontmost: { frontmost }, ownBundleIdentifier: "test.holmes",
+            nameForBundle: { _ in "Google Chrome" })
+        func sighting(_ instance: String, focused: Bool? = nil, script: String? = nil) -> BridgeSighting {
+            let body = script.map { try! JSONSerialization.data(withJSONObject: ["activeTab": ["script": $0]]) }
+            return BridgeSighting(token: token, instance: instance, focused: focused, body: body)
+        }
+        let page = try! JSONSerialization.data(withJSONObject: ["app": "Chrome", "site": "example.test", "url": "https://example.test/a",
+            "title": "Example page", "headline": "Reading Example page", "isActiveTab": true, "visible": true, "focused": true,
+            "browserInstanceId": "chrome-inst", "emailComposeProtocolVersion": 1])
+
+        let bridge = BrowserBridge(testToken: token, environment: environment)
+        bridge.testSighting(sighting("chrome-inst", focused: true, script: "missing"))
+        check(bridge.isExtensionConnected && bridge.isPageContextStale && bridge.linkState == .pageContextStale,
+              "Worker heartbeats with an orphaned active tab read as page context stale, not fully connected")
+        _ = bridge.testIngest(page)
+        check(!bridge.isPageContextStale && bridge.linkState == .connected, "A page context post clears the stale state")
+        bridge.testSighting(sighting("chrome-inst", script: "restricted"))
+        check(!bridge.isPageContextStale, "A browser internal page is not stale")
+        bridge.testSighting(sighting("chrome-inst", script: "ok"))
+        check(!bridge.isPageContextStale, "A live content script is not stale")
+
+        let legacy = BrowserBridge(testToken: token, environment: environment)
+        legacy.testSighting(sighting("old-inst"))
+        legacy.testRefreshConnectionState(now: Date().addingTimeInterval(BrowserBridge.pageContextTimeout + 20))
+        check(legacy.isExtensionConnected && legacy.isPageContextStale,
+              "Without a probe, a frontmost browser whose page stays silent while the worker beats is stale")
+        frontmost = .init(name: "Notes", bundleIdentifier: "com.apple.Notes")
+        legacy.testSighting(sighting("old-inst"))
+        legacy.testRefreshConnectionState(now: Date().addingTimeInterval(BrowserBridge.pageContextTimeout + 20))
+        check(!legacy.isPageContextStale, "A silent page is not stale while the user is in another app")
+        frontmost = .init(name: "Google Chrome", bundleIdentifier: "com.google.Chrome")
+
+        // After an app restart no context has posted yet; a focused heartbeat is
+        // enough to target the right browser instead of saying reload.
+        let defaults = UserDefaults(suiteName: "holmes.bridge.tests.\(UUID().uuidString)")!
+        let restarted = BrowserBridge(testToken: token, environment: environment)
+        restarted.testUseInstanceDefaults(defaults)
+        restarted.testSighting(sighting("comet-inst", focused: true))
+        check(defaults.string(forKey: BrowserBridge.lastInstanceDefaultsKey) == "comet-inst",
+              "The browser instance seen in front is persisted")
+        restarted.commandResultTimeout = 5
+        let read = Task { @MainActor in await restarted.refreshEmailComposeContext() }
+        await waitUntil("refresh targets instance") { restarted.testPendingCommandIDs.count == 1 }
+        let delivered = try! JSONSerialization.jsonObject(with: restarted.testDrainCommands(instance: "comet-inst")) as! [[String: Any]]
+        check(delivered.count == 1, "A compose refresh after restart targets the instance from heartbeats")
+        restarted.testCommandResult(try! JSONSerialization.data(withJSONObject: ["id": delivered[0]["id"]!, "ok": false,
+            "error": "Could not establish connection. Receiving end does not exist."]))
+        check(await read.value == nil && restarted.emailComposeUnavailableReason?.contains("chrome://extensions") == true
+              && restarted.emailComposeUnavailableReason?.contains("Refresh the email tab") == true,
+              "A genuinely missing content script gets refresh then reload advice")
+
+        let relaunched = BrowserBridge(testToken: token, environment: environment)
+        relaunched.testUseInstanceDefaults(defaults)
+        relaunched.commandUndeliveredTimeout = 0.3
+        let asleep = await relaunched.refreshEmailComposeContext()
+        check(asleep == nil && relaunched.emailComposeUnavailableReason?.contains("isn't picking up requests") == true
+              && relaunched.emailComposeUnavailableReason?.contains("chrome://extensions") == false,
+              "A remembered instance whose worker never polls is reported as asleep, not as needing reload")
+
+        let messages: [([String: Any], String)] = [
+            (["error": "timeout"], "didn't answer in time"),
+            (["error": "queue_full"], "too many browser requests"),
+            (["ok": false, "refused": true, "reason": "The composer is no longer in the active tab."], "Bring the email tab to the front"),
+            (["ok": false, "refused": true, "reason": "No active compose window."], "Open the email you're writing"),
+            (["ok": false, "error": "result too large (20000000 bytes)"], "too large"),
+            (["ok": false, "refused": true, "reason": "The draft belongs to another browser session."], "another browser session")
+        ]
+        for (result, expected) in messages {
+            let message = BrowserBridge.browserFailureMessage(result)
+            check(message.contains(expected) && !message.contains("chrome://extensions"),
+                  "\(result) maps to an accurate message without reload advice")
+        }
+    }
 }
 
 extension LoopbackHTTP {
