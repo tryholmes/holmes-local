@@ -152,6 +152,23 @@ struct ApprovalQueueTests {
         cardQueue.resolveCurrent(.dismissed)
         _ = await frontTask.value
 
+        // A timed out approval inside a tool call is reported as a timeout, not a decline.
+        let tracked = await ApprovalTimeoutTracking.run { () -> String in
+            let answer = await ApprovalQueue<String>().decide(id: UUID(), item: "tool approval", timeout: 0.05)
+            if case .timedOut = answer { ApprovalTimeoutTracking.flag?.markTimedOut() }
+            return label(answer)
+        }
+        expect(tracked.result == "timedOut" && tracked.timedOut, "A timeout inside a tracked tool call is recorded")
+        let declinedQueue = ApprovalQueue<String>()
+        let declined = await ApprovalTimeoutTracking.run { () -> String in
+            let pending = Task { @MainActor in await declinedQueue.decide(id: UUID(), item: "declined", timeout: nil) }
+            try? await eventually { !declinedQueue.isIdle }
+            declinedQueue.resolveCurrent(.dismissed)
+            return label(await pending.value)
+        }
+        expect(declined.result == "dismissed" && !declined.timedOut, "A real decline is not reported as a timeout")
+        expect(ApprovalTimeoutTracking.flag == nil, "Tracking is scoped to the tool call")
+
         print("Passed \(checks) approval queue, cancellation and unattended timeout checks")
     }
 

@@ -171,8 +171,11 @@ final class HolmesBrain {
                 do { try await Task.sleep(nanoseconds: 900_000_000) }
                 catch { return .cancelled }
                 guard !Task.isCancelled else { return .cancelled }
-                let approved = await approve(title: "Type into \(appName)", preview: text, app: appName)
-                guard !Task.isCancelled, let approvedText = approved else { return .cancelled }
+                let tracked = await ApprovalTimeoutTracking.run {
+                    await approve(title: "Type into \(appName)", preview: text, app: appName)
+                }
+                if tracked.timedOut { return .failed(ApprovalScope.timedOutMessage + ". Nothing was typed.") }
+                guard !Task.isCancelled, let approvedText = tracked.result else { return .cancelled }
                 var entry = TextEntryResult.failed("the app isn't running")
                 if let running = ActionExecutor.shared.runningApp(named: appName) {
                     entry = await typeIntoAppResult(running, text: approvedText)
@@ -952,7 +955,17 @@ final class HolmesBrain {
         }
     }
 
+    /// Dispatches one tool call. When an approval it raised timed out, the
+    /// model hears exactly that, never "the user declined".
     private func runTool(name: String, input: [String: Any]) async -> OllamaClient.ToolResult {
+        let tracked = await ApprovalTimeoutTracking.run { await dispatchTool(name: name, input: input) }
+        guard tracked.timedOut else { return tracked.result }
+        return OllamaClient.ToolResult(
+            "\(ApprovalScope.timedOutMessage): nobody answered the approval card in time, so \(name) was not run. Do not retry it; end your turn and report that approval timed out.",
+            isError: true)
+    }
+
+    private func dispatchTool(name: String, input: [String: Any]) async -> OllamaClient.ToolResult {
         switch name {
         case "read_screen":   return readScreen()
         case "zoom_screen":   return await zoomScreen(input)
@@ -1311,7 +1324,9 @@ final class HolmesBrain {
         case .approved(let text): return Task.isCancelled ? nil : text
         case .dismissed:          return nil
         case .timedOut:
-            // Only unattended (autonomous) work sets a deadline; show why it stopped.
+            // Only unattended (autonomous) work sets a deadline; show why it
+            // stopped, and let the tool call report a timeout, not a decline.
+            ApprovalTimeoutTracking.flag?.markTimedOut()
             if let activity = WorkActivityScope.id {
                 WorkActivityCenter.shared.update(activity, phase: .working, detail: ApprovalScope.timedOutMessage)
             }

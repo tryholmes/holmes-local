@@ -22,6 +22,27 @@ enum ApprovalScope {
     static let timedOutMessage = "Timed out waiting for approval"
 }
 
+/// Lets a tool call learn that one of ITS approvals timed out, so the model is
+/// told "timed out waiting for approval" instead of "the user declined".
+final class ApprovalTimeoutFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flagged = false
+    func markTimedOut() { lock.lock(); flagged = true; lock.unlock() }
+    var timedOut: Bool { lock.lock(); defer { lock.unlock() }; return flagged }
+}
+
+enum ApprovalTimeoutTracking {
+    @TaskLocal static var flag: ApprovalTimeoutFlag?
+
+    /// Runs `operation` with a fresh flag and reports whether any approval
+    /// raised inside it timed out.
+    static func run<T>(_ operation: () async -> T) async -> (result: T, timedOut: Bool) {
+        let flag = ApprovalTimeoutFlag()
+        let result = await $flag.withValue(flag) { await operation() }
+        return (result, flag.timedOut)
+    }
+}
+
 // MARK: - ApprovalQueue
 //
 // FIFO of approval requests. Exactly one is presented at a time; a second
