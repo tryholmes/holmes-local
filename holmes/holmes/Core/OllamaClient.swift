@@ -87,6 +87,9 @@ actor OllamaClient {
         case busy
         /// Kept for API parity (a hosted model can decline); never thrown here.
         case refused(String)
+        /// No response in time, or the stream went silent mid answer. The
+        /// request is safe to try again once the server answers.
+        case timedOut(String)
 
         var errorDescription: String? {
             switch self {
@@ -99,6 +102,7 @@ actor OllamaClient {
             case .truncated:                return "The model ran out of output tokens before answering"
             case .busy:                     return "The local model is busy"
             case .refused(let m):           return m
+            case .timedOut(let m):          return "The local model stopped responding (\(m)). Holmes is rechecking the Ollama server; try again in a moment."
             }
         }
     }
@@ -386,7 +390,10 @@ actor OllamaClient {
                                        // A thinking-capable model may deliberate even with
                                        // think:false (qwen3-vl's thinking tags do); leave
                                        // headroom so the answer is not guillotined.
-                                       numPredict: OllamaConfig.agentNumPredict + (caps.thinking ? 1536 : 0))
+                                       numPredict: OllamaConfig.agentNumPredict + (caps.thinking ? 1536 : 0),
+                                       // Never retry once a tool has taken effect in this
+                                       // session: the failure is surfaced instead.
+                                       allowTransientRetry: toolCalls == 0)
                 release()
             } catch {
                 release()
@@ -714,7 +721,8 @@ actor OllamaClient {
                                    format: format,
                                    think: caps.thinking ? false : nil,
                                    temperature: asJSON ? OllamaConfig.jsonTemperature : 0.3,
-                                   numPredict: max(maxTokens, OllamaConfig.quickNumPredictFloor) + (caps.thinking ? 1024 : 0))
+                                   numPredict: max(maxTokens, OllamaConfig.quickNumPredictFloor) + (caps.thinking ? 1024 : 0),
+                                   allowTransientRetry: true)
         var text = reply.content.trimmingCharacters(in: .whitespacesAndNewlines)
         if asJSON { text = Self.stripCodeFences(text) }
         if text.isEmpty && reply.doneReason == "length" { throw AgentError.truncated }
@@ -792,7 +800,8 @@ actor OllamaClient {
                       format: Any?,
                       think: Bool?,
                       temperature: Double,
-                      numPredict: Int) async throws -> ChatReply {
+                      numPredict: Int,
+                      allowTransientRetry: Bool = false) async throws -> ChatReply {
         var body: [String: Any] = [
             "model": model,
             "messages": messages,
@@ -812,15 +821,32 @@ actor OllamaClient {
         var thinking = ""
         var rawToolCalls: [[String: Any]] = []
         var doneReason = "stop"
+        var receivedAny = false
+        var retried = false
 
-        try await streamNDJSON(path: "/api/chat", body: body) { chunk in
-            if let message = chunk["message"] as? [String: Any] {
-                if let c = message["content"] as? String { content += c }
-                if let t = message["thinking"] as? String { thinking += t }
-                if let calls = message["tool_calls"] as? [[String: Any]] { rawToolCalls += calls }
-            }
-            if (chunk["done"] as? Bool) == true {
-                doneReason = (chunk["done_reason"] as? String) ?? "stop"
+        while true {
+            do {
+                try await streamNDJSON(path: "/api/chat", body: body) { chunk in
+                    receivedAny = true
+                    if let message = chunk["message"] as? [String: Any] {
+                        if let c = message["content"] as? String { content += c }
+                        if let t = message["thinking"] as? String { thinking += t }
+                        if let calls = message["tool_calls"] as? [[String: Any]] { rawToolCalls += calls }
+                    }
+                    if (chunk["done"] as? Bool) == true {
+                        doneReason = (chunk["done_reason"] as? String) ?? "stop"
+                    }
+                }
+                break
+            } catch let error as AgentError {
+                // One short retry for a dropped/refused connection that produced
+                // nothing yet. Timeouts, HTTP errors and partial streams are not
+                // retried: they are reported so the user can decide.
+                guard allowTransientRetry, !retried, !receivedAny, Self.isTransientConnectionFailure(error) else {
+                    throw error
+                }
+                retried = true
+                try await Task.sleep(nanoseconds: UInt64(max(0, OllamaConfig.transientRetryDelay) * 1_000_000_000))
             }
         }
 
@@ -893,8 +919,27 @@ actor OllamaClient {
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             throw Self.mapHTTP(status: status, json: json, data: data, body: body)
         }
+        // Stall watchdog: once output has started, silence longer than
+        // streamStallTimeout cancels the transfer and reports a timeout. The
+        // first byte may still take as long as a cold model load needs.
+        let activity = StreamActivity()
+        let stallLimit = max(0.05, OllamaConfig.streamStallTimeout)
+        let transfer = bytes.task
+        let watchdog = Task.detached {
+            let tick = UInt64(min(1.0, stallLimit / 4) * 1_000_000_000)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: tick)
+                if let idle = activity.secondsSinceLastChunk(), idle > stallLimit {
+                    activity.markStalled()
+                    transfer.cancel()
+                    return
+                }
+            }
+        }
+        defer { watchdog.cancel() }
         do {
             for try await line in bytes.lines {
+                activity.touch()
                 guard let data = line.data(using: .utf8),
                       let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
                 if let err = obj["error"] as? String {
@@ -905,11 +950,37 @@ actor OllamaClient {
                 }
                 onChunk(obj)
             }
+            if activity.didStall { throw Self.stalled(after: stallLimit) }
         } catch let e as AgentError {
             throw e
         } catch {
+            if activity.didStall { throw Self.stalled(after: stallLimit) }
             throw try Self.mapTransport(error)
         }
+    }
+
+    nonisolated private static func stalled(after seconds: TimeInterval) -> AgentError {
+        OllamaConfig.onModelTransportFailure?()
+        return .timedOut("no output for \(Int(seconds.rounded())) seconds")
+    }
+
+    nonisolated static func isTransientConnectionFailure(_ error: AgentError) -> Bool {
+        if case .serverUnreachable = error { return true }
+        return false
+    }
+
+    /// Last streamed chunk time, shared with the stall watchdog task.
+    private final class StreamActivity: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lastChunk: Date?
+        private var stalled = false
+        func touch() { lock.lock(); lastChunk = Date(); lock.unlock() }
+        func secondsSinceLastChunk() -> TimeInterval? {
+            lock.lock(); defer { lock.unlock() }
+            return lastChunk.map { Date().timeIntervalSince($0) }
+        }
+        func markStalled() { lock.lock(); stalled = true; lock.unlock() }
+        var didStall: Bool { lock.lock(); defer { lock.unlock() }; return stalled }
     }
 
     private func makeRequest(path: String, body: [String: Any], timeout: TimeInterval) throws -> URLRequest {
@@ -933,7 +1004,13 @@ actor OllamaClient {
             if u.code == .cancelled { throw CancellationError() }
             switch u.code {
             case .cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .notConnectedToInternet:
+                OllamaConfig.onModelTransportFailure?()
                 return .serverUnreachable(u.localizedDescription)
+            case .timedOut:
+                // User visible and retryable by the user, never silently retried
+                // (another full wait). The server status is refreshed right away.
+                OllamaConfig.onModelTransportFailure?()
+                return .timedOut("no response for \(Int(OllamaConfig.requestTimeout)) seconds")
             default: break
             }
         }

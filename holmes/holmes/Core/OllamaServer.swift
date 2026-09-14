@@ -121,6 +121,11 @@ final class OllamaServer {
                 Task { @MainActor in self?.configurationDidChange() }
             }
         }
+        // A model request that timed out or lost its connection re-probes the
+        // server immediately, so the status and readiness gates catch up now.
+        OllamaConfig.onModelTransportFailure = { [weak self] in
+            Task { @MainActor in await self?.refreshAfterFailure() }
+        }
     }
 
     // MARK: - Lifecycle

@@ -299,6 +299,9 @@ final class HolmesBrain {
             return .failed("The local model \(model) isn't downloaded — download it in Settings ▸ Local Model, then try again.")
         } catch OllamaClient.AgentError.busy {
             return .failed("The local model is busy — try again in a moment.")
+        } catch let OllamaClient.AgentError.timedOut(detail) {
+            // OllamaClient already asked OllamaServer to re-probe the server.
+            return .failed("The local model stopped responding (\(detail)). Check the app before retrying.")
         } catch OllamaClient.AgentError.truncated {
             return .failed("Local model error: the model ran out of output tokens before finishing. Try a shorter goal, or raise the output/context limits in Settings ▸ Local Model.")
         } catch OllamaClient.AgentError.notConfigured {
