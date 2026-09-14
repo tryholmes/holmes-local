@@ -206,7 +206,19 @@ async function reinjectContentScripts() {
 // Asks the active tab's content script whether it is alive, so the app can tell a
 // healthy page from one whose script went missing while this worker keeps beating.
 // A missing script in a normal page is reinjected once per tab per worker lifetime.
+// Keyed by tab and page origin, so a tab that later navigates to a normal page is
+// judged afresh.
 const reinjectedTabs = new Set();
+// Pages where injection itself was refused (Chrome Web Store, the PDF viewer and
+// other protected pages). Those are restricted, not a missing content script, and
+// must never make the app tell the user to refresh.
+const injectionBlockedTabs = new Set();
+
+function probeKey(tab) {
+  let origin = "";
+  try { origin = new URL(tab.url).origin; } catch (_) { origin = String(tab.url || ""); }
+  return tab.id + "|" + origin;
+}
 let lastProbe = { at: 0, value: null };
 
 async function probeActiveTab() {
@@ -225,9 +237,17 @@ async function probeActiveTab() {
         const reply = await withTimeout(chrome.tabs.sendMessage(tab.id, { type: "holmes:ping" }), 1500, "ping");
         value = { script: reply && reply.ok ? "ok" : "missing" };
       } catch (e) {
-        if (isMissingReceiver(e) && !reinjectedTabs.has(tab.id)) {
-          reinjectedTabs.add(tab.id);
-          value = { script: (await injectContentScripts(tab.id)) > 0 ? "reinjected" : "missing" };
+        const key = probeKey(tab);
+        if (isMissingReceiver(e) && injectionBlockedTabs.has(key)) {
+          value = { script: "restricted" };
+        } else if (isMissingReceiver(e) && !reinjectedTabs.has(key)) {
+          reinjectedTabs.add(key);
+          if ((await injectContentScripts(tab.id)) > 0) {
+            value = { script: "reinjected" };
+          } else {
+            injectionBlockedTabs.add(key);
+            value = { script: "restricted" };
+          }
         } else {
           value = { script: "missing" };
         }

@@ -15,4 +15,5 @@ if [ -z "${COMPOSE_NODE_MODULES:-}" ]; then
   COMPOSE_NODE_MODULES="$bridge_extension_dir/node_modules"
 fi
 node holmes/tests/BrowserBridgeBackgroundTests.cjs
+node holmes/tests/BrowserBridgeProbeTests.cjs
 NODE_PATH="$COMPOSE_NODE_MODULES" node holmes/tests/BrowserBridgeContentTests.cjs
