@@ -146,6 +146,24 @@ enum MailComposeMatcher {
         return emails.isEmpty ? ["(recipient address unavailable)"] : Array(Set(emails)).sorted()
     }
 
+    enum Rollback: Equatable { case none, setValue, undoPaste }
+
+    /// What restores the body. Command Z is sent only when Holmes's own paste
+    /// changed this body; otherwise it could undo an edit of the person's.
+    static func rollback(bodyNow: String, before: String, valueSettable: Bool, usedPaste: Bool) -> Rollback {
+        let lines = { (text: String) in
+            text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        }
+        guard lines(bodyNow) != lines(before) else { return .none }
+        if valueSettable { return .setValue }
+        return usedPaste ? .undoPaste : .none
+    }
+
+    /// A paste may only go where focus verifiably is: the exact body element.
+    static func canPaste(focusedID: Int?, bodyID: Int) -> Bool {
+        focusedID == bodyID
+    }
+
     static func node(_ id: Int, in root: MailAXNode) -> MailAXNode? {
         if root.id == id { return root }
         return flatten(root).first { $0.id == id }

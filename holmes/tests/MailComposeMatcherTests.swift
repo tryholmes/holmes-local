@@ -64,6 +64,18 @@ struct MailComposeMatcherTests {
         let unresolved = node("AXWindow", [], [node("AXTextField", ["to"], value: "Dana"), node("AXTextField", ["subject"], value: "Hi"), node("AXWebArea", [], [])])
         expect(MailComposeMatcher.recipients(MailComposeMatcher.node(MailComposeMatcher.match(window: unresolved)!.toID, in: unresolved)) == ["(recipient address unavailable)"],
                "A name without an address blocks readiness instead of disappearing")
+        // Regression: rollback sent Command Z even when the paste never reached the body,
+        // which could undo an unrelated edit of the person's.
+        expect(MailComposeMatcher.rollback(bodyNow: "Hi", before: "Hi", valueSettable: false, usedPaste: true) == .none,
+               "An unchanged body needs no rollback, so no Command Z is sent")
+        expect(MailComposeMatcher.rollback(bodyNow: "Hi\n\nPasted", before: "Hi", valueSettable: false, usedPaste: true) == .undoPaste,
+               "Only a body changed by Holmes's paste is undone with Command Z")
+        expect(MailComposeMatcher.rollback(bodyNow: "Written", before: "", valueSettable: true, usedPaste: false) == .setValue,
+               "A settable body is restored through its AX value")
+        expect(MailComposeMatcher.rollback(bodyNow: "Changed elsewhere", before: "", valueSettable: false, usedPaste: false) == .none,
+               "Without a paste of Holmes's own there is nothing Holmes may undo")
+        expect(MailComposeMatcher.canPaste(focusedID: 7, bodyID: 7) && !MailComposeMatcher.canPaste(focusedID: 3, bodyID: 7)
+               && !MailComposeMatcher.canPaste(focusedID: nil, bodyID: 7), "A paste requires focus to be on the exact body element")
         print("Mail compose matcher: \(checks) checks passed on synthetic accessibility trees")
     }
 }

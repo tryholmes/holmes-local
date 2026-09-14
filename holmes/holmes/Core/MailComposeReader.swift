@@ -120,11 +120,16 @@ enum MailComposeReader {
         if let subject, isSettable(current.subject) {
             AXUIElementSetAttributeValue(current.subject, kAXValueAttribute as CFString, subject as CFString)
         }
-        if current.match.bodyValueSettable {
+        switch MailComposeMatcher.rollback(bodyNow: current.snapshot.body, before: body,
+                                           valueSettable: current.match.bodyValueSettable, usedPaste: usedPaste) {
+        case .none:
+            break
+        case .setValue:
             AXUIElementSetAttributeValue(current.body, kAXValueAttribute as CFString, body as CFString)
-        } else if usedPaste, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.mail" {
+        case .undoPaste:
             // Mail's own undo reverses exactly the paste. Command Z is never a send shortcut.
-            AXUIElementSetAttributeValue(current.body, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.mail",
+                  focusBody(current) else { break }
             postCommandKey(0x06, to: current.processIdentifier)
             try? await Task.sleep(nanoseconds: 300_000_000)
         }
@@ -145,9 +150,8 @@ enum MailComposeReader {
             if !saved.isEmpty { pasteboard.writeObjects(saved) }
         }
         pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string),
-              AXUIElementSetAttributeValue(candidate.body, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else {
-            throw EmailComposeError.unavailable("Mail did not accept focus for the message body. Copy the draft instead.")
+        guard pasteboard.setString(text, forType: .string), focusBody(candidate) else {
+            throw EmailComposeError.unavailable("Mail did not move focus to the message body, so Holmes did not paste. Copy the draft instead.")
         }
         // Revalidate after focusing: the paste goes only to the same unchanged body.
         guard let validated = readCandidate(), CFEqual(validated.body, candidate.body),
@@ -156,6 +160,16 @@ enum MailComposeReader {
         }
         postCommandKey(0x09, to: candidate.processIdentifier)
         try? await Task.sleep(nanoseconds: 350_000_000)
+    }
+
+    /// Focuses the body, then confirms Mail's focused element really is that
+    /// body, so a paste or undo can never land in To, Subject or elsewhere.
+    private static func focusBody(_ candidate: Candidate) -> Bool {
+        guard AXUIElementSetAttributeValue(candidate.body, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else { return false }
+        let axApp = AXUIElementCreateApplication(candidate.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 0.15)
+        let focused = element(axApp, kAXFocusedUIElementAttribute)
+        return MailComposeMatcher.canPaste(focusedID: focused.map { CFEqual($0, candidate.body) ? 1 : 0 }, bodyID: 1)
     }
 
     private static func postCommandKey(_ keyCode: CGKeyCode, to pid: pid_t) {
