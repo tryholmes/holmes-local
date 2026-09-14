@@ -513,6 +513,43 @@ async function concurrencyTests() {
   worker.dispose();
 }
 
+async function visibilityTests() {
+  const expected = { identity: JSON.stringify(['test-profile', 23, 17, 'document', 'account', 1]), recipients: [], cc: [], bcc: [], subject: 's', body: '', bodyReadable: true, bodyIsEmpty: true };
+  const tabs = [{ id: 17, windowId: 23, url: 'https://mail.example.test/', active: false }, { id: 28, windowId: 23, url: 'https://other.test/', active: true }];
+
+  // The tab becomes visible a little after activation; insertion waits for it.
+  let pings = 0, pingsBeforeFill = -1;
+  let worker = loadWorker({
+    tabs, config: { visibilityPollMs: 10, visibilityTimeoutMs: 1000 },
+    fetch: async () => ({ status: 503, body: {} }),
+    sendMessage(tabId, message) {
+      if (message.type === 'holmes:ping') { pings++; return { ok: true, visible: pings > 3, isActiveTab: pings > 3 }; }
+      if (message.type === 'holmes:fillEmailDraft') { pingsBeforeFill = pings; return { ok: true, inserted: true, identity: message.expected.identity }; }
+      return {};
+    }
+  });
+  let result = await worker.context.emailComposeCommand({ action: 'fill_email_draft', params: { body: 'Reviewed', expected } });
+  check(result.ok === true && pingsBeforeFill >= 4, `Insert into a background tab waits until the tab reports visible (${pingsBeforeFill} pings first)`);
+  worker.dispose();
+
+  // A tab that never becomes visible is refused within a bounded time, never written.
+  let fills = 0;
+  worker = loadWorker({
+    tabs: tabs.map(t => Object.assign({}, t)), config: { visibilityPollMs: 10, visibilityTimeoutMs: 150 },
+    fetch: async () => ({ status: 503, body: {} }),
+    sendMessage(tabId, message) {
+      if (message.type === 'holmes:ping') return { ok: true, visible: false, isActiveTab: true };
+      if (message.type === 'holmes:fillEmailDraft') { fills++; return { ok: true, inserted: true, identity: message.expected.identity }; }
+      return {};
+    }
+  });
+  const started = Date.now();
+  result = await worker.context.emailComposeCommand({ action: 'fill_email_draft', params: { body: 'Reviewed', expected } });
+  check(result.ok === false && /did not become visible/i.test(result.reason) && fills === 0 && Date.now() - started < 1000,
+    'A tab that never becomes visible is refused within the bound and nothing is inserted');
+  worker.dispose();
+}
+
 async function navigateTests() {
   // navigate resolves once the tab finishes loading.
   let worker = loadWorker({
@@ -554,7 +591,7 @@ if (require.main === module) {
     setInterval(() => {}, 1000);
     const only = process.argv[2];
     const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests,
-      concurrencyTests, navigateTests };
+      concurrencyTests, visibilityTests, navigateTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();

@@ -59,7 +59,11 @@ const CONFIG = Object.assign({
   // The bridge accepts 16 MB of result; stay a little under it.
   maxResultBytes: 16 * 1024 * 1024 - 64 * 1024,
   // Commands for different tabs run concurrently, up to this many at once.
-  maxConcurrentCommands: 4
+  maxConcurrentCommands: 4,
+  // After Holmes activates a background composer tab, how often and how long to
+  // wait for the page to report itself visible before inserting.
+  visibilityPollMs: 50,
+  visibilityTimeoutMs: 2000
 }, CONFIG_OVERRIDES);
 // Every request to the bridge is bounded. A stalled app must never park a worker.
 CONFIG.fetchTimeoutMs = Object.assign({ heartbeat: 5000, relay: 5000, commands: 28000, result: 15000 },
@@ -227,6 +231,27 @@ async function probeActiveTab() {
   }
   lastProbe = { at: now, value };
   return value;
+}
+
+// Waits until a just activated tab's content script reports the page visible and
+// active. tabs.update resolves before the page's visibilityState flips, and the
+// composer (correctly) refuses a hidden page, so inserting immediately raced it.
+// Bounded by visibilityTimeoutMs. A content script too old to answer holmes:ping
+// replies undefined and is not waited on.
+async function waitForTabVisible(tabId) {
+  const deadline = Date.now() + CONFIG.visibilityTimeoutMs;
+  for (;;) {
+    try {
+      const reply = await withTimeout(chrome.tabs.sendMessage(tabId, { type: "holmes:ping" }), 1000, "visibility ping");
+      if (reply === undefined) return true;
+      if (reply && reply.visible === true && reply.isActiveTab !== false) return true;
+    } catch (e) {
+      // A missing receiver is surfaced by the real message that follows.
+      if (isMissingReceiver(e)) return true;
+    }
+    if (Date.now() >= deadline) return false;
+    await delay(CONFIG.visibilityPollMs);
+  }
 }
 
 async function browserFocused() {
@@ -873,6 +898,9 @@ async function emailComposeCommand(cmd) {
     await chrome.windows.update(tab.windowId, { focused: true });
     await chrome.tabs.update(tab.id, { active: true });
     await notifyActive(tab.id, true);
+    if (!(await waitForTabVisible(tab.id))) {
+      return { ok: false, refused: true, reason: "The composer tab did not become visible after Holmes switched to it." };
+    }
   } else {
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     tab = tabs && tabs[0];

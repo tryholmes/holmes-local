@@ -26,6 +26,7 @@ const context = vm.createContext({
       async sendMessage(tabId, message) {
         messages.push({ tabId, message });
         if (message.type === 'holmes:active') return {};
+        if (message.type === 'holmes:ping') return { ok: true, visible: true, isActiveTab: true };
         if (changeDuringRead && message.type === 'holmes:readEmailCompose') active = 28;
         return message.type === 'holmes:readEmailCompose' ? { ok: true, payload: { capturedAt: Date.now() } }
           : { ok: true, inserted: true, identity: message.expected.identity };
