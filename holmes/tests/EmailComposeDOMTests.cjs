@@ -174,4 +174,34 @@ f.close();
 f = fixture('<div class="composer"><input data-testid="composer:to" value="boss@example.test"><input data-testid="composer:subject" value="Running late"><div data-testid="composer:body" contenteditable="true"></div></div>', { url: 'https://mail.proton.me/u/0/inbox' });
 check(f.read().provider === 'Proton Mail' && f.read().bodyIsEmpty && f.read().subject === 'Running late', 'Proton explicit empty composer is recognized');
 f.close();
+
+// Regression: Gmail inline replies have no dialog, div.nH.Hd or div.AD wrapper.
+const gmailInline = `<div class="nH"><h2 class="hP">Budget review</h2>
+  <div class="adn ads"><span class="gD" email="dana@example.test" name="Dana Lee">Dana Lee</span><div class="a3s aiL">Can you send the Q3 numbers?</div></div>
+  <div class="M9"><div class="aoD hl"><span email="dana@example.test" name="Dana Lee">Dana Lee</span></div>
+    <input type="hidden" name="to" value="Dana Lee <dana@example.test>"><input type="hidden" name="subjectbox" value="Re: Budget review">
+    <div contenteditable="true" aria-label="Message Body" g_editable="true"></div></div></div>`;
+f = fixture(gmailInline);
+snapshot = f.read();
+check(snapshot && snapshot.recipients.length === 1 && snapshot.recipients[0] === 'dana@example.test', 'Gmail inline reply reads its hidden committed recipient');
+check(snapshot.subject === 'Re: Budget review' && snapshot.subjectEditable === false && snapshot.bodyIsEmpty, 'Inline reply subject is literal but not editable');
+result = f.w.HolmesEmailCompose.stage('Hi Dana,\n\nI will send them today.', snapshot);
+check(result.ok && f.w.document.querySelector('.a3s').textContent === 'Can you send the Q3 numbers?', 'Inline reply insertion changes only the reply body, never the thread');
+f.close();
+
+// Regression: Outlook labels vary and inline replies live in the reading pane.
+f = fixture(`<div data-app-section="ConversationContainer"><div role="document" aria-label="Message body">Are we still on for Friday?</div>
+  <div class="compose-inline"><div role="textbox" contenteditable="true" aria-label="To"><span title="Dana Lee &lt;dana@contoso.com&gt;">Dana Lee</span></div>
+  <input aria-label="Add a subject" value="RE: Friday">
+  <div role="textbox" contenteditable="true" aria-label="Message body, press Alt+F10 to exit"><div><br></div></div></div></div>`, { url: 'https://outlook.office.com/mail/' });
+snapshot = f.read();
+check(snapshot && snapshot.provider === 'Outlook' && snapshot.recipients[0] === 'dana@contoso.com' && snapshot.bodyIsEmpty, 'Outlook body label with extra words and an inline reply are recognized');
+result = f.w.HolmesEmailCompose.stage('Hi Dana,\n\nYes, Friday still works.', snapshot);
+check(result.ok && f.w.document.querySelector('[aria-label="To"]').textContent === 'Dana Lee'
+  && f.w.document.querySelector('[role="document"]').textContent === 'Are we still on for Friday?', 'Outlook write leaves the To textbox and the read message untouched');
+f.close();
+f = fixture(`<div data-testid="compose-form"><input aria-label="To" value="sam@contoso.com"><input aria-label="Subject" value="Plans">
+  <div role="textbox" contenteditable="true"></div></div>`, { url: 'https://outlook.live.com/mail/0/' });
+check(f.read() && f.read().bodyIsEmpty && f.read().subject === 'Plans', 'Outlook body exposed only as a textbox in the compose pane is recognized');
+f.close();
 console.log(`Email compose DOM: ${assertions} checks passed (synthetic fixtures; no network or mail account).`);

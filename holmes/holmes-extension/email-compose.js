@@ -26,14 +26,12 @@
 
   var BLOCK = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DD|DIV|DL|DT|FIELDSET|FIGCAPTION|FIGURE|FOOTER|FORM|H[1-6]|HEADER|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TBODY|TD|TFOOT|TH|THEAD|TR|UL)$/;
 
-  // The text a person sees, following the editor's CSS. A browser's innerText
-  // already does this; the walker is the same rule where innerText is missing.
-  // Both honor white-space, so a raw "\n" inside a normal-white-space editor
-  // renders as a space and verification catches collapsed line breaks.
+  // The text a person sees, following the editor's CSS white space rules, so a
+  // raw "\n" inside a normal white space editor reads as a space and
+  // verification catches collapsed line breaks. One walker everywhere: Chrome's
+  // innerText adds an extra newline around an empty <div><br></div>.
   function rendered(el, stopBefore) {
-    if (!el) return "";
-    if (!stopBefore && typeof el.innerText === "string") return el.innerText;
-    return walkText(el, stopBefore);
+    return el ? walkText(el, stopBefore) : "";
   }
   function preserves(style) { return /^pre/.test(style.whiteSpace || "") || style.whiteSpace === "break-spaces"; }
   function walkText(root, stopBefore) {
@@ -87,27 +85,66 @@
   }
   function sameLines(a, b) { return lines(a).join("\n") === lines(b).join("\n"); }
 
+  function label(el) { return String(el.getAttribute("aria-label") || "").toLowerCase(); }
+  var HEADER_LABEL = /^(to|cc|bcc|from|subject|add a subject|search)\b/;
+
+  // `header` marks what a composer (not a read-only message) carries near its
+  // body: recipient or subject controls. Inline replies have no dialog wrapper,
+  // so the composer root is found by climbing from the body to that header.
   function profile() {
     var host = location.hostname.toLowerCase();
     if (host === "mail.google.com") return {
       name: "Gmail", roots: '[role="dialog"], div.nH.Hd, div.AD',
       subject: 'input[name="subjectbox"], input[placeholder="Subject"]',
       body: '[aria-label="Message Body"][contenteditable="true"], [g_editable="true"], div.Am.Al.editable',
+      header: 'input[name="subjectbox"], input[name="to"], textarea[name="to"], input[name="cc"], [data-recipient-type]',
       attachment: '.aQH .aZo, [data-attachment-id], [aria-label^="Attachment:"]'
     };
     if (["outlook.live.com", "outlook.office.com", "outlook.office365.com", "outlook.com"].includes(host)) return {
       name: "Outlook", roots: '[role="dialog"], [data-testid="compose-form"], [aria-label="New message"]',
       subject: 'input[aria-label="Add a subject"], input[placeholder="Add a subject"], input[aria-label="Subject"]',
-      body: '[aria-label="Message body"][contenteditable="true"]',
+      // Outlook's label varies ("Message body, press Alt+F10 to exit") and some
+      // builds label only the role. Header fields are textboxes too; skip them.
+      isBody: function (el) {
+        var name = label(el);
+        if (name.indexOf("message body") >= 0) return true;
+        return el.getAttribute("role") === "textbox" && !HEADER_LABEL.test(name);
+      },
+      header: 'input[aria-label="Add a subject"], input[aria-label="Subject"], [aria-label="To"], [aria-label^="To "], [data-recipient-type]',
       attachment: '[data-attachment-id], [aria-label^="Attachment:"]'
     };
     if (host === "mail.proton.me") return {
       name: "Proton Mail", roots: '[data-testid="composer"], .composer',
       subject: 'input[data-testid="composer:subject"], input[name="subject"]',
       body: '[data-testid="composer:body"][contenteditable="true"], [contenteditable="true"][role="textbox"]',
+      header: 'input[data-testid="composer:subject"], [data-testid="composer:to"]',
       attachment: '[data-testid="attachment"], [data-attachment-id]'
     };
     return null;
+  }
+
+  function isBody(p, el) {
+    if (el.getAttribute("contenteditable") !== "true") return false;
+    return p.isBody ? p.isBody(el) : el.matches(p.body);
+  }
+  function bodiesIn(p, scopeEl) {
+    return all('[contenteditable="true"]', scopeEl).filter(function (el) {
+      // A nested editable inside a body is part of that body, not another one.
+      return isBody(p, el) && visible(el) && !(el.parentElement && el.parentElement.closest('[contenteditable="true"]'));
+    });
+  }
+  function composerRoots(p) {
+    var roots = all(p.roots).filter(function (root) {
+      return visible(root) && (first(p.subject, root) || bodiesIn(p, root).length);
+    });
+    bodiesIn(p, document).forEach(function (body) {
+      if (roots.some(function (root) { return root.contains(body); })) return;
+      for (var node = body.parentElement, depth = 0; node && node !== document.documentElement && depth < 16; node = node.parentElement, depth++) {
+        if (bodiesIn(p, node).length > 1) return;
+        if (node.querySelector(p.header)) { roots.push(node); return; }
+      }
+    });
+    return roots;
   }
 
   function recipientFields(root, kind) {
@@ -115,13 +152,22 @@
       + '[aria-label="' + kind.charAt(0).toUpperCase() + kind.slice(1) + ' recipients"], '
       + '[aria-label="' + kind.charAt(0).toUpperCase() + kind.slice(1) + '"], '
       + '[data-testid="composer:' + kind + '"]';
-    var controls = all(selector, root).filter(visible), addresses = [], invalid = false;
+    var controls = all(selector, root).filter(function (el) { return visible(el) && el.type !== "hidden"; });
+    var addresses = [], invalid = false;
+    if (!controls.length) {
+      // Gmail inline replies keep committed recipients in hidden inputs.
+      all('input[type="hidden"][name="' + kind + '"]', root).forEach(function (input) {
+        addresses = addresses.concat(address(input.value));
+      });
+    }
     controls.forEach(function (control) {
       var group = control.closest('tr, [data-recipient-type], [role="group"], .composer-addresses-field') || control;
       // A wrapper spanning Subject/the body is not a recipient row.
       if (!root.contains(group) || group.querySelector('input[name="subjectbox"], [contenteditable="true"]')) group = control;
-      all('[email], [data-hovercard-id], [data-email]', group).forEach(function (chip) {
-        var value = chip.getAttribute("email") || chip.getAttribute("data-hovercard-id") || chip.getAttribute("data-email");
+      // Outlook chips carry the address only in their title.
+      all('[email], [data-hovercard-id], [data-email], [title*="@"]', group).forEach(function (chip) {
+        var value = chip.getAttribute("email") || chip.getAttribute("data-hovercard-id") || chip.getAttribute("data-email")
+          || chip.getAttribute("title");
         var parsed = address(value);
         if (!parsed.length) invalid = true;
         addresses = addresses.concat(parsed);
@@ -146,9 +192,7 @@
   function inspect() {
     var p = profile();
     if (!p || document.visibilityState !== "visible") return null;
-    var roots = unique(all(p.roots).filter(function (root) {
-      return visible(root) && (first(p.subject, root) || first(p.body, root));
-    }));
+    var roots = unique(composerRoots(p));
     // Gmail's nested wrappers refer to the same physical composer. Use the
     // innermost qualifying root before deciding whether multiple exist.
     roots = roots.filter(function (root) {
@@ -157,7 +201,10 @@
     var focused = roots.filter(function (root) { return root.contains(document.activeElement); });
     var root = focused.length === 1 ? focused[0] : (roots.length === 1 ? roots[0] : null);
     if (!root) return null;
-    var subject = first(p.subject, root), body = first(p.body, root);
+    // An inline reply keeps its "Re:" subject in a hidden input: readable, not editable.
+    var subject = first(p.subject, root) || all(p.subject, root)[0] || null;
+    var subjectEditable = !!subject && subject.type !== "hidden" && visible(subject) && !subject.disabled && !subject.readOnly;
+    var body = bodiesIn(p, root)[0] || null;
     var text = rendered(body);
     var revision = body ? JSON.stringify([body.innerHTML, all(p.attachment, root).map(function (el) { return el.outerHTML; })]) : "";
     var readable = !!body && text.length <= 6000 && revision.length <= 12000;
@@ -170,7 +217,8 @@
     return { root: root, bodyElement: body, subjectElement: subject, snapshot: {
       source: "browser", identity: identity, provider: p.name, app: environment.app,
       recipients: recipientFields(root, "to"), cc: recipientFields(root, "cc"), bcc: recipientFields(root, "bcc"),
-      subject: subject ? field(subject) : "", body: text.slice(0, 6000), bodyRevision: revision.slice(0, 12000),
+      subject: subject ? field(subject) : "", subjectEditable: subjectEditable,
+      body: text.slice(0, 6000), bodyRevision: revision.slice(0, 12000),
       bodyReadable: readable, bodyIsEmpty: readable && blank(text) && !rich && !attached,
       capturedAt: Date.now()
     } };
