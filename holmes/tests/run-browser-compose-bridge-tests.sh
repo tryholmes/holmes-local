@@ -11,6 +11,8 @@ xcrun swiftc -D DEBUG -swift-version 5 \
   holmes/holmes/Core/BrowserBridge.swift \
   holmes/holmes/Core/Setup/ExtensionInstaller.swift \
   holmes/tests/BrowserComposeTestSupport.swift \
+  holmes/tests/BridgeLoopbackSupport.swift \
+  holmes/tests/BridgeLoopbackTests.swift \
   holmes/tests/BrowserComposeBridgeTests.swift \
   -o "$bridge_test_dir/bridge-tests"
 "$bridge_test_dir/bridge-tests"

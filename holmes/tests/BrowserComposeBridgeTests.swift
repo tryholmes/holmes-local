@@ -227,5 +227,14 @@ import Foundation
               && bridge.testAwaitingCommandCount == 0 && bridge.testTrackedCommandCount == 0,
               "All cancellation paths leave no command available for a later poll")
         print("Browser compose bridge: \(checks) checks passed using production Swift parser, queue, refresh and insertion code")
+
+        var socketChecks = 0
+        func socketCheck(_ value: Bool, _ message: String) {
+            socketChecks += 1
+            precondition(value, message)
+            print("PASS \(message)")
+        }
+        await BridgeLoopbackTests.runCommandChannel(check: socketCheck)
+        print("Browser bridge loopback sockets: \(socketChecks) checks passed against the real server on an ephemeral port")
     }
 }

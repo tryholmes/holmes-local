@@ -78,18 +78,292 @@ enum BridgeProtocol {
     /// Hard cap on commands sitting unfetched. enqueue is rejected past this so a
     /// disconnected extension can't let the queue grow without bound.
     static let maxPendingCommands = 32
-    /// A command the extension never fetched is dropped after this. The enqueue
-    /// await keeps its own (shorter) timeout as the real backstop; this just stops
-    /// an ancient command from ever being handed to a briefly-revived worker.
-    static let commandQueueTTL: TimeInterval = 30
-    /// How long enqueueBrowserCommand awaits a result before giving up and
-    /// returning {"error":"timeout"}, so a stalled extension can't hang a producer.
+    /// How long a command may sit UNFETCHED before the producer gives up with the
+    /// distinct `extension_asleep` error. An MV3 worker that was evicted is only
+    /// woken by its alarm or a content script ping, so this is deliberately longer
+    /// than the result timeout: slow pickup is a different failure from a command
+    /// that was received and never answered.
+    static let commandUndeliveredTimeout: TimeInterval = 45
+    /// Kept for callers that still read the old name. Same value as above.
+    static let commandQueueTTL: TimeInterval = commandUndeliveredTimeout
+    /// How long enqueueBrowserCommand awaits a result AFTER the extension fetched
+    /// the command, before returning {"error":"timeout"}. Measured from delivery,
+    /// not enqueue, so time spent waiting for a sleeping worker never eats into
+    /// the time the page has to run the action.
     static let commandResultTimeout: TimeInterval = 20
+    /// Longest a GET /commands long poll is held open. It returns the moment a
+    /// command for that browser is enqueued. Kept under 30s because Chrome kills
+    /// an MV3 worker whose fetch has waited 30s for a response.
+    static let longPollMaxSeconds: TimeInterval = 22
+    /// Long polls each hold a handler slot, so only a few may wait at once; any
+    /// extra poll is answered immediately instead of starving heartbeats.
+    static let maxConcurrentLongPolls = 3
+    /// A browser instance that has not polled or beaten within this window is not
+    /// considered when routing a command that names no browser.
+    static let instanceFreshness: TimeInterval = 40
+    /// Request header the extension sets to ask for a long poll (seconds).
+    static let longPollHeaderKey = "x-holmes-long-poll"
+    static let instanceHeaderKey = "x-holmes-browser-instance"
+    static let focusedHeaderKey = "x-holmes-browser-focused"
+}
+
+/// Exponential backoff with a ceiling. Used for accept() failures (so a broken
+/// listening socket cannot spin a core at 100%) and for retrying bind().
+struct BridgeBackoff {
+    let base: TimeInterval
+    let cap: TimeInterval
+    private(set) var consecutiveFailures = 0
+
+    init(base: TimeInterval, cap: TimeInterval) {
+        self.base = base
+        self.cap = cap
+    }
+
+    /// Records one failure and returns how long to wait before trying again.
+    mutating func failure() -> TimeInterval {
+        consecutiveFailures += 1
+        let exponent = Double(min(consecutiveFailures - 1, 30))
+        return min(cap, base * pow(2, exponent))
+    }
+
+    mutating func success() { consecutiveFailures = 0 }
+}
+
+/// The browser command queue, shared by the main actor (producer) and the socket
+/// layer (GET /commands). Guarded by a condition lock instead of main actor
+/// isolation: a poll must never wait on a busy main thread, and a long poll has to
+/// sleep until a command arrives without holding anything but its own socket.
+final class BrowserCommandQueue: @unchecked Sendable {
+    struct Delivery {
+        let id: Int
+        let action: String
+        let params: [String: Any]
+    }
+
+    enum State: Equatable {
+        case pending(since: Date)
+        case delivered(since: Date)
+    }
+
+    private struct Entry {
+        let id: Int
+        let action: String
+        let params: [String: Any]
+        let target: String?
+        let enqueuedAt: Date
+        var deliveredAt: Date?
+        let cancellation: BrowserCommandCancellation
+    }
+
+    private struct Sighting {
+        var lastSeen: Date
+        var activeAt: Date
+    }
+
+    /// Random per app launch. Echoed by the extension so a result for command 7 of
+    /// a previous launch can never complete command 7 of this one, and so the
+    /// worker's idempotency cache never replays an old launch's result.
+    let session: String
+    private let condition = NSCondition()
+    private var pending: [Entry] = []
+    private var delivered: [Int: Entry] = [:]
+    private var sightings: [String: Sighting] = [:]
+    private var activeLongPolls = 0
+    private let maxPending: Int
+    private let longPollCap: TimeInterval
+
+    init(session: String = UUID().uuidString,
+         maxPending: Int = BridgeProtocol.maxPendingCommands,
+         longPollCap: TimeInterval = BridgeProtocol.longPollMaxSeconds) {
+        self.session = session
+        self.maxPending = maxPending
+        self.longPollCap = longPollCap
+    }
+
+    var pendingIDs: [Int] {
+        condition.lock(); defer { condition.unlock() }
+        return pending.map(\.id)
+    }
+
+    var deliveredIDs: [Int] {
+        condition.lock(); defer { condition.unlock() }
+        return delivered.keys.sorted()
+    }
+
+    /// False when the queue is full. Wakes every waiting long poll.
+    func enqueue(id: Int, action: String, params: [String: Any], cancellation: BrowserCommandCancellation) -> Bool {
+        condition.lock(); defer { condition.unlock() }
+        pending.removeAll { $0.cancellation.isCancelled }
+        guard pending.count < maxPending else { return false }
+        pending.append(Entry(id: id, action: action, params: params,
+                             target: params["_browserInstanceID"] as? String,
+                             enqueuedAt: Date(), deliveredAt: nil, cancellation: cancellation))
+        condition.broadcast()
+        return true
+    }
+
+    func state(of id: Int) -> State? {
+        condition.lock(); defer { condition.unlock() }
+        if let entry = delivered[id], let at = entry.deliveredAt { return .delivered(since: at) }
+        if let entry = pending.first(where: { $0.id == id }) { return .pending(since: entry.enqueuedAt) }
+        return nil
+    }
+
+    func remove(_ id: Int) {
+        condition.lock(); defer { condition.unlock() }
+        pending.removeAll { $0.id == id }
+        delivered.removeValue(forKey: id)
+    }
+
+    /// The worker reported that a delivered command actually started running (it
+    /// may have waited behind another command for the same tab). Restart the result
+    /// clock so queueing inside the browser is not counted against the page.
+    func markStarted(_ id: Int) {
+        condition.lock(); defer { condition.unlock() }
+        if delivered[id] != nil { delivered[id]?.deliveredAt = Date() }
+    }
+
+    /// Puts delivered commands back at the front of the queue, e.g. when the poll
+    /// response could not be written because the extension hung up.
+    func requeue(_ ids: [Int]) {
+        guard !ids.isEmpty else { return }
+        condition.lock(); defer { condition.unlock() }
+        var restored: [Entry] = []
+        for id in ids {
+            guard var entry = delivered.removeValue(forKey: id), !entry.cancellation.isCancelled else { continue }
+            entry.deliveredAt = nil
+            restored.append(entry)
+        }
+        pending.insert(contentsOf: restored.sorted { $0.id < $1.id }, at: 0)
+        condition.broadcast()
+    }
+
+    /// Records that a browser instance is alive (it polled or beat). `focused`
+    /// is the worker's own report that one of its windows has OS focus.
+    func noteSeen(instance: String?, focused: Bool?) {
+        guard let instance, !instance.isEmpty else { return }
+        condition.lock(); defer { condition.unlock() }
+        noteSeenLocked(instance: instance, focused: focused, at: Date())
+    }
+
+    /// The app saw this instance's page while its browser was the frontmost app.
+    func noteForeground(instance: String, at date: Date = Date()) {
+        guard !instance.isEmpty else { return }
+        condition.lock(); defer { condition.unlock() }
+        var sighting = sightings[instance] ?? Sighting(lastSeen: date, activeAt: date)
+        sighting.lastSeen = max(sighting.lastSeen, date)
+        sighting.activeAt = max(sighting.activeAt, date)
+        sightings[instance] = sighting
+        condition.broadcast()
+    }
+
+    /// Seeds a remembered instance (from a previous launch) with a tiny preference
+    /// over instances that have never been in front, without marking it alive.
+    func rememberInstance(_ instance: String) {
+        guard !instance.isEmpty else { return }
+        condition.lock(); defer { condition.unlock() }
+        if sightings[instance] == nil {
+            sightings[instance] = Sighting(lastSeen: .distantPast, activeAt: Date(timeIntervalSince1970: 1))
+        }
+    }
+
+    /// The browser instance a command without `_browserInstanceID` goes to: the
+    /// live instance most recently in front, falling back to the most recently
+    /// seen one. Nil when no instance is known to be alive.
+    var preferredInstance: String? {
+        condition.lock(); defer { condition.unlock() }
+        return routeTargetLocked(now: Date())
+    }
+
+    /// Drains the commands deliverable to `instance`. With `wait > 0` this is a
+    /// long poll: it blocks (without touching the main thread) until a command
+    /// arrives, the wait elapses, or `clientGone` reports the extension hung up.
+    func drain(instance: String?, focused: Bool?, wait: TimeInterval,
+               clientGone: () -> Bool = { false }) -> [Delivery] {
+        condition.lock()
+        let start = Date()
+        if let instance, !instance.isEmpty { noteSeenLocked(instance: instance, focused: focused, at: start) }
+        var deadline = start
+        var holdsLongPoll = false
+        if wait > 0 && activeLongPolls < BridgeProtocol.maxConcurrentLongPolls {
+            activeLongPolls += 1
+            holdsLongPoll = true
+            deadline = start.addingTimeInterval(min(wait, longPollCap))
+        }
+        defer {
+            if holdsLongPoll { activeLongPolls -= 1 }
+            condition.unlock()
+        }
+        while true {
+            let batch = takeDeliverableLocked(instance: instance)
+            if !batch.isEmpty { return batch }
+            let now = Date()
+            if now >= deadline { return [] }
+            _ = condition.wait(until: min(deadline, now.addingTimeInterval(0.5)))
+            if clientGone() { return [] }
+            if let instance, !instance.isEmpty {
+                noteSeenLocked(instance: instance, focused: nil, at: Date())
+            }
+        }
+    }
+
+    static func encode(_ batch: [Delivery], session: String) -> Data {
+        let array: [[String: Any]] = batch.map {
+            ["id": $0.id, "action": $0.action, "params": $0.params, "session": session]
+        }
+        guard JSONSerialization.isValidJSONObject(array),
+              let data = try? JSONSerialization.data(withJSONObject: array) else {
+            return Data("[]".utf8)
+        }
+        return data
+    }
+
+    private func noteSeenLocked(instance: String, focused: Bool?, at date: Date) {
+        var sighting = sightings[instance] ?? Sighting(lastSeen: date, activeAt: .distantPast)
+        sighting.lastSeen = date
+        if focused == true { sighting.activeAt = date }
+        sightings[instance] = sighting
+    }
+
+    private func routeTargetLocked(now: Date) -> String? {
+        let fresh = sightings.filter { now.timeIntervalSince($0.value.lastSeen) < BridgeProtocol.instanceFreshness }
+        return fresh.max { lhs, rhs in
+            if lhs.value.activeAt != rhs.value.activeAt { return lhs.value.activeAt < rhs.value.activeAt }
+            if lhs.value.lastSeen != rhs.value.lastSeen { return lhs.value.lastSeen < rhs.value.lastSeen }
+            return lhs.key < rhs.key
+        }?.key
+    }
+
+    private func takeDeliverableLocked(instance: String?) -> [Delivery] {
+        pending.removeAll { $0.cancellation.isCancelled }
+        guard !pending.isEmpty else { return [] }
+        let route = routeTargetLocked(now: Date())
+        let now = Date()
+        var batch: [Delivery] = []
+        var remaining: [Entry] = []
+        for var entry in pending {
+            let deliverable: Bool
+            if let target = entry.target {
+                deliverable = target == instance
+            } else {
+                deliverable = route == nil || route == instance
+            }
+            if deliverable {
+                entry.deliveredAt = now
+                delivered[entry.id] = entry
+                batch.append(Delivery(id: entry.id, action: entry.action, params: entry.params))
+            } else {
+                remaining.append(entry)
+            }
+        }
+        pending = remaining
+        return batch
+    }
 }
 
 /// Cancellation handlers run outside the main actor. Mark synchronously so a
 /// polling drain can refuse a cancelled command before its actor cleanup runs.
-private final class BrowserCommandCancellation: @unchecked Sendable {
+final class BrowserCommandCancellation: @unchecked Sendable {
     private let lock = NSLock()
     private var cancelled = false
 
@@ -244,27 +518,30 @@ final class BrowserBridge {
     private var lastBrowserApp = "your browser"
 
     // ── Browser-automation command queue (producer side) ────────────
-    // All @MainActor state, per the actor's invariant. The socket layer reaches
-    // it through the two closures wired in start(): a synchronous main-actor hop
-    // for the GET /commands drain, and a fire-and-forget hop for the result POST.
-    private struct PendingBrowserCommand {
-        let id: Int
-        let action: String            // wire (camelCase) action name automation.js expects
-        let params: [String: Any]
-        let enqueuedAt: Date
-        let cancellation: BrowserCommandCancellation
-    }
-    /// Commands waiting for the extension to fetch them via GET /commands.
-    private var pendingCommands: [PendingBrowserCommand] = []
+    // The queue itself lives in BrowserCommandQueue behind a lock, so GET /commands
+    // never waits for the main thread. The continuations stay @MainActor state.
+    @ObservationIgnored let commandQueue = BrowserCommandQueue()
     /// Includes delivered commands while their producer still awaits a result.
     private var commandCancellations: [Int: BrowserCommandCancellation] = [:]
     /// The awaiting continuations, keyed by command id. Exactly one of {result
-    /// POST, cancellation, enqueue timeout, TTL expiry} resumes each — all via removeValue, so
-    /// a continuation can never be resumed twice.
+    /// POST, cancellation, delivery timeout, undelivered timeout} resumes each, all
+    /// via removeValue, so a continuation can never be resumed twice.
     private var commandContinuations: [Int: CheckedContinuation<[String: Any], Never>] = [:]
     /// Monotonic id source. A plain incrementing Int (not a UUID/Date) so echoed
     /// results can never collide, and so ids stay small and legible on the wire.
     private var nextCommandID = 1
+    /// Ids that already resolved with a timeout. A result that arrives for one of
+    /// these later is logged and ignored; it never resolves or re-enqueues anything.
+    @ObservationIgnored private var expiredCommandIDs: [Int] = []
+    /// How many late results were ignored. Surfaced for diagnostics and tests.
+    private(set) var lateResultsIgnored = 0
+    /// Overridable so tests can exercise both deadlines without waiting a minute.
+    @ObservationIgnored var commandResultTimeout = BridgeProtocol.commandResultTimeout
+    @ObservationIgnored var commandUndeliveredTimeout = BridgeProtocol.commandUndeliveredTimeout
+    /// Port to bind. The real app always uses 5766; tests bind an ephemeral port.
+    @ObservationIgnored private var listenPort: UInt16 = BridgeProtocol.port
+    /// The port actually bound (differs from listenPort only when that is 0).
+    private(set) var boundPort: UInt16?
 
     private init() {
         token = BridgeToken.loadOrCreate()
@@ -273,15 +550,17 @@ final class BrowserBridge {
 
     #if DEBUG
     /// Isolated integration harness: real queue/parser, fake OS identity and no
-    /// token files, listening sockets, browser access or app activation.
-    init(testToken: String, environment: ContextEnvironment) {
+    /// token files, browser access or app activation. `port` 0 binds an ephemeral
+    /// loopback port when a test calls start().
+    init(testToken: String, environment: ContextEnvironment, port: UInt16 = 0) {
         token = testToken
         contextEnvironment = environment
+        listenPort = port
     }
     func testIngest(_ data: Data) -> LiveContext? { ingest(data) }
     func testDrainCommands(instance: String?) -> Data { drainCommandsJSON(forInstance: instance) }
     func testCommandResult(_ data: Data) { recordCommandResult(data) }
-    var testPendingCommandIDs: [Int] { pendingCommands.map(\.id) }
+    var testPendingCommandIDs: [Int] { commandQueue.pendingIDs }
     var testAwaitingCommandCount: Int { commandContinuations.count }
     var testTrackedCommandCount: Int { commandCancellations.count }
     #endif
@@ -292,46 +571,39 @@ final class BrowserBridge {
     func start() {
         guard !isRunning else { return }
 
+        // Every callback hops to the main actor fire-and-forget. None of them
+        // blocks the socket thread: GET /commands reads the lock-guarded queue
+        // directly, so a busy main thread can no longer fill the handler slots.
         let server = BridgeServer(
-            port: Self.port,
+            port: listenPort,
             token: token,
             pairedToken: pairedToken,
             maxBodyBytes: Self.maxBodyBytes,
-            onPayload: { data in
-                Task { @MainActor in BrowserBridge.shared.ingest(data) }
+            commandQueue: commandQueue,
+            onPayload: { [weak self] data in
+                Task { @MainActor in self?.ingest(data) }
             },
-            onHeartbeat: {
-                Task { @MainActor in BrowserBridge.shared.noteHeartbeat() }
+            onHeartbeat: { [weak self] in
+                Task { @MainActor in self?.noteHeartbeat() }
             },
-            onUnauthorized: { path in
-                Task { @MainActor in BrowserBridge.shared.noteUnauthorized(path) }
+            onUnauthorized: { [weak self] path in
+                Task { @MainActor in self?.noteUnauthorized(path) }
             },
-            onPaired: { secret in
-                Task { @MainActor in BrowserBridge.shared.notePaired(secret) }
+            onPaired: { [weak self] secret in
+                Task { @MainActor in self?.notePaired(secret) }
             },
-            onCommandsPoll: { instance in
-                // Called on a background client queue. The queue is @MainActor
-                // state, and GET /commands must return its bytes synchronously,
-                // so hop to main and block. This can't deadlock: no main-actor
-                // code ever waits on the client queue, so there is no reentrancy.
-                if Thread.isMainThread {
-                    return MainActor.assumeIsolated { BrowserBridge.shared.drainCommandsJSON(forInstance: instance) }
-                }
-                return DispatchQueue.main.sync {
-                    MainActor.assumeIsolated { BrowserBridge.shared.drainCommandsJSON(forInstance: instance) }
-                }
-            },
-            onCommandResult: { data in
-                Task { @MainActor in BrowserBridge.shared.recordCommandResult(data) }
+            onCommandResult: { [weak self] data in
+                Task { @MainActor in self?.recordCommandResult(data) }
             }
         )
 
         switch server.startListening() {
-        case .success:
+        case .success(let port):
             self.server = server
+            boundPort = port
             isRunning = true
             lastError = nil
-            print("[Bridge] Listening on http://127.0.0.1:\(Self.port) (loopback only, token required)")
+            print("[Bridge] Listening on http://127.0.0.1:\(port) (loopback only, token required)")
             print("[Bridge] Token file: \(Self.tokenFileURL.path)")
             startWatchdog()
         case .failure(let message):
@@ -439,8 +711,8 @@ final class BrowserBridge {
     func enqueueBrowserCommand(_ action: String, _ params: [String: Any]) async -> [String: Any] {
         guard !Task.isCancelled else { return Self.cancelledCommandResult }
         expireStaleCommands()
-        guard pendingCommands.count < BridgeProtocol.maxPendingCommands else {
-            return ["error": "browser command queue is full (\(BridgeProtocol.maxPendingCommands) pending) — the extension may be disconnected"]
+        guard JSONSerialization.isValidJSONObject(params) else {
+            return ["error": "invalid_params", "message": "The browser command parameters are not valid JSON."]
         }
         let id = nextCommandID
         nextCommandID += 1
@@ -452,15 +724,15 @@ final class BrowserBridge {
                     return
                 }
                 // Registration and enqueue are synchronous on the main actor;
-                // a result cannot arrive before its continuation is registered.
+                // a result cannot arrive before its continuation is registered,
+                // because results are recorded on the main actor too.
+                guard commandQueue.enqueue(id: id, action: action, params: params, cancellation: cancellation) else {
+                    continuation.resume(returning: Self.queueFullResult)
+                    return
+                }
                 commandContinuations[id] = continuation
                 commandCancellations[id] = cancellation
-                pendingCommands.append(PendingBrowserCommand(id: id, action: action, params: params,
-                    enqueuedAt: Date(), cancellation: cancellation))
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: UInt64(BridgeProtocol.commandResultTimeout * 1_000_000_000))
-                    self?.timeoutCommand(id)
-                }
+                Task { @MainActor [weak self] in await self?.superviseCommand(id) }
             }
         }, onCancel: { [weak self] in
             cancellation.cancel()
@@ -536,31 +808,12 @@ final class BrowserBridge {
     /// expects — `[{"id":Int,"action":String,"params":{…}}]`, or `[]` when empty.
     /// Fetching is destructive: a command is delivered exactly once.
     private func drainCommandsJSON(forInstance instance: String?) -> Data {
-        // A GET /commands only reaches here past the token gate, and the extension's
-        // worker polls it every ~2s while alive. That poll is therefore an
-        // independent, focus-proof proof of life: treat it as a heartbeat so an
-        // actively-polling extension stays "connected" even if its bare /heartbeat
-        // POSTs are somehow dropped. (Post-eviction the poll stops, so the
-        // chrome.alarms heartbeat remains the real backstop — this only strengthens
-        // the alive-worker case.)
+        // A GET /commands only reaches here past the token gate, so it is an
+        // independent, focus-proof proof of life: treat it as a heartbeat.
         noteHeartbeat()
         expireStaleCommands()
-        guard !pendingCommands.isEmpty else { return Data("[]".utf8) }
-        let batch = pendingCommands.filter {
-            guard !$0.cancellation.isCancelled else { return false }
-            guard let target = $0.params["_browserInstanceID"] as? String else { return true }
-            return target == instance
-        }
-        let delivered = Set(batch.map(\.id))
-        pendingCommands.removeAll { delivered.contains($0.id) }
-        let array: [[String: Any]] = batch.map {
-            ["id": $0.id, "action": $0.action, "params": $0.params]
-        }
-        guard JSONSerialization.isValidJSONObject(array),
-              let data = try? JSONSerialization.data(withJSONObject: array) else {
-            return Data("[]".utf8)
-        }
-        return data
+        let batch = commandQueue.drain(instance: instance, focused: nil, wait: 0)
+        return BrowserCommandQueue.encode(batch, session: commandQueue.session)
     }
 
     /// Records a POST /command-result body, ignoring unrequested or late results.
@@ -573,40 +826,99 @@ final class BrowserBridge {
             print("[Bridge] Dropped a command-result that wasn't a JSON object with an id")
             return
         }
-        guard let cancellation = commandCancellations[id] else { return }
+        // A result stamped with another launch's session belongs to a command this
+        // launch never issued, even if the numeric id happens to match.
+        if let session = object["session"] as? String, session != commandQueue.session { return }
+        if object["_holmesStarted"] as? Bool == true {
+            commandQueue.markStarted(id)
+            return
+        }
+        guard let cancellation = commandCancellations[id] else {
+            if expiredCommandIDs.contains(id) {
+                lateResultsIgnored += 1
+                print("[Bridge] Ignored a late result for command \(id); it already timed out and is not re-run")
+            }
+            return
+        }
         finishCommand(id, result: cancellation.isCancelled ? Self.cancelledCommandResult : object)
     }
 
     private static var cancelledCommandResult: [String: Any] { ["error": "cancelled", "cancelled": true] }
 
+    static var queueFullResult: [String: Any] {
+        ["error": "queue_full",
+         "message": "Holmes already has \(BridgeProtocol.maxPendingCommands) browser commands waiting. The extension may be disconnected; wait a moment and try again."]
+    }
+
+    static func extensionAsleepResult(after seconds: TimeInterval) -> [String: Any] {
+        ["error": "extension_asleep", "undelivered": true,
+         "message": "The Holmes browser extension did not pick up this command within \(Int(seconds))s. Its background worker may be asleep or the browser may be closed. Click into a browser tab, then try again. The command was never run."]
+    }
+
+    static func deliveredTimeoutResult(after seconds: TimeInterval) -> [String: Any] {
+        ["error": "timeout", "delivered": true,
+         "message": "The browser received this command but did not report a result within \(Int(seconds))s. It may still have run, so check the page before retrying."]
+    }
+
+    /// Watches one command's two deadlines: undelivered (the worker never fetched
+    /// it) and delivered (fetched but no result). Resolves the awaiter exactly once.
+    private func superviseCommand(_ id: Int) async {
+        while commandContinuations[id] != nil {
+            if commandCancellations[id]?.isCancelled == true {
+                finishCommand(id, result: Self.cancelledCommandResult)
+                return
+            }
+            let now = Date()
+            let deadline: Date
+            switch commandQueue.state(of: id) {
+            case .pending(let since)?:
+                deadline = since.addingTimeInterval(commandUndeliveredTimeout)
+                if now >= deadline {
+                    expireCommand(id, result: Self.extensionAsleepResult(after: commandUndeliveredTimeout))
+                    return
+                }
+            case .delivered(let since)?:
+                deadline = since.addingTimeInterval(commandResultTimeout)
+                if now >= deadline {
+                    expireCommand(id, result: Self.deliveredTimeoutResult(after: commandResultTimeout))
+                    return
+                }
+            case nil:
+                // Not in the queue but still awaited: only a cancellation drop can
+                // do that, and the branch above handles it. Never hang regardless.
+                expireCommand(id, result: Self.deliveredTimeoutResult(after: commandResultTimeout))
+                return
+            }
+            let pause = max(0.01, min(0.25, deadline.timeIntervalSince(now)))
+            try? await Task.sleep(nanoseconds: UInt64(pause * 1_000_000_000))
+        }
+    }
+
     /// Removing a queued command prevents future delivery. A command already
     /// delivered may have written its body; cancellation cannot roll that back.
     private func finishCommand(_ id: Int, result: [String: Any]) {
-        pendingCommands.removeAll { $0.id == id }
+        commandQueue.remove(id)
         commandCancellations.removeValue(forKey: id)
         commandContinuations.removeValue(forKey: id)?.resume(returning: result)
     }
 
-    /// Resolves an awaiting continuation with a timeout and clears the command.
-    /// Safe to call for an id already resolved — removeValue makes it a no-op.
-    private func timeoutCommand(_ id: Int) {
+    /// Resolves with a timeout style result and remembers the id, so a result that
+    /// shows up afterwards is recognised as late instead of silently vanishing.
+    private func expireCommand(_ id: Int, result: [String: Any]) {
         let cancelled = commandCancellations[id]?.isCancelled == true
-        finishCommand(id, result: cancelled ? Self.cancelledCommandResult : ["error": "timeout"])
+        guard commandContinuations[id] != nil else { return }
+        if !cancelled {
+            expiredCommandIDs.append(id)
+            if expiredCommandIDs.count > 256 { expiredCommandIDs.removeFirst(expiredCommandIDs.count - 256) }
+        }
+        finishCommand(id, result: cancelled ? Self.cancelledCommandResult : result)
     }
 
-    /// Drops commands the extension never fetched within the TTL, resolving any
-    /// still-parked awaiter so a disconnected extension can't hang producers
-    /// forever. (The enqueue await's own timeout is the primary backstop; this is
-    /// belt-and-suspenders and also reclaims the pending slot sooner.)
+    /// Resolves cancelled awaiters promptly. Deadlines are enforced per command by
+    /// superviseCommand, so nothing else is needed here.
     private func expireStaleCommands() {
         for id in commandCancellations.filter({ $0.value.isCancelled }).map(\.key) {
             finishCommand(id, result: Self.cancelledCommandResult)
-        }
-        let cutoff = Date().addingTimeInterval(-BridgeProtocol.commandQueueTTL)
-        guard pendingCommands.contains(where: { $0.enqueuedAt < cutoff }) else { return }
-        let stale = pendingCommands.filter { $0.enqueuedAt < cutoff }
-        for command in stale {
-            finishCommand(command.id, result: ["error": "expired before the extension fetched it"])
         }
     }
 
@@ -866,20 +1178,19 @@ enum BridgeToken {
 private final class BridgeServer: @unchecked Sendable {
 
     enum StartResult {
-        case success
+        case success(UInt16)
         case failure(String)
     }
 
     private let port: UInt16
     private let token: String
     private let maxBodyBytes: Int
+    /// Read directly (lock guarded) by GET /commands. No main thread involved.
+    private let commandQueue: BrowserCommandQueue
     private let onPayload: @Sendable (Data) -> Void
     private let onHeartbeat: @Sendable () -> Void
     private let onUnauthorized: @Sendable (String) -> Void
     private let onPaired: @Sendable (String) -> Void
-    /// Synchronously drains + returns the queued commands as the JSON array
-    /// background.js expects. Called on the client queue; hops to the main actor.
-    private let onCommandsPoll: @Sendable (String?) -> Data
     /// Hands off a POST /command-result body (fire-and-forget, like onPayload).
     private let onCommandResult: @Sendable (Data) -> Void
 
@@ -907,21 +1218,21 @@ private final class BridgeServer: @unchecked Sendable {
          token: String,
          pairedToken: String?,
          maxBodyBytes: Int,
+         commandQueue: BrowserCommandQueue,
          onPayload: @escaping @Sendable (Data) -> Void,
          onHeartbeat: @escaping @Sendable () -> Void,
          onUnauthorized: @escaping @Sendable (String) -> Void,
          onPaired: @escaping @Sendable (String) -> Void,
-         onCommandsPoll: @escaping @Sendable (String?) -> Data,
          onCommandResult: @escaping @Sendable (Data) -> Void) {
         self.port = port
         self.token = token
         self.pairedToken = pairedToken
         self.maxBodyBytes = maxBodyBytes
+        self.commandQueue = commandQueue
         self.onPayload = onPayload
         self.onHeartbeat = onHeartbeat
         self.onUnauthorized = onUnauthorized
         self.onPaired = onPaired
-        self.onCommandsPoll = onCommandsPoll
         self.onCommandResult = onCommandResult
     }
 
@@ -957,6 +1268,13 @@ private final class BridgeServer: @unchecked Sendable {
             return .failure("listen() failed: \(errno)")
         }
 
+        var boundAddress = sockaddr_in()
+        var boundLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &boundAddress) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &boundLength) }
+        }
+        let actualPort = named == 0 ? UInt16(bigEndian: boundAddress.sin_port) : port
+
         lock.lock()
         serverFD = fd
         running = true
@@ -965,7 +1283,7 @@ private final class BridgeServer: @unchecked Sendable {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             self?.acceptLoop()
         }
-        return .success
+        return .success(actualPort)
     }
 
     func stopListening() {
@@ -1083,9 +1401,24 @@ private final class BridgeServer: @unchecked Sendable {
         //   GET  /commands       → drain + return the queued commands as JSON.
         //   POST /command-result → hand the structured outcome to the producer.
         if request.method == "GET" && path == BridgeProtocol.commandsPath {
+            // Proof of life, same as a heartbeat. The watchdog keeps the extension
+            // "connected" while its worker is polling.
+            onHeartbeat()
+            let instance = request.headers[BridgeProtocol.instanceHeaderKey]
+            let focused = request.headers[BridgeProtocol.focusedHeaderKey].map { $0 == "1" || $0.lowercased() == "true" }
+            let wait = max(0, min(Double(request.headers[BridgeProtocol.longPollHeaderKey] ?? "") ?? 0,
+                                  BridgeProtocol.longPollMaxSeconds))
+            let batch = commandQueue.drain(instance: instance, focused: focused, wait: wait,
+                                           clientGone: { Self.peerClosed(fd) })
             var headers = corsHeaders(origin: origin)
             headers["Content-Type"] = "application/json"
-            write(fd, status: "200 OK", headers: headers, body: onCommandsPoll(request.headers["x-holmes-browser-instance"]))
+            headers["X-Holmes-Long-Poll"] = "1"
+            let body = BrowserCommandQueue.encode(batch, session: commandQueue.session)
+            // The extension hung up while we waited: hand the commands to the next
+            // poll instead of losing them in a dead socket.
+            if !write(fd, status: "200 OK", headers: headers, body: body) {
+                commandQueue.requeue(batch.map(\.id))
+            }
             return
         }
         if request.method == "POST" && path == BridgeProtocol.commandResultPath {
@@ -1324,7 +1657,10 @@ private final class BridgeServer: @unchecked Sendable {
         write(fd, status: status, headers: headers, body: body)
     }
 
-    private func write(_ fd: Int32, status: String, headers: [String: String], body: Data) {
+    /// True when every byte was handed to the kernel and the peer had not already
+    /// hung up. A long poll uses this to requeue commands it could not deliver.
+    @discardableResult
+    private func write(_ fd: Int32, status: String, headers: [String: String], body: Data) -> Bool {
         var head = "HTTP/1.1 \(status)\r\n"
         var headers = headers
         headers["Content-Length"] = "\(body.count)"
@@ -1332,16 +1668,32 @@ private final class BridgeServer: @unchecked Sendable {
         for (key, value) in headers { head += "\(key): \(value)\r\n" }
         head += "\r\n"
 
+        if Self.peerClosed(fd) { return false }
         var out = Data(head.utf8)
         out.append(body)
-        out.withUnsafeBytes { raw in
-            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+        return out.withUnsafeBytes { raw -> Bool in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return false }
             var sent = 0
             while sent < out.count {
                 let n = send(fd, base + sent, out.count - sent, 0)
-                if n <= 0 { break }
+                if n <= 0 { return false }
                 sent += n
             }
+            return true
         }
+    }
+
+    /// Non-blocking check for a client that already closed its end. A readable
+    /// socket that yields zero bytes on a peek is an orderly shutdown.
+    static func peerClosed(_ fd: Int32) -> Bool {
+        var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        let ready = poll(&descriptor, 1, 0)
+        guard ready > 0 else { return false }
+        if descriptor.revents & Int16(POLLHUP | POLLERR | POLLNVAL) != 0 { return true }
+        var byte: UInt8 = 0
+        let peeked = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT)
+        if peeked == 0 { return true }
+        if peeked < 0 { return errno != EAGAIN && errno != EWOULDBLOCK }
+        return false
     }
 }
