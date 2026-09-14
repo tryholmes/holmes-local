@@ -7,13 +7,16 @@ import Foundation
 enum EmailActionOffers {
     private static let reminderStore = EKEventStore()
 
-    static func offer(_ actions: [EmailActionCandidate], compose: EmailComposeSnapshot, body: String, subject: String) async {
+    /// `isCurrent` turns false once the written email is undone; no further
+    /// question about it is asked.
+    static func offer(_ actions: [EmailActionCandidate], compose: EmailComposeSnapshot, body: String, subject: String,
+                      isCurrent: @escaping @MainActor () -> Bool) async {
         let saveDraft = canSaveGmailDraft(for: compose)
         guard !actions.isEmpty || saveDraft else { return }
         // Let the person see the written email before any question appears.
         try? await Task.sleep(nanoseconds: 1_500_000_000)
         for action in actions {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, isCurrent() else { return }
             switch action {
             case .calendarEvent(let title, let start, let minutes):
                 await offerEvent(title: title, start: start, minutes: minutes, compose: compose)
@@ -21,7 +24,7 @@ enum EmailActionOffers {
                 await offerFollowUp(days: days, compose: compose, subject: subject)
             }
         }
-        if saveDraft, !Task.isCancelled { await offerGmailDraft(compose: compose, body: body, subject: subject) }
+        if saveDraft, !Task.isCancelled, isCurrent() { await offerGmailDraft(compose: compose, body: body, subject: subject) }
     }
 
     private static func who(_ compose: EmailComposeSnapshot) -> String {

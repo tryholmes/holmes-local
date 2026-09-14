@@ -79,8 +79,11 @@ struct LiveContext {
 }
 @MainActor enum EmailActionOffers {
     static var offered: [[EmailActionCandidate]] = []
-    static func offer(_ actions: [EmailActionCandidate], compose: EmailComposeSnapshot, body: String, subject: String) async {
+    static var isCurrent: (@MainActor () -> Bool)?
+    static func offer(_ actions: [EmailActionCandidate], compose: EmailComposeSnapshot, body: String, subject: String,
+                      isCurrent: @escaping @MainActor () -> Bool) async {
         offered.append(actions)
+        self.isCurrent = isCurrent
     }
 }
 @MainActor enum EmailContextGatherer {
@@ -192,7 +195,11 @@ struct EmailDraftCoordinatorTests {
                "An empty composer gets the predicted email written directly in automatic mode, with no review card")
         expect(MailComposeReader.insertions == 0 && EmailUndoPresenter.shown == 1 && coordinator.lastWrite?.token == "undo-1",
                "Every automatic write offers one click undo")
+        await eventually { EmailActionOffers.isCurrent != nil }
+        expect(EmailActionOffers.isCurrent?() == true, "Action offers belong to the email that was just written")
         let undoMessage = await coordinator.undo(coordinator.lastWrite!)
+        // Regression: calendar, reminder and draft offers continued after Undo.
+        expect(EmailActionOffers.isCurrent?() == false, "Undo withdraws every pending action offer")
         expect(browser.undos == 1 && undoMessage.hasPrefix("Undone") && coordinator.lastWrite == nil, "Undo reaches the original composer")
         show(first)
         coordinator.observe(context(first))
@@ -520,6 +527,41 @@ struct EmailDraftCoordinatorTests {
         await eventually { cards.offered.count == 1 }
         expect(EmailUndoPresenter.shown == 0, "Every refused automatic write falls back to the review card")
 
+        // Regression: a deferred prediction was written hours later, even after the thread changed.
+        func deferredRun(lifetime: TimeInterval, thread: [EmailThreadMessage], wait: Double) async -> Int {
+            reset()
+            EmailDraftCoordinator.deferredLifetime = lifetime
+            var chrome = compose()
+            chrome.appBundleIdentifier = "com.google.Chrome"
+            NSWorkspace.shared.frontmostApplication = .init(bundleIdentifier: "com.google.Chrome")
+            let held = CoordinatorHold<String>()
+            model.handler = { _ in await held.wait() }
+            show(chrome)
+            coordinator.observe(context(chrome))
+            await eventually { held.started }
+            NSWorkspace.shared.frontmostApplication = .init(bundleIdentifier: "com.tinyspeck.slackmacgap")
+            browser.current = nil
+            coordinator.observe(LiveContext(source: .accessibility, confidence: .structural, app: "Slack"))
+            held.release(#"{"body":"Hi, I'm running late. I'm sorry for the delay."}"#)
+            await eventually { center.activeCount == 0 }
+            await pause(wait)
+            NSWorkspace.shared.frontmostApplication = .init(bundleIdentifier: "com.google.Chrome")
+            var back = compose(identity: chrome.identity)
+            back.appBundleIdentifier = "com.google.Chrome"
+            back.thread = thread
+            show(back)
+            coordinator.observe(context(back))
+            await pause(0.4)
+            return browser.insertions
+        }
+        let returned = await deferredRun(lifetime: 120, thread: [], wait: 0)
+        expect(returned == 1, "A prediction finished while away is written when the unchanged composer returns")
+        let newReply = [EmailThreadMessage(from: "Jamie", fromEmail: "jamie@example.com", date: "", text: "Never mind, I'm late too")]
+        let threadChanged = await deferredRun(lifetime: 120, thread: newReply, wait: 0)
+        expect(threadChanged == 0, "A deferred prediction is dropped when the thread changed")
+        let expired = await deferredRun(lifetime: 0.2, thread: [], wait: 0.5)
+        expect(expired == 0, "A deferred prediction expires")
+
         coordinator.stop()
         center.invalidateAll()
         print("Passed \(checks) production email coordinator routing and debounce checks")
@@ -540,6 +582,9 @@ struct EmailDraftCoordinatorTests {
         BrowserBridge.shared.undos = 0
         EmailUndoPresenter.shown = 0
         EmailActionOffers.offered = []
+        EmailActionOffers.isCurrent = nil
+        NSWorkspace.shared.frontmostApplication = nil
+        EmailDraftCoordinator.deferredLifetime = 120
         OllamaClient.shared.handler = nil
         OllamaClient.shared.calls = []
         OllamaConfig.isConfigured = true

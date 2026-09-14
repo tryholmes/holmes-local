@@ -29,6 +29,9 @@ final class EmailDraftCoordinator {
     private var explicitID: UUID?
     private var ownedExplicitActivity: UUID?
     private var deferred: PreparedEmailDraft?
+    private var deferredAt: Date?
+    /// A prediction finished while the person was elsewhere stays usable this long.
+    static var deferredLifetime: TimeInterval = 120
     private(set) var lastWrite: WrittenEmail?
 
     private lazy var session = EmailDraftSession(dependencies: .init(
@@ -225,6 +228,7 @@ final class EmailDraftCoordinator {
         }
         if prepared.deferred {
             deferred = prepared
+            deferredAt = Date()
             return
         }
         // An explicit request is reviewed before anything is written; only
@@ -243,7 +247,9 @@ final class EmailDraftCoordinator {
         guard let pending = deferred, let expected = pending.input.compose,
               let snapshot, snapshot.identity == expected.identity else { return }
         deferred = nil
-        guard snapshot.revisionKey == expected.revisionKey, !isStopped,
+        // Only a recent result, for the same text and the same conversation.
+        guard snapshot.revisionKey == expected.revisionKey, snapshot.thread == expected.thread,
+              let createdAt = deferredAt, Date().timeIntervalSince(createdAt) <= Self.deferredLifetime, !isStopped,
               !MenuBarManager.shared.isPaused, AutonomyPolicy.shared.isEnabled("email-compose") else { return }
         writeTask?.cancel()
         writeTask = Task { [weak self] in await self?.autoWrite(pending) }
@@ -260,11 +266,12 @@ final class EmailDraftCoordinator {
             try Task.checkCancellation()
             trigger.didInsert(into: expected)
             cancelDebounce()
-            remember(receipt, expected: expected)
+            let written = remember(receipt, expected: expected)
             WorkActivityCenter.shared.finish(activity, outcome: .success, summary: "Holmes wrote your email. Undo is available.")
             HolmesAgent.shared.logActivity(note: "Wrote a predicted email into \(expected.provider)")
             await EmailActionOffers.offer(prediction.actions, compose: expected, body: prediction.body,
-                                          subject: subject ?? expected.subject)
+                                          subject: subject ?? expected.subject,
+                                          isCurrent: { [weak self] in written != nil && self?.lastWrite == written })
         } catch is CancellationError {
             WorkActivityCenter.shared.cancel(activity)
         } catch {
@@ -286,14 +293,16 @@ final class EmailDraftCoordinator {
         Self.offerCard(prepared, target: target)
     }
 
-    private func remember(_ receipt: EmailWriteReceipt, expected: EmailComposeSnapshot) {
-        guard let token = receipt.undoToken else { return }
+    @discardableResult
+    private func remember(_ receipt: EmailWriteReceipt, expected: EmailComposeSnapshot) -> WrittenEmail? {
+        guard let token = receipt.undoToken else { return nil }
         let written = WrittenEmail(token: token, expected: expected, subjectFilled: receipt.subjectFilled, at: Date())
         lastWrite = written
         EmailUndoPresenter.show(title: "Holmes wrote this email",
                                 detail: receipt.subjectFilled ? "Body and subject. Nothing was sent." : "Nothing was sent.") { [weak self] in
             await self?.undo(written) ?? "Undo is no longer available."
         }
+        return written
     }
 
     /// Called only after the person reviews the actual text and presses Replace or Insert.
@@ -311,6 +320,12 @@ final class EmailDraftCoordinator {
     /// Restores exactly what the composer held before the write. Returns a
     /// sentence for the undo toast.
     func undo(_ written: WrittenEmail) async -> String {
+        // Withdraw pending follow up questions about the email being undone.
+        if lastWrite == written {
+            lastWrite = nil
+            writeTask?.cancel()
+            writeTask = nil
+        }
         do {
             switch written.expected.source {
             case .browser: try await BrowserBridge.shared.undoEmailDraft(token: written.token, expected: written.expected)
