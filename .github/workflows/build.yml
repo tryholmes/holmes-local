@@ -58,6 +58,8 @@ jobs:
           holmes/tests/run-email-draft-intent-tests.sh
           holmes/tests/run-email-drafting-tests.sh
           holmes/tests/run-email-draft-coordinator-tests.sh
+          holmes/tests/run-email-prediction-tests.sh
+          holmes/tests/run-mail-compose-matcher-tests.sh
           holmes/tests/run-request-routing-tests.sh
           holmes/tests/run-voice-hold-tests.sh
           holmes/tests/run-work-activity-tests.sh
