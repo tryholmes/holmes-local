@@ -9,3 +9,11 @@ xcrun swiftc -swift-version 5 \
   holmes/tests/ModelJSONTests.swift \
   -o "$model_json_test_dir/model-json-tests"
 "$model_json_test_dir/model-json-tests"
+xcrun swiftc -swift-version 5 \
+  holmes/holmes/Core/OllamaConfig.swift \
+  holmes/holmes/Core/WorkActivity.swift \
+  holmes/holmes/Core/OllamaClient.swift \
+  holmes/holmes/Core/ModelJSON.swift \
+  holmes/tests/ToolCallRecoveryTests.swift \
+  -o "$model_json_test_dir/tool-call-recovery-tests"
+"$model_json_test_dir/tool-call-recovery-tests"

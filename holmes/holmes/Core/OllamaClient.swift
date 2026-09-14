@@ -489,36 +489,46 @@ actor OllamaClient {
     /// `{"action":"screenshot"}` (bare computer-tool arguments). Returns nil for
     /// anything that is not unambiguously a call to one of `tools`.
     nonisolated static func toolCallFromContent(_ text: String, tools: [ToolDef]) -> ToolCall? {
-        // The whole message (after fence stripping) must BE the JSON object. A
-        // final prose answer that merely quotes an example call ("I clicked
-        // using {"action":…} and it worked") must not be re-executed.
-        let t = stripCodeFences(text).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard t.hasPrefix("{"), t.hasSuffix("}") else { return nil }
-        let candidate = t
-        guard let data = candidate.data(using: .utf8),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
         let names = tools.map { $0.name }
         func match(_ raw: String) -> String? {
             if names.contains(raw) { return raw }
             return names.first { $0.lowercased() == raw.lowercased() }
         }
-        // {"name": …, "parameters"/"arguments"/"input": {…}}
-        for key in ["name", "tool", "function", "tool_name"] {
-            if let raw = obj[key] as? String, let name = match(raw) {
-                let args = (obj["parameters"] as? [String: Any]) ?? (obj["arguments"] as? [String: Any])
-                    ?? (obj["input"] as? [String: Any]) ?? [:]
-                return ToolCall(id: nil, name: name, arguments: args)
+        func namedCall(_ obj: [String: Any]) -> ToolCall? {
+            // {"name": …, "parameters"/"arguments"/"input": {…}}
+            for key in ["name", "tool", "function", "tool_name"] {
+                if let raw = obj[key] as? String, let name = match(raw) {
+                    let args = (obj["parameters"] as? [String: Any]) ?? (obj["arguments"] as? [String: Any])
+                        ?? (obj["input"] as? [String: Any]) ?? [:]
+                    return ToolCall(id: nil, name: name, arguments: args)
+                }
             }
+            // {"function": {"name": …, "arguments": {…}}}
+            if let fn = obj["function"] as? [String: Any], let raw = fn["name"] as? String, let name = match(raw) {
+                return ToolCall(id: nil, name: name, arguments: (fn["arguments"] as? [String: Any]) ?? [:])
+            }
+            return nil
         }
-        // {"function": {"name": …, "arguments": {…}}}
-        if let fn = obj["function"] as? [String: Any], let raw = fn["name"] as? String, let name = match(raw) {
-            return ToolCall(id: nil, name: name, arguments: (fn["arguments"] as? [String: Any]) ?? [:])
-        }
-        // Bare computer-tool arguments.
-        if obj["action"] is String, let name = match("computer") {
-            return ToolCall(id: nil, name: name, arguments: obj)
-        }
-        return nil
+
+        // A call NAMING an offered tool is recovered wherever it sits: after a
+        // sentence of narration, before one, or inside a code fence.
+        var named: ToolCall?
+        _ = ModelJSON.firstObject(in: text, where: { obj in
+            named = namedCall(obj)
+            return named != nil
+        })
+        if let named { return named }
+
+        // Bare computer arguments carry no tool name, so they only count when
+        // the whole message (after fence stripping) IS the object: a final prose
+        // answer that merely quotes one ("I clicked using {"action":…} and it
+        // worked") must not be re-executed.
+        let t = stripCodeFences(text).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.hasPrefix("{"), t.hasSuffix("}"),
+              let data = t.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              obj["action"] is String, let name = match("computer") else { return nil }
+        return ToolCall(id: nil, name: name, arguments: obj)
     }
 
     /// Runs one throwaway turn with exactly the system prompt + tools an agent
