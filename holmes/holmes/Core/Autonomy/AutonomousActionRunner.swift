@@ -596,28 +596,14 @@ final class AutonomousActionRunner {
         case .cancelled:
             return "Stopped."
         case .text(let text):
+            // Every local model failure, refusal, unverified action and limit
+            // now arrives as .failed (handled above), so .text is a real result.
+            // Matching its prose against failure prefixes only misread genuine
+            // answers such as "The local model finished the move" as failures.
             statusLine = shorten(text, max: 160)
-            // Honest accounting: a local-model failure (Ollama down, model not
-            // pulled, busy GPU, HTTP error, truncation) or an explicit
-            // model-reported inability used to come back as "success" (the run
-            // then notified "completed" over work that never happened). These
-            // prefixes are exactly the ones HolmesBrain.run produces.
-            if Self.modelFailurePrefixes.contains(where: { text.hasPrefix($0) }) {
-                return shorten(text, max: 160)
-            }
             return nil
         }
     }
-
-    /// Leading text of every failure string HolmesBrain.run(goal:) can return in
-    /// place of a result. Keep in sync with its catch arms.
-    private static let modelFailurePrefixes: [String] = [
-        "Local model error",      // .http / .unsupported / .truncated
-        "Holmes declined:",       // .refused
-        "Ollama isn't running",   // .serverUnreachable
-        "The local model",        // .modelMissing / .busy
-        "Action failed:"          // transport and any other thrown error
-    ]
 
     // MARK: - Preflight
 
