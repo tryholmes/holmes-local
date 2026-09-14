@@ -183,6 +183,8 @@ struct PreparedEmailDraft {
     var prediction: EmailPrediction? = nil
     /// Finished while the person was in another app; write when they return.
     var deferred = false
+    /// The composer changed during an automatic run; offer, never write.
+    var reviewOnly = false
 }
 
 /// The production request lifecycle is dependency-injected for race tests. A
@@ -240,6 +242,9 @@ final class EmailDraftSession {
     func noteContext(_ snapshot: EmailComposeSnapshot?) {
         guard let expected = context, requestID != nil else { return }
         guard snapshot?.revisionKey != expected.revisionKey else { return }
+        // The person typing into the same composer during an automatic run:
+        // finish, then offer the result for review instead of writing it.
+        if origin == .background, let snapshot, snapshot.identity == expected.identity { return }
         cancellationReason = "The email changed while Holmes was drafting. Review the current email and ask again."
         task?.cancel()
     }
@@ -302,6 +307,13 @@ final class EmailDraftSession {
                     dependencies.publish(PreparedEmailDraft(id: UUID(), input: input, body: body, isUserInitiated: false,
                                                             prediction: prediction, deferred: true))
                     result = .ready("Holmes will finish this email when you return to it.")
+                    return result
+                }
+                if origin == .background, let latest, latest.isFresh(), latest.identity == expected.identity,
+                   latest.revisionKey != expected.revisionKey {
+                    dependencies.publish(PreparedEmailDraft(id: UUID(), input: EmailDraftInput(instruction: input.instruction, compose: latest),
+                                                            body: body, isUserInitiated: false, prediction: prediction, reviewOnly: true))
+                    result = .ready("Your email draft is ready to review.")
                     return result
                 }
                 guard let latest, latest.isFresh(), latest.revisionKey == expected.revisionKey else {

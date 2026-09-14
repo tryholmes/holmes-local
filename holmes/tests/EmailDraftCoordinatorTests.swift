@@ -242,9 +242,16 @@ struct EmailDraftCoordinatorTests {
         let changedBody = compose(identity: duringModel.identity, body: "I started typing")
         show(changedBody)
         coordinator.observe(context(changedBody))
-        await eventually { heldModel.cancelled }
+        await pause(0.1)
+        // Regression: typing during an automatic run used to cancel it, so no card ever appeared.
+        expect(!heldModel.cancelled, "Typing during automatic generation lets it finish")
+        browser.current = context(changedBody)
         heldModel.release(#"{"body":"Old generated body"}"#)
+        await eventually { cards.offered.count == 1 }
+        expect(browser.insertions == 0 && cards.offered[0].draft.contextSummary.contains("did not change it"),
+               "The finished prediction becomes one review card for the typed composer")
         await eventually { center.activeCount == 0 }
+        cards.offered = []
         expect(cards.offered.isEmpty && browser.insertions == 0, "Typing during generation prevents publication even if the model completes late")
 
         reset()

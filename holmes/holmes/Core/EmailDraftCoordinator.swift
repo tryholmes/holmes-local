@@ -229,7 +229,7 @@ final class EmailDraftCoordinator {
         }
         // An explicit request is reviewed before anything is written; only
         // automatic prediction writes directly.
-        if !prepared.isUserInitiated, compose.canAutoWrite, prepared.prediction != nil {
+        if !prepared.isUserInitiated, !prepared.reviewOnly, compose.canAutoWrite, prepared.prediction != nil {
             writeTask?.cancel()
             writeTask = Task { [weak self] in await self?.autoWrite(prepared) }
         } else {
