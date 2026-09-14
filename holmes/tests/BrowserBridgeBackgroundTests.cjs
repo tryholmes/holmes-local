@@ -81,6 +81,7 @@ function loadWorker(options = {}) {
     tabs: {
       onActivated: events.activated, onUpdated: events.updated, onRemoved: events.removed,
       async query(filter = {}) {
+        if (options.queryDelayMs) await sleep(options.queryDelayMs);
         let list = [...tabs.values()];
         if (filter.active) list = list.filter(tab => tab.active);
         if (filter.url) {
@@ -670,6 +671,36 @@ async function ledgerQuotaTests() {
   worker.dispose();
 }
 
+async function laneOrderTests() {
+  // A command without tabId (needs an active tab lookup) arrives before one with
+  // tabId for the same tab. Lanes must be assigned in arrival order.
+  const spans = [];
+  const executeScript = async details => {
+    if (!details.func) return [{}];
+    const params = details.args[1] || {};
+    const span = { selector: params.selector, start: Date.now() };
+    spans.push(span);
+    await sleep(params.selector === '#first' ? 120 : 10);
+    span.end = Date.now();
+    return [{ result: { ok: true, count: 0, elements: [] } }];
+  };
+  let served = false;
+  const worker = loadWorker({ queryDelayMs: 40, executeScript, fetch: async url => {
+    if (!url.endsWith('/commands')) return { status: 200, body: { ok: true } };
+    await sleep(15);
+    if (served) return { status: 200, body: [], headers: { 'X-Holmes-Long-Poll': '1' } };
+    served = true;
+    return { status: 200, headers: { 'X-Holmes-Long-Poll': '1' }, body: [
+      { id: 61, action: 'extract', params: { selector: '#first' }, session: 's1' },
+      { id: 62, action: 'extract', params: { tabId: 17, selector: '#second' }, session: 's1' }
+    ] };
+  } });
+  await until('lane order results', () => spans.length === 2 && spans.every(s => s.end), 3000);
+  const first = spans.find(s => s.selector === '#first'), second = spans.find(s => s.selector === '#second');
+  check(second.start >= first.end, 'A command with an explicit tabId waits behind an earlier command for the same active tab');
+  worker.dispose();
+}
+
 module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 
 if (require.main === module) {
@@ -679,7 +710,7 @@ if (require.main === module) {
     setInterval(() => {}, 1000);
     const only = process.argv[2];
     const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests,
-      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests, ledgerRaceTests, ledgerQuotaTests };
+      concurrencyTests, visibilityTests, navigateTests, longPollSpinTests, ledgerRaceTests, ledgerQuotaTests, laneOrderTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();

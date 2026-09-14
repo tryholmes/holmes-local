@@ -697,14 +697,24 @@ function postStarted(cmd, token) {
   postResult(body, token);
 }
 
+// Lane assignment is serialized in arrival order. Resolving the active tab takes
+// an await, so without this a later command with an explicit tabId could claim the
+// same lane first and run before an earlier navigate for that tab.
+let laneAssignments = Promise.resolve();
+
 function scheduleCommand(cmd, token) {
-  return (async () => {
+  const assigned = laneAssignments.then(async () => {
     const lane = await commandLane(cmd);
     const previous = commandLanes.get(lane);
     let release;
     const turn = new Promise(resolve => { release = resolve; });
     const tail = (previous || Promise.resolve()).then(() => turn);
     commandLanes.set(lane, tail);
+    return { lane, previous, tail, release };
+  });
+  laneAssignments = assigned.catch(() => {});
+  return (async () => {
+    const { lane, previous, tail, release } = await assigned;
     if (previous) await previous;
     const slot = acquireCommandSlot();
     await slot.ready;
