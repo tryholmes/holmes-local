@@ -73,6 +73,12 @@ struct ActionPlan {
 @MainActor
 enum ActionPlanner {
 
+    /// A plan, or the user facing reason there is none.
+    enum PlanResult {
+        case plan(ActionPlan)
+        case failure(String)
+    }
+
     /// Hard cap on plan length. The prompt asks for 2–6 steps; anything the
     /// model returns beyond this is dropped rather than trusted — a 40-step
     /// "plan" is a wandering agent, not a plan.
@@ -83,12 +89,13 @@ enum ActionPlanner {
     private static let screenTextCap = 4000
 
     /// Asks the local model to produce an ordered plan for accomplishing the
-    /// playbook's goal given the current context + recent memory. Returns nil
-    /// on any failure (Ollama not ready, transport, unparseable or empty plan)
-    /// — callers treat nil as "don't act".
+    /// playbook's goal given the current context + recent memory. An unreadable
+    /// reply gets ONE short repair request; any failure (Ollama not ready,
+    /// transport, unparseable or empty plan) comes back as a user facing
+    /// reason, also shown on the owning WorkActivity, and callers don't act.
     ///
     /// This does NOT execute — it only plans.
-    static func plan(playbookId: String, goal: String, context: PlaybookContext) async -> ActionPlan? {
+    static func plan(playbookId: String, goal: String, context: PlaybookContext) async -> PlanResult {
         // Recent memory: a compact digest so the plan knows what the user has
         // been working on (e.g. "reply to Ada's thread" resolves to the thread
         // Holmes just watched them read). MemoryStore is an actor; digest("")
@@ -119,23 +126,58 @@ enum ActionPlanner {
                 schema: planSchema,
                 priority: .agent
             )
+        } catch is CancellationError {
+            return .failure("Stopped.")
         } catch {
             print("[Holmes] ActionPlanner: plan request failed — \(error.localizedDescription)")
-            return nil
+            return failure("Couldn't plan this automation: \(error.localizedDescription)")
         }
 
-        guard let steps = parseSteps(raw: raw), !steps.isEmpty else {
-            print("[Holmes] ActionPlanner: unparseable or empty plan for \(playbookId)")
-            return nil
+        let parsed = await ModelJSONRepair.parse(
+            raw, what: "plan",
+            attempt: { reply in parsePlan(raw: reply) },
+            repair: { broken in
+                progress("Repairing an unreadable plan")
+                return try await OllamaClient.shared.complete(
+                    system: "You fix malformed JSON. Reply with exactly one valid JSON object.",
+                    user: ModelJSONRepair.repairPrompt(for: broken, shape: planShape),
+                    maxTokens: 2048,
+                    asJSON: true,
+                    schema: planSchema,
+                    priority: .agent)
+            })
+        guard let (steps, rationale) = parsed.value else {
+            let reason = parsed.failure ?? "The local model's plan was unreadable."
+            print("[Holmes] ActionPlanner: \(reason) (playbook \(playbookId))")
+            return failure(reason)
         }
+        guard !steps.isEmpty else {
+            return failure("The local model's plan had no steps to run.")
+        }
+        if parsed.repaired { print("[Holmes] ActionPlanner: plan for \(playbookId) parsed after one repair") }
 
-        return ActionPlan(
+        return .plan(ActionPlan(
             goal: goal,
             steps: steps,
             knownAddresses: knownAddresses,
-            rationale: parseRationale(raw: raw)
-        )
+            rationale: rationale
+        ))
     }
+
+    /// Records a planning failure where the user can see it (notch / panel)
+    /// instead of only the console.
+    private static func failure(_ reason: String) -> PlanResult {
+        progress(reason)
+        return .failure(reason)
+    }
+
+    private static func progress(_ detail: String) {
+        guard let id = WorkActivityScope.id else { return }
+        WorkActivityCenter.shared.update(id, phase: .working, detail: detail)
+    }
+
+    /// The reply shape restated for the repair request.
+    private static let planShape = #"{"steps":[{"action":"verb","input":{},"backend":"computer","reversible":true,"summary":"one line"}],"rationale":"short paragraph"}"#
 
     // MARK: - Prompts
 
@@ -243,32 +285,18 @@ enum ActionPlanner {
 
     // MARK: - Defensive parsing
 
-    /// The reply should be exactly the described object, but strip the classic
-    /// failure modes anyway (code fences, leading prose before the brace) so a
-    /// degraded reply still parses instead of nil-ing the whole plan.
-    private static func jsonObject(from raw: String) -> [String: Any]? {
-        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("```") {
-            // ```json\n{...}\n``` → keep the middle.
-            text = text
-                .replacingOccurrences(of: "```json", with: "")
-                .replacingOccurrences(of: "```", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        // Tolerate stray prose around the object by slicing brace-to-brace.
-        if let first = text.firstIndex(of: "{"), let last = text.lastIndex(of: "}"), first < last {
-            text = String(text[first...last])
-        }
-        guard let data = text.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    /// The reply should be exactly the described object, but a degraded reply
+    /// (code fences, prose before or after, braces in that prose) still parses:
+    /// ModelJSON finds the first balanced object that carries a steps array.
+    private static func parsePlan(raw: String) -> (steps: [PlannedStep], rationale: String)? {
+        guard let object = ModelJSON.firstObject(in: raw, where: { $0["steps"] is [Any] }),
+              let steps = parseSteps(object: object)
         else { return nil }
-        return object
+        return (steps, (object["rationale"] as? String) ?? "")
     }
 
-    private static func parseSteps(raw: String) -> [PlannedStep]? {
-        guard let object = jsonObject(from: raw),
-              let items = object["steps"] as? [[String: Any]]
-        else { return nil }
+    private static func parseSteps(object: [String: Any]) -> [PlannedStep]? {
+        guard let items = object["steps"] as? [[String: Any]] else { return nil }
 
         var steps: [PlannedStep] = []
         for item in items.prefix(maxSteps) {
@@ -318,7 +346,4 @@ enum ActionPlanner {
         return backend.isEmpty ? "computer" : backend
     }
 
-    private static func parseRationale(raw: String) -> String {
-        (jsonObject(from: raw)?["rationale"] as? String) ?? ""
-    }
 }

@@ -663,8 +663,14 @@ final class PlaybookEngine {
             return
         }
         let goal = playbook.makeGoal(ctx)
-        guard let plan = await ActionPlanner.plan(playbookId: playbook.id, goal: goal, context: ctx) else {
-            print("[Holmes] Playbook '\(playbook.id)' autonomy — no plan produced")
+        let plan: ActionPlan
+        switch await ActionPlanner.plan(playbookId: playbook.id, goal: goal, context: ctx) {
+        case .plan(let produced):
+            plan = produced
+        case .failure(let reason):
+            // Shown as this playbook's result in the notch, not just the console.
+            print("[Holmes] Playbook '\(playbook.id)' autonomy — no plan produced: \(reason)")
+            failureSummary = reason
             glow(.off)
             onCompletion?(false)
             return
