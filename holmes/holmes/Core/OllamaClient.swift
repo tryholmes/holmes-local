@@ -517,25 +517,46 @@ actor OllamaClient {
             return nil
         }
 
-        // A call NAMING an offered tool is recovered wherever it sits: after a
-        // sentence of narration, before one, or inside a code fence.
-        var named: ToolCall?
-        _ = ModelJSON.firstObject(in: text, where: { obj in
-            named = namedCall(obj)
-            return named != nil
-        })
-        if let named { return named }
-
-        // Bare computer arguments carry no tool name, so they only count when
-        // the whole message (after fence stripping) IS the object: a final prose
-        // answer that merely quotes one ("I clicked using {"action":…} and it
-        // worked") must not be re-executed.
-        let t = stripCodeFences(text).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard t.hasPrefix("{"), t.hasSuffix("}"),
-              let data = t.data(using: .utf8),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              obj["action"] is String, let name = match("computer") else { return nil }
+        // Only a message that IS a call is one: the whole message, or a code
+        // fence that ends the message after at most a short lead in. A final
+        // answer that quotes a past call ("Opened it with {…open_app…}.") must
+        // never be re executed.
+        guard let (obj, nothingBefore) = callObject(in: text) else { return nil }
+        if let call = namedCall(obj) { return call }
+        // Bare computer arguments carry no tool name: only with no lead in.
+        guard nothingBefore, obj["action"] is String, let name = match("computer") else { return nil }
         return ToolCall(id: nil, name: name, arguments: obj)
+    }
+
+    /// Longest sentence allowed before a fenced tool call ("I'll take a screenshot first.").
+    nonisolated static let maxToolCallLeadIn = 160
+
+    /// The JSON object a message consists of: the entire message, or the body
+    /// of a code fence that closes the message (nothing after it) with at most
+    /// `maxToolCallLeadIn` characters before it. `nothingBefore` is false when
+    /// a lead in precedes the fence.
+    nonisolated static func callObject(in text: String) -> (object: [String: Any], nothingBefore: Bool)? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var body = trimmed
+        var leadIn = ""
+        if let open = trimmed.range(of: "```") {
+            leadIn = String(trimmed[..<open.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard leadIn.count <= maxToolCallLeadIn else { return nil }
+            let rest = trimmed[open.upperBound...].drop(while: { $0.isLetter })
+            if let close = rest.range(of: "```") {
+                guard rest[close.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                body = String(rest[..<close.lowerBound])
+            } else {
+                body = String(rest)   // an unterminated fence at the end of the message
+            }
+            body = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard body.hasPrefix("{"),
+              let range = ModelJSON.balancedObjectRange(in: body, startingAt: body.startIndex),
+              range.upperBound == body.endIndex,
+              let data = ModelJSON.normalizeNewlinesInsideStrings(body).data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        return (obj, leadIn.isEmpty)
     }
 
     /// Runs one throwaway turn with exactly the system prompt + tools an agent
