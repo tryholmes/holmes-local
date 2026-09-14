@@ -350,6 +350,48 @@ self.HolmesAutomation = (function () {
   // over the loopback bridge, so screenshots are JPEG and kept under this size.
   var MAX_SCREENSHOT_CHARS = Number(TUNING.maxScreenshotChars) || 4 * 1024 * 1024;
   var SCREENSHOT_MAX_WIDTH = 1600;
+  // How long navigate waits for the page to finish loading. Below the app's 20s
+  // result timeout so a slow page reports loaded:false instead of timing out.
+  var NAVIGATE_TIMEOUT_MS = Number(TUNING.navigateTimeoutMs) || 15000;
+
+  // Resolves when the tab reports status "complete" after arm() (so a completion
+  // from the page being replaced is ignored), when it closes, or at the timeout.
+  // Listeners are attached before navigation starts so a fast load is never missed.
+  function waitForTabComplete(tabId, timeoutMs) {
+    var started = Date.now(), armed = false, done = false, timer = null, finish;
+    var promise = new Promise(function (resolve) { finish = resolve; });
+    function settle(result) {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      try { chrome.tabs.onUpdated.removeListener(onUpdated); } catch (_) { /* ignore */ }
+      try { chrome.tabs.onRemoved.removeListener(onRemoved); } catch (_) { /* ignore */ }
+      result.waitedMs = Date.now() - started;
+      finish(result);
+    }
+    function onUpdated(id, info) {
+      if (id === tabId && armed && info && info.status === "complete") settle({ complete: true });
+    }
+    function onRemoved(id) {
+      if (id === tabId) settle({ complete: false, closed: true });
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    timer = setTimeout(function () { settle({ complete: false, timedOut: true }); }, timeoutMs);
+    return {
+      promise: promise,
+      arm: async function () {
+        armed = true;
+        try {
+          var tab = await chrome.tabs.get(tabId);
+          if (tab && tab.status === "complete") settle({ complete: true });
+        } catch (e) {
+          settle({ complete: false, closed: true });
+        }
+      },
+      cancel: function () { settle({ complete: false, cancelled: true }); }
+    };
+  }
 
   function toBase64(buffer) {
     var bytes = new Uint8Array(buffer), binary = "";
@@ -421,8 +463,25 @@ self.HolmesAutomation = (function () {
           if (!params.url) return { ok: false, error: "navigate requires a url" };
           var navTabId = await resolveTabId(params);
           if (navTabId < 0) return { ok: false, error: "no target tab" };
-          var navTab = await chrome.tabs.update(navTabId, { url: String(params.url) });
-          return { ok: true, tabId: navTab.id, url: String(params.url) };
+          // Resolving right after tabs.update let the next command (click, extract)
+          // run against the page being replaced. Wait for the load, bounded.
+          var loading = waitForTabComplete(navTabId, NAVIGATE_TIMEOUT_MS);
+          var navTab;
+          try {
+            navTab = await chrome.tabs.update(navTabId, { url: String(params.url) });
+          } catch (e) {
+            loading.cancel();
+            throw e;
+          }
+          await loading.arm();
+          var loaded = await loading.promise;
+          if (loaded.closed) {
+            return { ok: false, tabId: navTabId, url: String(params.url), error: "the tab was closed while navigating" };
+          }
+          var landed = null;
+          try { landed = await chrome.tabs.get(navTabId); } catch (_) { /* closed after load */ }
+          return { ok: true, tabId: navTab.id, url: (landed && landed.url) || String(params.url),
+            title: landed ? landed.title : undefined, loaded: !!loaded.complete, waitedMs: loaded.waitedMs };
         }
 
         case "openTab": {

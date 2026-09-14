@@ -513,6 +513,38 @@ async function concurrencyTests() {
   worker.dispose();
 }
 
+async function navigateTests() {
+  // navigate resolves once the tab finishes loading.
+  let worker = loadWorker({
+    fetch: async () => ({ status: 503, body: {} }),
+    onNavigate(tab, events) {
+      setTimeout(() => { tab.status = 'complete'; events.updated.emit(tab.id, { status: 'complete' }, tab); }, 150);
+    }
+  });
+  let started = Date.now();
+  let result = await worker.context.HolmesAutomation.execute({ action: 'navigate', params: { url: 'https://example.test/next', tabId: 17 } });
+  let elapsed = Date.now() - started;
+  check(result.ok === true && result.loaded === true && elapsed >= 140, `navigate waits for the page to finish loading (${elapsed}ms)`);
+  worker.dispose();
+
+  // A page that never finishes loading still resolves, bounded, and says so.
+  worker = loadWorker({ config: { navigateTimeoutMs: 120 }, fetch: async () => ({ status: 503, body: {} }), onNavigate() {} });
+  started = Date.now();
+  result = await worker.context.HolmesAutomation.execute({ action: 'navigate', params: { url: 'https://slow.test/', tabId: 17 } });
+  elapsed = Date.now() - started;
+  check(result.ok === true && result.loaded === false && elapsed < 1000, `navigate gives up waiting after its bound (${elapsed}ms)`);
+  worker.dispose();
+
+  // Closing the tab mid navigation ends the wait with an error.
+  worker = loadWorker({
+    fetch: async () => ({ status: 503, body: {} }),
+    onNavigate(tab, events) { setTimeout(() => events.removed.emit(tab.id, {}), 40); }
+  });
+  result = await worker.context.HolmesAutomation.execute({ action: 'navigate', params: { url: 'https://gone.test/', tabId: 17 } });
+  check(result.ok === false && /closed/i.test(result.error), 'A tab closed during navigation reports an error instead of waiting');
+  worker.dispose();
+}
+
 module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
 
 if (require.main === module) {
@@ -522,7 +554,7 @@ if (require.main === module) {
     setInterval(() => {}, 1000);
     const only = process.argv[2];
     const suites = { reinjectionTests, probeTests, transportTests, resultDeliveryTests, idempotencyTests,
-      concurrencyTests };
+      concurrencyTests, navigateTests };
     for (const [name, suite] of Object.entries(suites)) {
       if (only && name !== only) continue;
       await suite();
