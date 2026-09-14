@@ -885,6 +885,86 @@ enum EmailPredictionGenerator {
     }
 }
 
+/// Bounded waits for optional context sources. A source that misses its
+/// deadline is skipped: the caller stops waiting, the work is cancelled where
+/// possible, and a late result is ignored.
+enum EmailDeadline {
+    private final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        func claim() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if done { return false }
+            done = true
+            return true
+        }
+    }
+
+    static func first<T>(within seconds: Double, _ work: @escaping () async -> T) async -> T? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+            let once = Once()
+            let task = Task {
+                let value = await work()
+                if once.claim() { continuation.resume(returning: value) }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                if once.claim() {
+                    task.cancel()
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    /// Blocking work (NSAppleScript, EventKit queries) on one dedicated thread,
+    /// never the main thread. NSAppleScript is only used from this one thread.
+    static func firstOnThread<T>(within seconds: Double, _ work: @escaping () -> T) async -> T? {
+        await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
+            let once = Once()
+            worker.perform {
+                let value = work()
+                if once.claim() { continuation.resume(returning: value) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) {
+                if once.claim() { continuation.resume(returning: nil) }
+            }
+        }
+    }
+
+    private static let worker = SerialWorkerThread()
+}
+
+final class SerialWorkerThread: Thread, @unchecked Sendable {
+    private let condition = NSCondition()
+    private var queue: [() -> Void] = []
+
+    override init() {
+        super.init()
+        name = "Holmes email context"
+        qualityOfService = .utility
+        start()
+    }
+
+    func perform(_ block: @escaping () -> Void) {
+        condition.lock()
+        queue.append(block)
+        condition.signal()
+        condition.unlock()
+    }
+
+    override func main() {
+        while true {
+            condition.lock()
+            while queue.isEmpty { condition.wait() }
+            let block = queue.removeFirst()
+            condition.unlock()
+            autoreleasepool { block() }
+        }
+    }
+}
+
 enum EmailPredictionError: LocalizedError, Equatable {
     case rejected([String])
     var errorDescription: String? {

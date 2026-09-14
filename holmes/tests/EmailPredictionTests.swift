@@ -174,6 +174,20 @@ struct EmailPredictionTests {
             answer(["body": "Hi Dana,\n\nThanks for the update."])
         }
         expect(noSubject.subject == nil && noSubject.body == "Hi Dana,\n\nThanks for the update.", "A good body is still written when the subject never arrives")
+        // Regression: slow context sources (AppleScript, Composio) could hold a prediction indefinitely.
+        let slowStarted = Date()
+        let slow: String? = await EmailDeadline.first(within: 0.2) {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            return Task.isCancelled ? "cancelled late" : "late"
+        }
+        expect(slow == nil && Date().timeIntervalSince(slowStarted) < 1, "The deadline stops waiting and ignores a late result")
+        let quick: String? = await EmailDeadline.first(within: 2) { "ready" }
+        expect(quick == "ready", "Work that finishes in time returns its value")
+        let threaded: Bool? = await EmailDeadline.firstOnThread(within: 2) { !Thread.isMainThread }
+        expect(threaded == true, "Blocking work runs off the main thread")
+        let blockingStarted = Date()
+        let blocking: Int? = await EmailDeadline.firstOnThread(within: 0.2) { Thread.sleep(forTimeInterval: 1); return 1 }
+        expect(blocking == nil && Date().timeIntervalSince(blockingStarted) < 0.8, "Blocking work on the dedicated thread cannot hold the caller past the deadline")
         print("Passed \(checks) email prediction prompt, cleanup, grounding and action checks")
     }
 }

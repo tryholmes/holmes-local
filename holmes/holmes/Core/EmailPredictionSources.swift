@@ -7,14 +7,15 @@ import Foundation
 /// and silent: no permission prompt, no app launch, and a failure means skip.
 @MainActor
 enum EmailContextGatherer {
-    private static let eventStore = EKEventStore()
+    private final class StoreHolder: @unchecked Sendable { let store = EKEventStore() }
+    private static let calendarStore = StoreHolder()
 
     static func gather(for compose: EmailComposeSnapshot, instruction: String) async -> EmailPredictionContext {
         var context = EmailPredictionContext(compose: compose)
         context.instruction = instruction
         context.now = Date()
         context.timeZone = .current
-        let calendar = calendarBlocks(now: context.now)
+        let calendar = await calendarBlocks(now: context.now)
         context.calendarAvailable = calendar.available
         context.calendar = calendar.blocks
         context.memory = await memory(for: compose)
@@ -24,14 +25,19 @@ enum EmailContextGatherer {
 
     /// Busy blocks for the prompt's days, only when calendar access was already
     /// granted. This path never requests access.
-    static func calendarBlocks(now: Date) -> (available: Bool, blocks: [EmailCalendarBlock]) {
+    static func calendarBlocks(now: Date) async -> (available: Bool, blocks: [EmailCalendarBlock]) {
+        let holder = calendarStore
+        return await EmailDeadline.firstOnThread(within: 2) { queryCalendar(holder.store, now: now) } ?? (false, [])
+    }
+
+    nonisolated private static func queryCalendar(_ store: EKEventStore, now: Date) -> (available: Bool, blocks: [EmailCalendarBlock]) {
         let status = EKEventStore.authorizationStatus(for: .event)
         guard status == .fullAccess || status == .authorized else { return (false, []) }
         let calendar = Calendar.current
         let start = calendar.startOfDay(for: now)
         guard let end = calendar.date(byAdding: .day, value: EmailPredictionPrompt.calendarDays + 1, to: start) else { return (false, []) }
-        let predicate = eventStore.predicateForEvents(withStart: start, end: end, calendars: nil)
-        let blocks = eventStore.events(matching: predicate)
+        let predicate = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        let blocks = store.events(matching: predicate)
             .filter { $0.availability != .free && $0.status != .canceled }
             .sorted { $0.startDate < $1.startDate }
             .prefix(40)
@@ -74,7 +80,7 @@ enum EmailContextGatherer {
     static func sentSamples(for compose: EmailComposeSnapshot) async -> [EmailSentSample] {
         guard let recipient = compose.recipients.first, EmailComposeSnapshot.isEmailAddress(recipient) else { return [] }
         if let fromGmail = await composioSent(to: recipient), !fromGmail.isEmpty { return fromGmail }
-        return appleMailSent(to: recipient)
+        return await EmailDeadline.firstOnThread(within: 4) { appleMailSent(to: recipient) } ?? []
     }
 
     private static func composioSent(to address: String) async -> [EmailSentSample]? {
@@ -89,7 +95,7 @@ enum EmailContextGatherer {
         } else {
             return nil
         }
-        guard let result = await withDeadline(8, { await MCPClient.shared.call(namespacedName: call.name, arguments: call.arguments) }),
+        guard let result = await EmailDeadline.first(within: 8, { await MCPClient.shared.call(namespacedName: call.name, arguments: call.arguments) }),
               !result.isError else { return nil }
         return parseSentMail(result.text, to: address)
     }
@@ -118,9 +124,10 @@ enum EmailContextGatherer {
         return samples
     }
 
-    /// Runs on the main thread, as NSAppleScript requires. Reads at most 25
-    /// recent sent messages and never launches Mail or asks for automation.
-    private static func appleMailSent(to address: String) -> [EmailSentSample] {
+    /// Runs on the dedicated context thread with a deadline, never the main
+    /// thread. Reads at most 25 recent sent messages and never launches Mail or
+    /// asks for automation.
+    nonisolated private static func appleMailSent(to address: String) -> [EmailSentSample] {
         guard !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.mail").isEmpty,
               automationAlreadyAllowed("com.apple.mail") else { return [] }
         let wanted = address.lowercased().filter { !"\"\\".contains($0) }
@@ -157,7 +164,7 @@ enum EmailContextGatherer {
         }
     }
 
-    private static func automationAlreadyAllowed(_ bundleIdentifier: String) -> Bool {
+    nonisolated private static func automationAlreadyAllowed(_ bundleIdentifier: String) -> Bool {
         var target = AEAddressDesc()
         let created = bundleIdentifier.withCString { pointer in
             AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
@@ -167,24 +174,4 @@ enum EmailContextGatherer {
         return AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard), AEEventID(typeWildCard), false) == noErr
     }
 
-    private final class Once { var done = false }
-
-    /// The first of the work or the deadline; late results are ignored.
-    private static func withDeadline<T>(_ seconds: Double, _ work: @escaping @MainActor () async -> T) async -> T? {
-        await withCheckedContinuation { (continuation: CheckedContinuation<T?, Never>) in
-            let once = Once()
-            Task { @MainActor in
-                let value = await work()
-                guard !once.done else { return }
-                once.done = true
-                continuation.resume(returning: value)
-            }
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                guard !once.done else { return }
-                once.done = true
-                continuation.resume(returning: nil)
-            }
-        }
-    }
 }
