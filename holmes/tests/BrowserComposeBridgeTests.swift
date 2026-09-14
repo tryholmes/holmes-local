@@ -237,6 +237,7 @@ import Foundation
         await BridgeLoopbackTests.runCommandChannel(check: socketCheck)
         await BridgeLoopbackTests.runBodyLimits(check: socketCheck)
         await BridgeLoopbackTests.runLifecycle(check: socketCheck)
+        await BridgeLoopbackTests.runPairing(check: socketCheck)
         print("Browser bridge loopback sockets: \(socketChecks) checks passed against the real server on an ephemeral port")
     }
 }

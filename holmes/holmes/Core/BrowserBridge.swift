@@ -74,6 +74,9 @@ enum BridgeProtocol {
     static let maxConcurrentClients = 8
     /// How long the accept loop waits for a free handler before answering 503.
     static let slotWaitSeconds: Double = 2
+    /// Paired extension tokens kept at once (one per browser or profile). Pairing
+    /// one more than this forgets the least recently seen.
+    static let maxPairedExtensions = 8
 
     // ── Browser-automation command channel ──────────────────────────
     // The Mac app is the PRODUCER: it leaves commands at GET /commands, which the
@@ -137,6 +140,16 @@ struct BridgeBackoff {
     }
 
     mutating func success() { consecutiveFailures = 0 }
+}
+
+/// One authorized request that proves an extension is alive, handed from the
+/// socket layer to the main actor: which token authenticated it, the browser
+/// instance and focus it reported, and (for heartbeats) its body.
+struct BridgeSighting: Sendable {
+    let token: String
+    let instance: String?
+    let focused: Bool?
+    let body: Data?
 }
 
 /// The browser command queue, shared by the main actor (producer) and the socket
@@ -459,10 +472,18 @@ final class BrowserBridge {
     /// it into the extension; never logged in full.
     let token: String
 
-    /// The token the extension presented while the user had pairing armed.
-    /// Surfaced in Settings so "paired with an extension" is visible state, not
-    /// something the user has to infer from traffic.
-    private(set) var pairedToken: String?
+    /// Every extension the user paired, one per browser or profile. Surfaced in
+    /// Settings (with Remove) so "paired" is visible state, not something the user
+    /// has to infer from traffic. Pairing a new browser never drops the others.
+    private(set) var pairedExtensions: [PairedExtension] = []
+
+    /// The most recently active paired token. Kept for callers that only need to
+    /// know whether anything is paired at all.
+    var pairedToken: String? {
+        pairedExtensions.max { ($0.lastSeen ?? $0.pairedAt) < ($1.lastSeen ?? $1.pairedAt) }?.token
+    }
+
+    @ObservationIgnored private var pairingStore = PairedExtensionStore.files
 
     /// When the user-armed pairing window closes. Nil once it has expired or been
     /// consumed. Observable so Settings can count it down.
@@ -555,17 +576,20 @@ final class BrowserBridge {
 
     private init() {
         token = BridgeToken.loadOrCreate()
-        pairedToken = BridgeToken.loadPaired()
+        pairedExtensions = pairingStore.load()
     }
 
     #if DEBUG
     /// Isolated integration harness: real queue/parser, fake OS identity and no
     /// token files, browser access or app activation. `port` 0 binds an ephemeral
     /// loopback port when a test calls start().
-    init(testToken: String, environment: ContextEnvironment, port: UInt16 = 0) {
+    init(testToken: String, environment: ContextEnvironment, port: UInt16 = 0,
+         pairingStore: PairedExtensionStore = .memory()) {
         token = testToken
         contextEnvironment = environment
         listenPort = port
+        self.pairingStore = pairingStore
+        pairedExtensions = pairingStore.load()
     }
     func testIngest(_ data: Data) -> LiveContext? { ingest(data) }
     func testDrainCommands(instance: String?) -> Data { drainCommandsJSON(forInstance: instance) }
@@ -597,14 +621,14 @@ final class BrowserBridge {
         let server = BridgeServer(
             port: listenPort,
             token: token,
-            pairedToken: pairedToken,
+            pairedTokens: pairedExtensions.map(\.token),
             maxBodyBytes: Self.maxBodyBytes,
             commandQueue: commandQueue,
             onPayload: { [weak self] data in
                 Task { @MainActor in self?.ingest(data) }
             },
-            onHeartbeat: { [weak self] in
-                Task { @MainActor in self?.noteHeartbeat() }
+            onSighting: { [weak self] sighting in
+                Task { @MainActor in self?.noteSighting(sighting) }
             },
             onUnauthorized: { [weak self] path in
                 Task { @MainActor in self?.noteUnauthorized(path) }
@@ -715,11 +739,10 @@ final class BrowserBridge {
     /// an authorization — a loopback port is reachable by every process on this
     /// Mac, and by any page that can talk to one.
     ///
-    /// Arming also DROPS the current pairing, so re-installing the extension (new
-    /// random secret) is a two-click recovery rather than a permanent lockout.
+    /// Arming does NOT drop existing pairings: a second browser (or a re-installed
+    /// extension with a new random secret) is added alongside the others. A stale
+    /// pairing is removed explicitly from Settings.
     func beginPairing() {
-        pairedToken = nil
-        BridgeToken.clearPaired()
         let deadline = Date().addingTimeInterval(Self.pairingWindowSeconds)
         pairingWindowEnds = deadline
         server?.openPairingWindow(until: deadline)
@@ -990,10 +1013,49 @@ final class BrowserBridge {
     /// immediately — pairing is one-shot by construction.
     private func notePaired(_ secret: String) {
         pairingWindowEnds = nil
-        guard pairedToken != secret else { return }
-        pairedToken = secret
-        BridgeToken.savePaired(secret)
-        print("[Bridge] Paired with an extension (token …\(secret.suffix(4)))")
+        guard !pairedExtensions.contains(where: { $0.token == secret }) else { return }
+        let now = Date()
+        pairedExtensions.append(PairedExtension(token: secret, label: "Browser extension", instanceID: nil,
+                                                pairedAt: now, lastSeen: now))
+        if pairedExtensions.count > BridgeProtocol.maxPairedExtensions {
+            pairedExtensions.sort { ($0.lastSeen ?? $0.pairedAt) > ($1.lastSeen ?? $1.pairedAt) }
+            pairedExtensions.removeLast(pairedExtensions.count - BridgeProtocol.maxPairedExtensions)
+            server?.setPairedTokens(pairedExtensions.map(\.token))
+        }
+        pairingStore.save(pairedExtensions)
+        print("[Bridge] Paired with an extension (token …\(secret.suffix(4))); \(pairedExtensions.count) paired")
+    }
+
+    /// Forgets one paired extension (Settings ▸ Remove). Its token is refused from
+    /// the next request on; the other pairings are untouched.
+    func removePairedExtension(_ token: String) {
+        pairedExtensions.removeAll { $0.token == token }
+        server?.setPairedTokens(pairedExtensions.map(\.token))
+        pairingStore.save(pairedExtensions)
+    }
+
+    /// A heartbeat or poll authenticated with a paired token: keeps the connection
+    /// fresh and labels that pairing with the browser instance it came from.
+    private func noteSighting(_ sighting: BridgeSighting) {
+        noteHeartbeat()
+        guard let index = pairedExtensions.firstIndex(where: { $0.token == sighting.token }) else { return }
+        var entry = pairedExtensions[index]
+        let now = Date()
+        var persist = entry.lastSeen.map { now.timeIntervalSince($0) > 600 } ?? true
+        if let instance = sighting.instance, !instance.isEmpty, entry.instanceID != instance {
+            entry.instanceID = instance
+            persist = true
+        }
+        if let instance = entry.instanceID, let bundle = browserBundlesByInstance[instance],
+           let name = contextEnvironment.nameForBundle(bundle), entry.label != name {
+            entry.label = name
+            persist = true
+        }
+        let refreshVisible = entry.lastSeen.map { now.timeIntervalSince($0) > 5 } ?? true
+        entry.lastSeen = now
+        guard persist || refreshVisible else { return }
+        pairedExtensions[index] = entry
+        if persist { pairingStore.save(pairedExtensions) }
     }
 
     /// Parses the payload ON THE MAIN ACTOR (so it can read the frontmost app) and
@@ -1158,25 +1220,46 @@ enum BridgeToken {
         return value
     }
 
-    static func savePaired(_ secret: String) {
+    /// Every paired extension (paired_tokens.json, 0600). Migrates the single
+    /// paired_token file an older build wrote.
+    static var pairedListURL: URL { directory.appendingPathComponent("paired_tokens.json", isDirectory: false) }
+
+    static func loadPairedExtensions() -> [PairedExtension] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        if let data = try? Data(contentsOf: pairedListURL),
+           let list = try? decoder.decode([PairedExtension].self, from: data) {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pairedListURL.path)
+            return list.filter { $0.token.count >= 16 }
+        }
+        guard let legacy = loadPaired() else { return [] }
+        let migrated = [PairedExtension(token: legacy, label: "Browser extension", instanceID: nil,
+                                        pairedAt: Date(), lastSeen: nil)]
+        savePairedExtensions(migrated)
+        return migrated
+    }
+
+    static func savePairedExtensions(_ list: [PairedExtension]) {
         let fm = FileManager.default
         if !fm.fileExists(atPath: directory.path) {
             try? fm.createDirectory(at: directory, withIntermediateDirectories: true,
                                     attributes: [.posixPermissions: 0o700])
         }
-        // Replace rather than append: exactly one extension is paired at a time.
-        try? fm.removeItem(at: pairedFileURL)
-        if !fm.createFile(atPath: pairedFileURL.path, contents: Data(secret.utf8),
-                          attributes: [.posixPermissions: 0o600]) {
-            print("[Bridge] WARNING: couldn't persist the pairing at \(pairedFileURL.path) — it will be re-established next launch")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(list) else { return }
+        // Write beside the target with 0600 from the start, then rename over it, so
+        // the secrets are never world readable and a crash never leaves half a file.
+        let temporary = directory.appendingPathComponent(".paired_tokens.\(UUID().uuidString).tmp")
+        guard fm.createFile(atPath: temporary.path, contents: data, attributes: [.posixPermissions: 0o600]),
+              rename(temporary.path, pairedListURL.path) == 0 else {
+            try? fm.removeItem(at: temporary)
+            print("[Bridge] WARNING: couldn't persist pairings at \(pairedListURL.path); they will need pairing again next launch")
+            return
         }
-    }
-
-    /// Forgets the current pairing. Called when the user arms a new pairing window
-    /// so a re-installed extension (which has a brand-new random secret) can claim
-    /// the bridge instead of being locked out by the old one.
-    static func clearPaired() {
-        try? FileManager.default.removeItem(at: pairedFileURL)
+        // The list is now authoritative; a leftover single token file must not
+        // resurrect a pairing the user removed.
+        try? fm.removeItem(at: pairedFileURL)
     }
 
     static func loadOrCreate() -> String {
@@ -1208,6 +1291,36 @@ enum BridgeToken {
     }
 }
 
+/// One paired extension. The token is the secret the extension minted; label and
+/// instance are learned from its traffic so Settings can say which browser it is.
+struct PairedExtension: Codable, Equatable, Identifiable, Sendable {
+    var token: String
+    var label: String
+    var instanceID: String?
+    var pairedAt: Date
+    var lastSeen: Date?
+    var id: String { token }
+    /// Last four characters, safe to show in Settings.
+    var tokenSuffix: String { String(token.suffix(4)) }
+}
+
+/// Where pairings are persisted. The app uses the 0600 files; tests use memory so
+/// they never touch the user's real pairing.
+struct PairedExtensionStore {
+    let load: () -> [PairedExtension]
+    let save: ([PairedExtension]) -> Void
+
+    static var files: PairedExtensionStore {
+        PairedExtensionStore(load: BridgeToken.loadPairedExtensions, save: BridgeToken.savePairedExtensions)
+    }
+
+    static func memory(_ initial: [PairedExtension] = []) -> PairedExtensionStore {
+        final class Box { var value: [PairedExtension]; init(_ value: [PairedExtension]) { self.value = value } }
+        let box = Box(initial)
+        return PairedExtensionStore(load: { box.value }, save: { box.value = $0 })
+    }
+}
+
 // MARK: - BridgeServer
 // The raw BSD-socket HTTP layer (no entitlements needed; the app is unsandboxed).
 // Deliberately OUTSIDE the main actor: accept()/recv() block. It authenticates,
@@ -1227,7 +1340,7 @@ private final class BridgeServer: @unchecked Sendable {
     /// Read directly (lock guarded) by GET /commands. No main thread involved.
     private let commandQueue: BrowserCommandQueue
     private let onPayload: @Sendable (Data) -> Void
-    private let onHeartbeat: @Sendable () -> Void
+    private let onSighting: @Sendable (BridgeSighting) -> Void
     private let onUnauthorized: @Sendable (String) -> Void
     private let onPaired: @Sendable (String) -> Void
     /// Hands off a POST /command-result body (fire-and-forget, like onPayload).
@@ -1236,9 +1349,9 @@ private final class BridgeServer: @unchecked Sendable {
     private let lock = NSLock()
     private var serverFD: Int32 = -1
     private var running = false
-    /// The extension's own secret. Read and written under `lock` because every
-    /// connection is handled on its own queue.
-    private var pairedToken: String?
+    /// The paired extensions' own secrets (one per browser). Read and written under
+    /// `lock` because every connection is handled on its own queue.
+    private var pairedTokens: Set<String>
     /// Deadline of the user-armed pairing window. Nil (or past) means the ONLY
     /// accepted secrets are the issued token and the one already paired — no
     /// caller can talk its way into the bridge on its own initiative.
@@ -1255,21 +1368,21 @@ private final class BridgeServer: @unchecked Sendable {
 
     init(port: UInt16,
          token: String,
-         pairedToken: String?,
+         pairedTokens: [String],
          maxBodyBytes: Int,
          commandQueue: BrowserCommandQueue,
          onPayload: @escaping @Sendable (Data) -> Void,
-         onHeartbeat: @escaping @Sendable () -> Void,
+         onSighting: @escaping @Sendable (BridgeSighting) -> Void,
          onUnauthorized: @escaping @Sendable (String) -> Void,
          onPaired: @escaping @Sendable (String) -> Void,
          onCommandResult: @escaping @Sendable (Data) -> Void) {
         self.port = port
         self.token = token
-        self.pairedToken = pairedToken
+        self.pairedTokens = Set(pairedTokens)
         self.maxBodyBytes = maxBodyBytes
         self.commandQueue = commandQueue
         self.onPayload = onPayload
-        self.onHeartbeat = onHeartbeat
+        self.onSighting = onSighting
         self.onUnauthorized = onUnauthorized
         self.onPaired = onPaired
         self.onCommandResult = onCommandResult
@@ -1440,7 +1553,7 @@ private final class BridgeServer: @unchecked Sendable {
             return
         }
 
-        guard tokenMatches(request.headers[BridgeProtocol.tokenHeaderKey], origin: origin) else {
+        guard let matchedToken = authenticatedToken(request.headers[BridgeProtocol.tokenHeaderKey], origin: origin) else {
             onUnauthorized(path)
             writeJSON(fd, status: "401 Unauthorized", origin: origin, object: [
                 "error": "Missing or invalid \(BridgeProtocol.tokenHeader)",
@@ -1452,7 +1565,10 @@ private final class BridgeServer: @unchecked Sendable {
         // Heartbeats keep `isExtensionConnected` true while the user reads a page
         // that produces no new context.
         if path == "/heartbeat" {
-            onHeartbeat()
+            let instance = request.headers[BridgeProtocol.instanceHeaderKey]
+            let focused = Self.focusedFlag(request.headers[BridgeProtocol.focusedHeaderKey])
+            commandQueue.noteSeen(instance: instance, focused: focused)
+            onSighting(BridgeSighting(token: matchedToken, instance: instance, focused: focused, body: request.body))
             writeJSON(fd, status: "200 OK", origin: origin, object: ["ok": true])
             return
         }
@@ -1464,9 +1580,9 @@ private final class BridgeServer: @unchecked Sendable {
         if request.method == "GET" && path == BridgeProtocol.commandsPath {
             // Proof of life, same as a heartbeat. The watchdog keeps the extension
             // "connected" while its worker is polling.
-            onHeartbeat()
             let instance = request.headers[BridgeProtocol.instanceHeaderKey]
-            let focused = request.headers[BridgeProtocol.focusedHeaderKey].map { $0 == "1" || $0.lowercased() == "true" }
+            let focused = Self.focusedFlag(request.headers[BridgeProtocol.focusedHeaderKey])
+            onSighting(BridgeSighting(token: matchedToken, instance: instance, focused: focused, body: nil))
             let wait = max(0, min(Double(request.headers[BridgeProtocol.longPollHeaderKey] ?? "") ?? 0,
                                   BridgeProtocol.longPollMaxSeconds))
             let batch = commandQueue.drain(instance: instance, focused: focused, wait: wait,
@@ -1521,63 +1637,71 @@ private final class BridgeServer: @unchecked Sendable {
     /// never seen is adopted ONLY inside the window the user armed in Settings —
     /// see the pairing note at the top of this file. Every comparison is
     /// constant-time so the port can't be used to guess a token one byte at a time.
-    private func tokenMatches(_ provided: String?, origin: String?) -> Bool {
-        guard let provided else { return false }
+    /// Returns the secret that authenticated the request (the issued token or one
+    /// of the paired ones), or nil. Every comparison is constant-time.
+    private func authenticatedToken(_ provided: String?, origin: String?) -> String? {
+        guard let provided else { return nil }
         let candidate = provided.trimmingCharacters(in: .whitespaces)
-        if constantTimeEqual(candidate, token) { return true }
+        if constantTimeEqual(candidate, token) { return token }
 
         lock.lock()
-        let known = pairedToken
+        let known = pairedTokens
         let pairingOpen = (pairingWindowEnds.map { $0 > Date() }) ?? false
         lock.unlock()
 
-        if let known { return constantTimeEqual(candidate, known) }
+        // Compare against every paired token without an early exit.
+        var matched: String?
+        for secret in known where constantTimeEqual(candidate, secret) { matched = secret }
+        if let matched { return matched }
 
-        // Unknown secret, and the user hasn't armed pairing: reject. This is the
-        // whole fix — adopting here on first contact meant any local process, or
-        // any page that could clear the preflight, could claim the bridge, lock the
-        // real extension out permanently, and then feed .exact context straight
-        // into an agent that holds tool access.
-        guard pairingOpen else { return false }
+        // Unknown secret, and the user hasn't armed pairing: reject. Adopting on
+        // first contact meant any local process, or any page that could clear the
+        // preflight, could claim the bridge and feed .exact context straight into
+        // an agent that holds tool access.
+        guard pairingOpen else { return nil }
 
         // Shape check, so a stray probe with an empty or junk header can't consume
         // the armed window.
         guard (16...256).contains(candidate.count),
               candidate.unicodeScalars.allSatisfy({ $0.value > 0x20 && $0.value < 0x7F })
-        else { return false }
+        else { return nil }
 
-        // Even inside the window, page JavaScript can never pair: an http(s)
-        // Origin means the request came from a site, not from the Holmes
-        // extension's background worker. No Origin at all is fine — that is a
-        // native client, which the user armed the window for.
+        // Even inside the window only a browser EXTENSION may pair. An http(s)
+        // Origin is page JavaScript, and no Origin at all is a native process:
+        // any app on this Mac could otherwise claim the window the user opened
+        // for their browser. Native tools use the issued token instead.
         guard Self.mayPair(origin: origin) else {
-            print("[Bridge] Refused to pair with origin \(origin ?? "?") — only extension origins may pair")
-            return false
+            print("[Bridge] Refused to pair with origin \(origin ?? "none") — only extension origins may pair")
+            return nil
         }
 
         lock.lock()
         // Re-check under the lock: two concurrent requests must not both pair.
-        if let raced = pairedToken {
-            lock.unlock()
-            return constantTimeEqual(candidate, raced)
-        }
         guard (pairingWindowEnds.map { $0 > Date() }) ?? false else {
+            let raced = pairedTokens.first { constantTimeEqual(candidate, $0) }
             lock.unlock()
-            return false
+            return raced
         }
-        pairedToken = candidate
+        pairedTokens.insert(candidate)
         pairingWindowEnds = nil   // one-shot: the window closes the moment it is used
         lock.unlock()
 
         onPaired(candidate)
-        return true
+        return candidate
     }
 
-    /// Opens the user-armed adoption window (called from Settings).
+    /// Opens the user-armed adoption window (called from Settings). Existing
+    /// pairings stay valid.
     func openPairingWindow(until deadline: Date) {
         lock.lock()
-        pairedToken = nil
         pairingWindowEnds = deadline
+        lock.unlock()
+    }
+
+    /// Replaces the accepted paired tokens (after Settings removed one).
+    func setPairedTokens(_ tokens: [String]) {
+        lock.lock()
+        pairedTokens = Set(tokens)
         lock.unlock()
     }
 
@@ -1588,14 +1712,13 @@ private final class BridgeServer: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Origins allowed to pair. NO Origin header at all means a native client
-    /// (curl, another Mac app) — permitted, because the user armed the window for
-    /// exactly that. Any browser-supplied origin must be an extension: a site
-    /// origin is page JavaScript, and "null" is an opaque browser origin (sandboxed
-    /// iframe, file://), which is page JavaScript wearing a disguise.
-    private static func mayPair(origin: String?) -> Bool {
+    /// Origins allowed to pair: browser extension origins only. Chrome, Comet, Arc,
+    /// Brave, Edge and other Chromium browsers all post from chrome-extension://.
+    /// No Origin is a native process, a site origin is page JavaScript, and "null"
+    /// is an opaque browser origin (sandboxed iframe, file://); none may pair.
+    static func mayPair(origin: String?) -> Bool {
         guard let origin = origin?.trimmingCharacters(in: .whitespaces),
-              !origin.isEmpty else { return true }
+              !origin.isEmpty else { return false }
         return isExtensionOrigin(origin)
     }
 
@@ -1755,6 +1878,12 @@ private final class BridgeServer: @unchecked Sendable {
             }
             return true
         }
+    }
+
+    /// The worker's "one of my windows has OS focus" header, or nil when absent.
+    static func focusedFlag(_ value: String?) -> Bool? {
+        guard let value = value?.trimmingCharacters(in: .whitespaces).lowercased(), !value.isEmpty else { return nil }
+        return value == "1" || value == "true"
     }
 
     /// Minimal 503 for a connection that arrived while every handler was busy.

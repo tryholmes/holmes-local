@@ -242,6 +242,87 @@ enum BridgeLoopbackTests {
         check(healthy?.status == 200, "Service resumes once stalled clients go away")
         contender.stop()
     }
+
+    static func beat(_ port: UInt16, secret: String, origin: String?, instance: String? = nil, focused: Bool? = nil) -> Int {
+        var headers = ["X-Holmes-Token": secret, "Content-Type": "application/json"]
+        if let origin { headers["Origin"] = origin }
+        if let instance { headers["X-Holmes-Browser-Instance"] = instance }
+        if let focused { headers["X-Holmes-Browser-Focused"] = focused ? "1" : "0" }
+        return LoopbackHTTP.request(port: port, method: "POST", path: "/heartbeat", headers: headers,
+                                    body: Data("{}".utf8))?.status ?? -1
+    }
+
+    /// Several paired browsers, extension origin pairing, removal, and routing of
+    /// commands that name no browser.
+    @MainActor static func runPairing(check: (Bool, String) -> Void) async {
+        let store = PairedExtensionStore.memory()
+        let environment = BrowserBridge.ContextEnvironment(frontmost: { .init(name: "Google Chrome", bundleIdentifier: "com.google.Chrome") },
+            ownBundleIdentifier: "test.holmes", nameForBundle: { _ in nil })
+        let bridge = BrowserBridge(testToken: token, environment: environment, port: 0, pairingStore: store)
+        bridge.start()
+        let port = bridge.boundPort!
+        let chrome = "chrome-extension-secret-0001", comet = "comet-extension-secret-00002"
+
+        check(await LoopbackHTTP.background { beat(port, secret: chrome, origin: "chrome-extension://abc") } == 401,
+              "An unknown token is refused while pairing is not armed")
+        bridge.beginPairing()
+        check(await LoopbackHTTP.background { beat(port, secret: chrome, origin: nil) } == 401,
+              "A native client with no Origin cannot claim the pairing window")
+        check(await LoopbackHTTP.background { beat(port, secret: chrome, origin: "https://evil.example") } == 401,
+              "A web page origin cannot claim the pairing window")
+        check(bridge.isPairing, "Refused attempts do not consume the window")
+        check(await LoopbackHTTP.background { beat(port, secret: chrome, origin: "chrome-extension://abc", instance: "chrome-inst") } == 200,
+              "An extension origin pairs inside the window")
+        await waitUntil("chrome paired") { bridge.pairedExtensions.count == 1 }
+        check(!bridge.isPairing, "The window closes after one adoption")
+
+        bridge.beginPairing()
+        check(await LoopbackHTTP.background { beat(port, secret: comet, origin: "chrome-extension://def", instance: "comet-inst") } == 200,
+              "A second browser pairs in a new window")
+        await waitUntil("comet paired") { bridge.pairedExtensions.count == 2 }
+        check(await LoopbackHTTP.background { beat(port, secret: chrome, origin: "chrome-extension://abc", instance: "chrome-inst") } == 200,
+              "Pairing another browser keeps the first token valid")
+        await waitUntil("instances labelled") { bridge.pairedExtensions.allSatisfy { $0.instanceID != nil } }
+        check(store.load().count == 2 && Set(store.load().compactMap(\.instanceID)) == ["chrome-inst", "comet-inst"],
+              "Both pairings are persisted with their browser instance")
+
+        // Routing: a command that names no browser goes to the one most recently
+        // in front, not to whichever polls first.
+        _ = await LoopbackHTTP.background { beat(port, secret: comet, origin: "chrome-extension://def", instance: "comet-inst", focused: true) }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        _ = await LoopbackHTTP.background { beat(port, secret: chrome, origin: "chrome-extension://abc", instance: "chrome-inst", focused: false) }
+        let generic = Task { @MainActor in await bridge.enqueueBrowserCommand("listTabs", [:]) }
+        await waitUntil("generic queued") { bridge.testPendingCommandIDs.count == 1 }
+        let chromeFirst = await LoopbackHTTP.background { poll(port, instance: "chrome-inst", token: chrome).1 }
+        check(chromeFirst.isEmpty, "A background browser polling first does not take a generic command")
+        let cometGot = await LoopbackHTTP.background { poll(port, instance: "comet-inst", token: comet).1 }
+        check(cometGot.count == 1, "The most recently focused browser receives the generic command")
+        _ = await LoopbackHTTP.background { postResult(port, ["id": cometGot.first?["id"] as? Int ?? -1, "ok": true], token: comet) }
+        _ = await generic.value
+        _ = await LoopbackHTTP.background { beat(port, secret: chrome, origin: "chrome-extension://abc", instance: "chrome-inst", focused: true) }
+        let secondGeneric = Task { @MainActor in await bridge.enqueueBrowserCommand("listTabs", [:]) }
+        await waitUntil("second generic queued") { bridge.testPendingCommandIDs.count == 1 }
+        let cometSecond = await LoopbackHTTP.background { poll(port, instance: "comet-inst", token: comet).1 }
+        let chromeSecond = await LoopbackHTTP.background { poll(port, instance: "chrome-inst", token: chrome).1 }
+        check(cometSecond.isEmpty && chromeSecond.count == 1, "Focusing the other browser moves generic commands to it")
+        _ = await LoopbackHTTP.background { postResult(port, ["id": chromeSecond.first?["id"] as? Int ?? -1, "ok": true], token: chrome) }
+        _ = await secondGeneric.value
+        bridge.stop()
+
+        // A relaunch keeps both pairings; removing one refuses only that token.
+        let relaunched = BrowserBridge(testToken: token, environment: environment, port: 0, pairingStore: store)
+        relaunched.start()
+        let relaunchPort = relaunched.boundPort!
+        let chromeAfterRelaunch = await LoopbackHTTP.background { beat(relaunchPort, secret: chrome, origin: "chrome-extension://abc") }
+        let cometAfterRelaunch = await LoopbackHTTP.background { beat(relaunchPort, secret: comet, origin: "chrome-extension://def") }
+        check(chromeAfterRelaunch == 200 && cometAfterRelaunch == 200, "Both pairings survive a relaunch")
+        relaunched.removePairedExtension(chrome)
+        check(await LoopbackHTTP.background { beat(relaunchPort, secret: chrome, origin: "chrome-extension://abc") } == 401,
+              "A removed pairing is refused")
+        let cometAfterRemoval = await LoopbackHTTP.background { beat(relaunchPort, secret: comet, origin: "chrome-extension://def") }
+        check(cometAfterRemoval == 200 && store.load().map(\.token) == [comet], "Removing one pairing keeps the other")
+        relaunched.stop()
+    }
 }
 
 extension LoopbackHTTP {

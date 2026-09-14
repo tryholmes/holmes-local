@@ -797,7 +797,7 @@ struct PrivacySettingsView: View {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    Button(bridge.pairedToken == nil ? "Pair browser extension" : "Re-pair browser extension") {
+                    Button(bridge.pairedToken == nil ? "Pair browser extension" : "Pair another browser") {
                         bridge.beginPairing()
                     }
                 }
@@ -815,6 +815,27 @@ struct PrivacySettingsView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("Copies the bundled extension to a folder, opens the browser's Extensions page for Load unpacked, and opens the pairing window.")
+            }
+
+            // One row per paired browser. Pairing another browser keeps these;
+            // Remove is how a stale or unwanted pairing is revoked.
+            if !bridge.pairedExtensions.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(bridge.pairedExtensions) { paired in
+                        HStack(spacing: 8) {
+                            Text("\(paired.label) · token …\(paired.tokenSuffix)")
+                                .font(NoirFonts.caption())
+                            if let seen = paired.lastSeen {
+                                Text("seen \(seen, style: .relative) ago")
+                                    .font(NoirFonts.caption())
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                            Button("Remove") { bridge.removePairedExtension(paired.token) }
+                                .controlSize(.small)
+                        }
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -940,7 +961,7 @@ struct PrivacySettingsView: View {
             return "\(error) — Holmes can't read pages until this is resolved."
         }
         if bridge.isPairing {
-            return "Pairing is open for the next couple of minutes: the next extension to post to 127.0.0.1:\(BrowserBridge.port) is adopted and remembered. A web page can't take it — only an extension origin (or a local client you point at the token) may pair."
+            return "Pairing is open for the next couple of minutes: the next extension to post to 127.0.0.1:\(BrowserBridge.port) is adopted and remembered alongside any browsers already paired. Only a browser extension origin may pair; web pages and other apps cannot (local tools use the token below instead)."
         }
         if bridge.unauthorizedRequests > 0 {
             return "\(bridge.unauthorizedRequests) request\(bridge.unauthorizedRequests == 1 ? "" : "s") rejected: something is posting to 127.0.0.1:\(BrowserBridge.port) with a token Holmes doesn't know. If that's your extension, click Pair browser extension — Holmes never adopts a secret on its own, because every process on this Mac can reach a loopback port."
