@@ -14,7 +14,7 @@ final class FakeElement {
         self.help = help
         self.identifier = identifier
     }
-    var names: [String?] { [title, descriptionText, help, identifier] }
+    var names: AXNames { AXNames(title: title, description: descriptionText, help: help, identifier: identifier) }
 }
 
 @main
@@ -31,7 +31,7 @@ struct AXElementSearchTests {
                                  children: { $0.children },
                                  score: { node in
                                      guard node.role == "AXButton" else { return nil }
-                                     return AXElementSearch.labelMatch(label, names: node.names)?.rawValue
+                                     return AXElementSearch.labelMatch(label, in: node.names)?.rawValue
                                  })
         }
 
@@ -105,8 +105,36 @@ struct AXElementSearchTests {
         expect(findTextEntry(nil) === body, "With no hint, a deeper text area beats a shallower search field")
         expect(findTextEntry("Search") === searchField, "A hint naming the search field still selects it")
         expect(findTextEntry("message") === body, "A hint matching the body selects the body")
-        expect(AXElementSearch.textEntryScore(role: "AXButton", hint: nil, names: { [] }) == nil,
+        expect(AXElementSearch.textEntryScore(role: "AXButton", hint: nil, names: { AXNames() }) == nil,
                "Only text areas and text fields are typing targets")
+
+        // Help text is exact only: "message" must not pick a control whose help is "Send the message".
+        let helpBar = FakeElement("AXToolbar")
+        let sendIcon = FakeElement("AXButton", help: "Send the message")
+        helpBar.children = [sendIcon]
+        expect(findButton("message", in: helpBar).node == nil, "A substring of help text never selects a control")
+        expect(findButton("send the message", in: helpBar).node === sendIcon, "Help text still matches in full")
+
+        // The commit gate runs on the MATCHED control, not only the requested label.
+        let later = FakeElement("AXButton", title: "Send later")
+        let laterBar = FakeElement("AXToolbar")
+        laterBar.children = [later]
+        let matchedLater = findButton("later", in: laterBar).node
+        expect(matchedLater === later, "A harmless looking label can substring match a send control")
+        expect(CommitControlGate.pressNeedsConfirmation(requested: "later", matched: later.names, userConfirmed: false),
+               "Pressing the matched Send later control needs confirmation")
+        expect(CommitControlGate.pressNeedsConfirmation(requested: "message",
+                                                        matched: AXNames(description: "Send"), userConfirmed: false),
+               "An icon button described as Send needs confirmation")
+        expect(!CommitControlGate.pressNeedsConfirmation(requested: "later", matched: later.names, userConfirmed: true),
+               "An approved press goes through")
+        expect(!CommitControlGate.pressNeedsConfirmation(requested: "Save draft",
+                                                         matched: AXNames(title: "Save Draft"), userConfirmed: false),
+               "A non commit control presses freely")
+        expect(CommitControlGate.pressNeedsConfirmation(requested: "Don't Save",
+                                                        matched: AXNames(title: "Don’t Save"), userConfirmed: false)
+               || CommitControlGate.looksLikeCommit("Don't Save"),
+               "Don't Save counts as a commit")
 
         print("Passed \(checks) bounded accessibility search and label ranking checks")
     }

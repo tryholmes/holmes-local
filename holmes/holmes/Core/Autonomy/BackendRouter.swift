@@ -413,14 +413,22 @@ enum BackendRouter {
         }
         // The lookup is a bounded tree walk of blocking IPC calls: run it on
         // the concurrency pool so a slow app never stalls the main thread.
-        let ok = await Task.detached(priority: .userInitiated) {
-            ActionExecutor.shared.clickButton(label: label, in: app)
+        // The send gate also runs on the control the label actually MATCHED:
+        // "later" can land on "Send later", which must hold for a confirm.
+        let outcome = await Task.detached(priority: .userInitiated) {
+            ActionExecutor.shared.pressControl(label: label, in: app, allowCommit: userConfirmed)
         }.value
-        diag("ax_press '\(label)' in \(appName) ok=\(ok)")
-        return StepResult(
-            ok: ok,
-            text: ok ? "Pressed “\(label)” in \(appName)."
-                     : "Couldn't press a control labeled “\(label)” in \(appName) (not found, or it refused the press). A visible click may be needed instead.")
+        diag("ax_press '\(label)' in \(appName) outcome=\(outcome)")
+        switch outcome {
+        case .pressed(let matched):
+            return StepResult(ok: true, text: "Pressed “\(matched)” in \(appName).")
+        case .needsConfirmation(let matched):
+            return needsConfirm(step, "“\(label)” matched “\(matched)”, a send/submit-class control")
+        case .notFound:
+            return StepResult(ok: false, text: "Couldn't find a control labeled “\(label)” in \(appName). A visible click may be needed instead.")
+        case .failed(let code):
+            return StepResult(ok: false, text: "The control labeled “\(label)” in \(appName) refused the press (AXError \(code)).")
+        }
     }
 
     /// AX type: set the field's value through Accessibility — atomic and

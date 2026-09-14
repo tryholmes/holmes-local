@@ -1125,8 +1125,20 @@ final class HolmesBrain {
             return OllamaClient.ToolResult("Could not find app '\(app)'.", isError: true)
         }
         guard !Task.isCancelled else { return OllamaClient.ToolResult("Stopped", isError: true) }
-        let ok = await offMain { ActionExecutor.shared.clickButton(label: label, in: running) }
-        return OllamaClient.ToolResult(ok ? "Clicked '\(label)'." : "Could not find a button labeled '\(label)'.", isError: !ok)
+        // The user approved clicking "label". If that label only fuzzily
+        // matched a send/submit class control, do not press it on this approval.
+        let allowCommit = CommitControlGate.looksLikeCommit(label)
+        let outcome = await offMain { ActionExecutor.shared.pressControl(label: label, in: running, allowCommit: allowCommit) }
+        switch outcome {
+        case .pressed(let matched):
+            return OllamaClient.ToolResult("Clicked '\(matched)'.")
+        case .needsConfirmation(let matched):
+            return OllamaClient.ToolResult("Did not click: '\(label)' matched '\(matched)', which sends or commits. Ask for that control by its exact name so the user can approve it.", isError: true)
+        case .notFound:
+            return OllamaClient.ToolResult("Could not find a button labeled '\(label)'.", isError: true)
+        case .failed(let code):
+            return OllamaClient.ToolResult("The button labeled '\(label)' refused the press (AXError \(code)).", isError: true)
+        }
     }
 
     /// The producer half of the browser-automation channel: maps a model

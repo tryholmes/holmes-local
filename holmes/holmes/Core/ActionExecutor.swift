@@ -70,20 +70,27 @@ final class ActionExecutor {
     ]
 
     /// Presses the best matching control (exact, then case insensitive, then
-    /// substring, across title/description/help/identifier). Returns true only
-    /// when AXPress itself reported success. Does a bounded tree walk with
-    /// blocking IPC: call it OFF the main thread.
-    @discardableResult
-    func clickButton(label: String, in app: NSRunningApplication) -> Bool {
+    /// substring across title/description/identifier/placeholder; help text
+    /// only when it equals the label). The commit gate runs on the MATCHED
+    /// control: unless `allowCommit`, a send/submit class control is not
+    /// pressed and `.needsConfirmation` names it. `.pressed` only when AXPress
+    /// itself reported success. Bounded tree walk with blocking IPC: call it
+    /// OFF the main thread.
+    func pressControl(label: String, in app: NSRunningApplication, allowCommit: Bool) -> AXPressOutcome {
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         AXUIElementSetMessagingTimeout(axApp, 1.0) // a stalled app must not freeze Holmes for the 6 s default per call
-        guard let button = findElement(in: axApp, roles: Self.pressableRoles, label: label) else { return false }
+        guard let button = findElement(in: axApp, roles: Self.pressableRoles, label: label) else { return .notFound }
+        let names = Self.names(of: button)
+        let matched = names.visibleName.isEmpty ? label : names.visibleName
+        if CommitControlGate.pressNeedsConfirmation(requested: label, matched: names, userConfirmed: allowCommit) {
+            return .needsConfirmation(matched: matched)
+        }
         let result = AXUIElementPerformAction(button, kAXPressAction as CFString)
         guard result == .success else {
             print("[Holmes] AXPress on “\(label)” failed: AXError \(result.rawValue)")
-            return false
+            return .failed(code: result.rawValue)
         }
-        return true
+        return .pressed(matched: matched)
     }
 
     // MARK: - Find and focus a text field in an app, then type
@@ -353,7 +360,7 @@ final class ActionExecutor {
         findBest(in: root, stopScore: label == nil ? 1 : AXLabelMatch.exact.rawValue) { role, names in
             guard roles.contains(role) else { return nil }
             guard let label else { return 1 }
-            return AXElementSearch.labelMatch(label, names: names())?.rawValue
+            return AXElementSearch.labelMatch(label, in: names())?.rawValue
         }
     }
 
@@ -366,7 +373,7 @@ final class ActionExecutor {
 
     /// Bounded walk scoring each element by role and (lazily read) names.
     private func findBest(in root: AXUIElement, stopScore: Int,
-                          score: (String, () -> [String?]) -> Int?) -> AXUIElement? {
+                          score: (String, () -> AXNames) -> Int?) -> AXUIElement? {
         let deadline = Date().addingTimeInterval(Self.searchTimeBudget)
         let result = AXElementSearch.best(
             from: root,
@@ -381,16 +388,20 @@ final class ActionExecutor {
             },
             score: { element in
                 guard let role = Self.stringAttribute(element, kAXRoleAttribute as String) else { return nil }
-                return score(role) {
-                    [kAXTitleAttribute as String, kAXDescriptionAttribute as String,
-                     kAXHelpAttribute as String, "AXIdentifier", kAXPlaceholderValueAttribute as String]
-                        .map { Self.stringAttribute(element, $0) }
-                }
+                return score(role) { Self.names(of: element) }
             })
         if result.node == nil, result.truncated {
             print("[Holmes] AX lookup stopped at its limit after \(result.visited) elements")
         }
         return result.node
+    }
+
+    private static func names(of element: AXUIElement) -> AXNames {
+        AXNames(title: stringAttribute(element, kAXTitleAttribute as String),
+                description: stringAttribute(element, kAXDescriptionAttribute as String),
+                help: stringAttribute(element, kAXHelpAttribute as String),
+                identifier: stringAttribute(element, "AXIdentifier"),
+                placeholder: stringAttribute(element, kAXPlaceholderValueAttribute as String))
     }
 
     private static func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
