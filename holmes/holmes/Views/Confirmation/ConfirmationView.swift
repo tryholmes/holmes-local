@@ -294,7 +294,10 @@ final class ConfirmationBus {
             var verified = true
             switch action.actionType {
             case .typeMessage:
-                let entry = await ActionExecutor.shared.sendMessageInApp(action.appName, message: action.preview)
+                // The user approved placing EXACTLY this message in the field,
+                // so an existing draft there is replaced (select all, then paste).
+                let entry = await ActionExecutor.shared.sendMessageInApp(action.appName, message: action.preview,
+                                                                         replaceExisting: true)
                 success = entry.succeeded
                 verified = entry.isVerified
             case .openURL:
