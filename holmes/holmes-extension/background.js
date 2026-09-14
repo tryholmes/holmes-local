@@ -37,6 +37,13 @@ const HEARTBEAT_ALARM_MINUTES = 0.5;
 // evictions (which is exactly why the alarm above exists), but cheap when it works.
 const HEARTBEAT_SUPPLEMENT_MS = 15000;
 
+// Tunables. Tests shorten them through self.__holmesBridgeConfig; the browser never
+// sets that global, so production always runs with these defaults.
+const CONFIG = Object.assign({
+  // How often a heartbeat re-probes the active tab's content script.
+  heartbeatProbeMs: 15000
+}, (typeof self !== "undefined" && self.__holmesBridgeConfig) || {});
+
 // MARK: - Token
 
 // Returns the persisted token, creating it on first call. Concurrent callers can race
@@ -69,10 +76,16 @@ function browserInstance() {
   return browserInstancePromise;
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   ensureToken().then((t) => {
     console.log("[Holmes] extension installed; token " + (t ? "ready" : "UNAVAILABLE"));
   });
+  // Chrome only runs manifest content scripts on pages loaded AFTER install or
+  // update. Tabs that were already open keep no script (fresh install) or an
+  // orphaned one (update/reload) that can no longer reach this worker, so inject
+  // again. A browser update needs nothing: its tabs reload with the scripts.
+  const reason = details && details.reason;
+  if (reason === "install" || reason === "update") reinjectContentScripts();
   ensureCommandLoop();
   ensureHeartbeatLoop();
 });
@@ -82,6 +95,118 @@ chrome.runtime.onStartup.addListener(() => {
   ensureCommandLoop();
   ensureHeartbeatLoop();
 });
+
+// MARK: - Content script injection and health
+
+function manifestContentScripts() {
+  try { return chrome.runtime.getManifest().content_scripts || []; } catch (_) { return []; }
+}
+
+function isInjectableTab(tab) {
+  return !!tab && typeof tab.id === "number" && !tab.discarded && /^https?:\/\//i.test(tab.url || "");
+}
+
+function isMissingReceiver(error) {
+  const text = String(error && error.message ? error.message : error);
+  return /receiving end does not exist|could not establish connection/i.test(text);
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const expiry = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error((label || "operation") + " timed out after " + ms + "ms")), ms);
+  });
+  return Promise.race([promise, expiry]).finally(() => clearTimeout(timer));
+}
+
+// Injects this extension's content scripts into one tab exactly as the manifest
+// declares them: same order, same world, and document_start entries immediately.
+// Each entry is attempted even if an earlier one failed. Returns how many landed.
+async function injectContentScripts(tabId) {
+  let injected = 0;
+  for (const entry of manifestContentScripts()) {
+    const files = (entry.js || []).slice();
+    if (!files.length) continue;
+    const details = { target: { tabId }, files };
+    if (entry.world === "MAIN") details.world = "MAIN";
+    if (entry.run_at === "document_start") details.injectImmediately = true;
+    try {
+      await chrome.scripting.executeScript(details);
+      injected++;
+    } catch (e) {
+      // Restricted page, a tab that closed, or a page blocking one world.
+    }
+  }
+  return injected;
+}
+
+async function reinjectContentScripts() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] }); } catch (_) { return; }
+  for (const tab of tabs) {
+    if (isInjectableTab(tab)) await injectContentScripts(tab.id);
+  }
+}
+
+// Asks the active tab's content script whether it is alive, so the app can tell a
+// healthy page from one whose script went missing while this worker keeps beating.
+// A missing script in a normal page is reinjected once per tab per worker lifetime.
+const reinjectedTabs = new Set();
+let lastProbe = { at: 0, value: null };
+
+async function probeActiveTab() {
+  const now = Date.now();
+  if (lastProbe.value && now - lastProbe.at < CONFIG.heartbeatProbeMs) return lastProbe.value;
+  let value;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const tab = tabs && tabs[0];
+    if (!tab || typeof tab.id !== "number") {
+      value = { script: "none" };
+    } else if (!isInjectableTab(tab)) {
+      value = { script: "restricted" };
+    } else {
+      try {
+        const reply = await withTimeout(chrome.tabs.sendMessage(tab.id, { type: "holmes:ping" }), 1500, "ping");
+        value = { script: reply && reply.ok ? "ok" : "missing" };
+      } catch (e) {
+        if (isMissingReceiver(e) && !reinjectedTabs.has(tab.id)) {
+          reinjectedTabs.add(tab.id);
+          value = { script: (await injectContentScripts(tab.id)) > 0 ? "reinjected" : "missing" };
+        } else {
+          value = { script: "missing" };
+        }
+      }
+    }
+  } catch (_) {
+    value = { script: "none" };
+  }
+  lastProbe = { at: now, value };
+  return value;
+}
+
+async function browserFocused() {
+  try {
+    const win = await chrome.windows.getLastFocused();
+    return !!(win && win.focused);
+  } catch (_) {
+    return false;
+  }
+}
+
+function extensionVersion() {
+  try { return chrome.runtime.getManifest().version || ""; } catch (_) { return ""; }
+}
+
+function browserName() {
+  try {
+    const brands = (typeof navigator !== "undefined" && navigator.userAgentData && navigator.userAgentData.brands) || [];
+    const named = brands.map(b => b.brand).find(b => !/chromium|not.?a.?brand/i.test(b));
+    return named || "";
+  } catch (_) {
+    return "";
+  }
+}
 
 // MARK: - Active tab tracking
 
@@ -204,6 +329,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // A visible, active tab pings periodically. Any message wakes an evicted MV3
+  // worker and resets its idle timer, so this keeps command delivery alive while
+  // the user is actually looking at a page.
+  if (msg.type === "holmes:keepalive") {
+    ensureCommandLoop();
+    ensureHeartbeatAlarm();
+    sendResponse({ ok: true });
+    return false;
+  }
+
   // The popup arms adoption by making one authenticated request from the extension
   // origin (a heartbeat), which the Mac app adopts if the user opened the pairing
   // window in Settings. Nothing here can pair on its own — the human still arms it.
@@ -254,10 +389,19 @@ async function sendHeartbeat() {
   const token = await ensureToken();
   if (!token) return;
   try {
+    // The beat says which browser instance this is, whether it has OS focus (the
+    // app routes commands that name no browser to the one in front), and whether
+    // the active tab's content script is alive.
+    const [instanceId, focused, activeTab] = await Promise.all([
+      browserInstance().catch(() => ""), browserFocused(), probeActiveTab()
+    ]);
     await fetch(HEARTBEAT_ENDPOINT, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
-      body: "{}"
+      headers: {
+        "Content-Type": "application/json", "X-Holmes-Token": token,
+        "X-Holmes-Browser-Instance": instanceId, "X-Holmes-Browser-Focused": focused ? "1" : "0"
+      },
+      body: JSON.stringify({ instanceId, focused, activeTab, version: extensionVersion(), browser: browserName() })
     });
   } catch (e) {
     // Holmes app not running / port closed — expected, stay quiet.

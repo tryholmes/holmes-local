@@ -1,0 +1,206 @@
+// Runs the production MV3 worker (background.js + automation.js) against a mock
+// chrome.* surface. No browser, no network: fetch is a scripted fake.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const extension = path.resolve(__dirname, '../holmes-extension');
+const manifest = JSON.parse(fs.readFileSync(path.join(extension, 'manifest.json'), 'utf8'));
+let checks = 0;
+function check(condition, description) { checks++; assert.ok(condition, description); console.log('PASS ' + description); }
+// The test's own waits keep node alive; only the worker's timers are unref'd.
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function until(label, condition, timeout = 3000) {
+  const start = Date.now();
+  while (!condition()) {
+    if (Date.now() - start > timeout) throw new Error('Timed out waiting for: ' + label);
+    await sleep(5);
+  }
+}
+
+function event() {
+  const listeners = [];
+  return { listeners, addListener(fn) { listeners.push(fn); }, removeListener(fn) { const i = listeners.indexOf(fn); if (i >= 0) listeners.splice(i, 1); },
+    emit(...args) { return listeners.map(fn => fn(...args)); } };
+}
+
+// Creates one isolated worker. `options.fetch(url, init)` scripts the bridge.
+function loadWorker(options = {}) {
+  const tabs = new Map((options.tabs || [{ id: 17, windowId: 23, url: 'https://mail.example.test/', status: 'complete', active: true }])
+    .map(tab => [tab.id, Object.assign({ status: 'complete', active: false }, tab)]));
+  const log = { fetches: [], injections: [], messages: [], updates: [], platformInfo: 0 };
+  const storage = { local: new Map([['holmesToken', 'synthetic-token'], ['holmesBrowserInstance', 'test-profile']]), session: new Map() };
+  const area = map => ({
+    async get(keys) {
+      const list = keys == null ? [...map.keys()] : Array.isArray(keys) ? keys : typeof keys === 'string' ? [keys] : Object.keys(keys);
+      const out = {}; for (const key of list) if (map.has(key)) out[key] = structuredClone(map.get(key)); return out;
+    },
+    async set(values) { for (const [key, value] of Object.entries(values)) map.set(key, structuredClone(value)); },
+    async remove(keys) { for (const key of [].concat(keys)) map.delete(key); }
+  });
+  const events = {
+    installed: event(), startup: event(), message: event(), activated: event(), updated: event(),
+    removed: event(), focus: event(), alarm: event(), storageChanged: event()
+  };
+  const timers = {
+    setTimeout: (fn, ms, ...args) => { const t = setTimeout(fn, ms, ...args); if (t.unref) t.unref(); return t; },
+    setInterval: (fn, ms, ...args) => { const t = setInterval(fn, ms, ...args); if (t.unref) t.unref(); return t; },
+    clearTimeout, clearInterval
+  };
+  const chrome = {
+    runtime: {
+      id: 'synthetic-extension', lastError: undefined,
+      getManifest: () => manifest,
+      getPlatformInfo: async () => { log.platformInfo++; return { os: 'mac' }; },
+      onInstalled: events.installed, onStartup: events.startup, onMessage: events.message
+    },
+    storage: { local: area(storage.local), session: options.noSessionStorage ? undefined : area(storage.session), onChanged: events.storageChanged },
+    alarms: { onAlarm: events.alarm, get: (name, cb) => cb(undefined), create() {} },
+    scripting: {
+      async executeScript(details) {
+        log.injections.push(details);
+        if (options.executeScript) return options.executeScript(details, tabs);
+        return [{ result: undefined }];
+      }
+    },
+    tabs: {
+      onActivated: events.activated, onUpdated: events.updated, onRemoved: events.removed,
+      async query(filter = {}) {
+        let list = [...tabs.values()];
+        if (filter.active) list = list.filter(tab => tab.active);
+        if (filter.url) {
+          const patterns = [].concat(filter.url).map(p => p.split('://')[0]);
+          list = list.filter(tab => patterns.some(scheme => tab.url.startsWith(scheme + '://')));
+        }
+        return list;
+      },
+      async get(id) { if (!tabs.has(id)) throw new Error('No tab with id: ' + id); return tabs.get(id); },
+      async update(id, props) {
+        log.updates.push({ id, props });
+        const tab = tabs.get(id);
+        if (props.active) { for (const other of tabs.values()) if (other.windowId === tab.windowId) other.active = false; tab.active = true; }
+        if (props.url) { tab.url = props.url; tab.status = 'loading'; if (options.onNavigate) options.onNavigate(tab, events); }
+        return tab;
+      },
+      async create(props) { const id = 100 + tabs.size; const tab = { id, windowId: 23, url: props.url, status: 'loading', active: props.active !== false }; tabs.set(id, tab); return tab; },
+      async sendMessage(tabId, message) {
+        log.messages.push({ tabId, message });
+        if (options.sendMessage) return options.sendMessage(tabId, message, tabs);
+        if (message.type === 'holmes:ping') return { ok: true, visible: true, isActiveTab: true };
+        return { ok: true };
+      },
+      async captureVisibleTab(windowId, opts) { log.capture = opts; return options.capture ? options.capture(opts) : 'data:image/jpeg;base64,AAAA'; }
+    },
+    windows: {
+      onFocusChanged: events.focus,
+      async get(id) { return { id, type: 'normal', focused: true }; },
+      async getLastFocused() { return { id: 23, type: 'normal', focused: options.focused !== false }; },
+      async update(id, props) { log.updates.push({ window: id, props }); return { id }; }
+    }
+  };
+  const context = vm.createContext(Object.assign({
+    console: options.quiet === false ? console : { log() {}, warn() {}, error() {}, info() {} },
+    crypto: { randomUUID: () => 'uuid-' + Math.random().toString(16).slice(2) },
+    AbortController, URL, TextEncoder, structuredClone, Blob, Response,
+    chrome,
+    fetch: async (url, init = {}) => {
+      const entry = { url, init, aborted: false };
+      log.fetches.push(entry);
+      if (init.signal) init.signal.addEventListener('abort', () => { entry.aborted = true; });
+      const handler = options.fetch || (() => ({ status: 200, body: [] }));
+      const reply = await handler(url, init, entry);
+      if (reply instanceof Error) throw reply;
+      const status = reply.status || 200;
+      const headers = new Map(Object.entries(reply.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
+      return { ok: status >= 200 && status < 300, status, headers: { get: key => headers.get(String(key).toLowerCase()) || null },
+        json: async () => reply.body, text: async () => JSON.stringify(reply.body) };
+    },
+    __holmesBridgeConfig: Object.assign({ pollIdleMs: 40, pollErrorBackoffMs: 40, heartbeatProbeMs: 0, visibilityPollMs: 10 }, options.config || {})
+  }, timers));
+  context.self = context;
+  context.importScripts = (...files) => { for (const file of files) vm.runInContext(fs.readFileSync(path.join(extension, file), 'utf8'), context, { filename: file }); };
+  vm.runInContext(fs.readFileSync(path.join(extension, 'background.js'), 'utf8'), context, { filename: 'background.js' });
+  return { context, chrome, tabs, log, events, storage };
+}
+
+const receivingEndMissing = () => new Error('Could not establish connection. Receiving end does not exist.');
+
+async function reinjectionTests() {
+  const worker = loadWorker({
+    fetch: () => ({ status: 503, body: {} }),
+    tabs: [
+      { id: 1, windowId: 23, url: 'https://open-before-install.test/', active: true },
+      { id: 2, windowId: 23, url: 'chrome://settings/' },
+      { id: 3, windowId: 23, url: 'http://discarded.test/', discarded: true },
+      { id: 4, windowId: 23, url: 'https://second.test/' }
+    ],
+    executeScript(details) { if (details.target.tabId === 4 && details.world === 'MAIN') throw new Error('Cannot access contents of the page'); return [{}]; }
+  });
+  worker.events.installed.emit({ reason: 'update', previousVersion: '2.2' });
+  await until('reinjection finished', () => worker.log.injections.filter(i => i.target.tabId === 1).length >= 2);
+  await sleep(30);
+  const tab1 = worker.log.injections.filter(i => i.target.tabId === 1);
+  check(tab1[0].files.join() === 'history-hook.js' && tab1[0].world === 'MAIN' && tab1[0].injectImmediately === true,
+    'Update reinjects the MAIN world history hook first, as at document_start');
+  check(tab1[1].files.join() === 'email-compose.js,content.js' && (tab1[1].world === undefined || tab1[1].world === 'ISOLATED'),
+    'Then the isolated world scripts in manifest order');
+  check(!worker.log.injections.some(i => i.target.tabId === 2 || i.target.tabId === 3),
+    'Restricted and discarded tabs are skipped');
+  check(worker.log.injections.filter(i => i.target.tabId === 4).length === 2,
+    'A failure injecting one script does not stop the rest for that tab or other tabs');
+  const before = worker.log.injections.length;
+  worker.events.installed.emit({ reason: 'chrome_update' });
+  await sleep(30);
+  check(worker.log.injections.length === before, 'A browser update does not reinject (manifest scripts already ran)');
+}
+
+async function probeTests() {
+  const heartbeats = [];
+  let pingMode = 'missing';
+  const worker = loadWorker({
+    config: { heartbeatProbeMs: 0 },
+    fetch(url, init) {
+      if (url.endsWith('/heartbeat')) heartbeats.push(JSON.parse(init.body || '{}'));
+      return { status: url.endsWith('/commands') ? 503 : 200, body: {} };
+    },
+    tabs: [{ id: 9, windowId: 23, url: 'https://orphaned.test/', active: true }],
+    sendMessage(tabId, message) {
+      if (message.type !== 'holmes:ping') return { ok: true };
+      if (pingMode === 'missing') throw receivingEndMissing();
+      return { ok: true, visible: true, isActiveTab: true };
+    }
+  });
+  await until('first heartbeat', () => heartbeats.some(h => h.activeTab));
+  const first = heartbeats.find(h => h.activeTab);
+  check(first.instanceId === 'test-profile' && typeof first.focused === 'boolean', 'Heartbeat body names the browser instance and focus');
+  check(first.activeTab.script === 'missing' || first.activeTab.script === 'reinjected',
+    'An active tab whose content script is gone is reported, not hidden behind worker heartbeats');
+  await until('self heal injection', () => worker.log.injections.some(i => i.target.tabId === 9));
+  check(worker.log.injections.filter(i => i.target.tabId === 9 && i.world === 'MAIN').length === 1,
+    'The worker reinjects a missing active tab once');
+  pingMode = 'ok';
+  heartbeats.length = 0;
+  await worker.context.sendHeartbeat();
+  check(heartbeats.at(-1).activeTab.script === 'ok', 'A live content script reports ok');
+  worker.tabs.get(9).url = 'chrome://newtab/';
+  await worker.context.sendHeartbeat();
+  check(heartbeats.at(-1).activeTab.script === 'restricted', 'A browser page is restricted, not missing');
+  const beat = worker.log.fetches.findLast(f => f.url.endsWith('/heartbeat'));
+  check(beat.init.headers['X-Holmes-Browser-Instance'] === 'test-profile' && beat.init.headers['X-Holmes-Browser-Focused'] === '1',
+    'Heartbeat headers carry the instance and focus for routing');
+}
+
+module.exports = { loadWorker, check, sleep, until, receivingEndMissing };
+
+if (require.main === module) {
+  (async () => {
+    const only = process.argv[2];
+    const suites = { reinjectionTests, probeTests };
+    for (const [name, suite] of Object.entries(suites)) {
+      if (only && name !== only) continue;
+      await suite();
+    }
+    console.log(`Browser bridge worker: ${checks} checks passed (mock chrome, scripted bridge).`);
+  })().catch(error => { console.error(error); process.exitCode = 1; });
+}
