@@ -36,11 +36,7 @@ struct PendingAction: Identifiable {
     }
 }
 
-// Result of a user approving/dismissing an agent tool call.
-enum AgentDecision {
-    case approved(text: String)   // `text` carries any edits the user made in the preview
-    case dismissed
-}
+// AgentDecision and the approval FIFO live in Core/ApprovalQueue.swift.
 
 // MARK: - ConfirmationBus
 // HolmesAgent posts here when it detects something actionable.
@@ -50,7 +46,13 @@ enum AgentDecision {
 @Observable
 final class ConfirmationBus {
     static let shared = ConfirmationBus()
-    private init() {}
+    private init() {
+        cards.show = { [weak self] action in self?.presentCard(action) }
+        cards.hide = { [weak self] in self?.closeApprovalCard() }
+        approvals.onTimeout = { action in
+            print("[Holmes] Approval timed out: \(action.title)")
+        }
+    }
 
     var pendingAction: PendingAction? = nil
     var isShowing: Bool = false
@@ -69,10 +71,25 @@ final class ConfirmationBus {
     /// panel card and this card must always show the same words.
     var isShowingReply: Bool = false
 
-    // Set while an agent tool call awaits the user's decision (see `decide`).
-    @ObservationIgnored private var decisionHandler: ((AgentDecision) -> Void)?
+    // Agent tool calls awaiting the user's decision, one card at a time (see `decide`).
+    @ObservationIgnored private let approvals = ApprovalQueue<PendingAction>()
+    /// Which kind of card is on screen, so a direct proposal parks (never
+    /// orphans) a queued approval and a timeout only closes its own card.
+    @ObservationIgnored private lazy var cards = ApprovalCardArbiter(queue: approvals, id: { $0.id })
 
+    /// True when the showing card is the approval at the head of the queue.
+    private var showingQueuedApproval: Bool {
+        guard let current = cards.showingApprovalID else { return false }
+        return pendingAction?.id == current
+    }
+
+    /// Shows a card that is not an awaited approval (command bar result, meeting
+    /// join). A queued approval on screen is parked and returns when this closes.
     func propose(_ action: PendingAction) {
+        cards.proposeDirect(action)
+    }
+
+    private func presentCard(_ action: PendingAction) {
         // A live approval outranks a proactive draft — push the draft back in line.
         if let draft = pendingDraft {
             draftQueue.insert(draft, at: 0)
@@ -186,30 +203,27 @@ final class ConfirmationBus {
 
     /// Proposes an action and suspends until the user approves or dismisses it.
     /// Used by the agentic loop to gate side-effecting tool calls.
-    func decide(_ action: PendingAction) async -> AgentDecision {
-        guard !Task.isCancelled else { return .dismissed }
-        // If a decision is already pending (two confirmations overlapped — e.g. a
-        // calendar task raising a card while another autonomous step is still
-        // awaiting one), resolve the OLD handler as .dismissed FIRST. Otherwise the
-        // earlier continuation is orphaned and its await never resumes — the run
-        // that was waiting on it hangs forever and looks like "approve failed".
-        if let stale = decisionHandler {
-            decisionHandler = nil
-            stale(.dismissed)
+    ///
+    /// Overlapping requests QUEUE (FIFO): a second card waits until the first is
+    /// answered, so one run can never read another run's arrival as "declined".
+    /// Cancelling the awaiting task removes its card whether it is showing or
+    /// still queued. `timeout` (or the task's ApprovalScope.unattendedTimeout,
+    /// set by autonomous playbook runs) resolves `.timedOut` when nobody answers.
+    func decide(_ action: PendingAction, timeout: TimeInterval? = nil) async -> AgentDecision {
+        await approvals.decide(id: action.id, item: action,
+                               timeout: timeout ?? ApprovalScope.unattendedTimeout)
+    }
+
+    /// Hides the approval card once the queue is empty, then lets a queued
+    /// playbook draft take the panel.
+    private func closeApprovalCard() {
+        isShowingReply = false
+        pendingAction = nil
+        if pendingDraft == nil {
+            isShowing = false
+            ConfirmationWindowController.shared.hide()
         }
-        guard !Task.isCancelled else { return .dismissed }
-        return await withTaskCancellationHandler(operation: {
-            await withCheckedContinuation { cont in
-                guard !Task.isCancelled else { cont.resume(returning: .dismissed); return }
-                decisionHandler = { cont.resume(returning: $0) }
-                propose(action)
-            }
-        }, onCancel: {
-            Task { @MainActor in
-                guard self.pendingAction?.id == action.id else { return }
-                self.dismiss()
-            }
-        })
+        showNextDraftSoon()
     }
 
     /// Closes the showing card. For drafts this only CLOSES the popup by
@@ -218,9 +232,10 @@ final class ConfirmationBus {
     /// Pass `removeDraft: true` only where removal is what the user expects:
     /// the post-action completion (Copy/Insert/Open succeeded).
     func dismiss(removeDraft: Bool = false) {
-        if let handler = decisionHandler {
-            decisionHandler = nil
-            handler(.dismissed)
+        if showingQueuedApproval {
+            // The queue presents the next waiting approval, or closes the card.
+            approvals.resolveCurrent(.dismissed)
+            return
         }
         if let draft = pendingDraft {
             if removeDraft {
@@ -235,6 +250,11 @@ final class ConfirmationBus {
         isShowing = false
         pendingAction = nil
         ConfirmationWindowController.shared.hide()
+        if cards.isShowingDirect {
+            // Re shows an approval that was parked behind the direct card.
+            cards.directClosed()
+            if pendingAction != nil { return }
+        }
         showNextDraftSoon()
     }
 
@@ -257,14 +277,9 @@ final class ConfirmationBus {
     func execute() {
         // Agent-loop path: hand the (possibly edited) text back to the awaiting loop
         // and let it perform the real call. Do NOT run ActionExecutor here.
-        if let handler = decisionHandler {
-            decisionHandler = nil
+        if showingQueuedApproval {
             let text = pendingAction?.preview ?? ""
-            isShowing = false
-            pendingAction = nil
-            ConfirmationWindowController.shared.hide()
-            handler(.approved(text: text))
-            showNextDraftSoon()
+            approvals.resolveCurrent(.approved(text: text))
             return
         }
 
@@ -272,14 +287,22 @@ final class ConfirmationBus {
         action.isExecuting = true
         pendingAction = action
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        // On the main actor: the text entry itself is nonisolated async (off
+        // main), and any AppleScript it needs runs back on the main actor.
+        Task { @MainActor in
             var success = false
+            var verified = true
             switch action.actionType {
             case .typeMessage:
-                success = ActionExecutor.shared.sendMessageInApp(action.appName, message: action.preview)
+                // The user approved placing EXACTLY this message in the field,
+                // so an existing draft there is replaced (select all, then paste).
+                let entry = await ActionExecutor.shared.sendMessageInApp(action.appName, message: action.preview,
+                                                                         replaceExisting: true)
+                success = entry.succeeded
+                verified = entry.isVerified
             case .openURL:
                 if let url = URL(string: action.preview) {
-                    DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+                    NSWorkspace.shared.open(url)
                     success = true
                 }
             case .runScript:
@@ -288,21 +311,21 @@ final class ConfirmationBus {
                 // Handled via decisionHandler above; unreachable here.
                 success = false
             case .openMeeting:
-                DispatchQueue.main.async {
-                    if let meeting = action.meeting {
-                        MeetingJoinEngine.shared.joinMeeting(meeting)
-                    } else if let url = action.meetingURL {
-                        NSWorkspace.shared.open(url)
-                    }
+                if let meeting = action.meeting {
+                    MeetingJoinEngine.shared.joinMeeting(meeting)
+                } else if let url = action.meetingURL {
+                    NSWorkspace.shared.open(url)
                 }
                 success = true
             }
 
-            DispatchQueue.main.async {
+            do {
                 guard ConfirmationBus.shared.pendingAction?.id == action.id else { return }
                 let completed: String
                 switch action.actionType {
-                case .typeMessage: completed = "✓ Inserted in \(action.appName)"
+                case .typeMessage:
+                    completed = verified ? "✓ Inserted in \(action.appName)"
+                                         : "Sent to \(action.appName), but couldn't confirm it landed. Check the field."
                 case .openMeeting: completed = "✓ Opening meeting"
                 case .openURL: completed = "✓ Opened link"
                 default: completed = "✓ Completed"
@@ -626,18 +649,19 @@ struct ConfirmationView: View {
     private func insertDraft(_ draft: ProactiveDraft, appName: String) {
         draftIsExecuting = true
         let text = draftBody
-        DispatchQueue.global(qos: .userInitiated).async {
-            let ok = ActionExecutor.shared.stageTextInApp(appName, text: text)
-            DispatchQueue.main.async {
-                // The card may have moved on (dismissed, next draft shown) while
-                // staging ran — never write result state onto a different card.
-                guard bus.pendingDraft?.id == draft.id else { return }
-                draftIsExecuting = false
-                if ok {
-                    finishDraft(draft, result: "✓ Staged in \(appName) — you press Send")
-                } else {
-                    draftResult = "Failed to insert into \(appName)"
-                }
+        Task { @MainActor in
+            let entry = await ActionExecutor.shared.stageTextInApp(appName, text: text)
+            // The card may have moved on (dismissed, next draft shown) while
+            // staging ran — never write result state onto a different card.
+            guard bus.pendingDraft?.id == draft.id else { return }
+            draftIsExecuting = false
+            switch entry {
+            case .verified:
+                finishDraft(draft, result: "✓ Staged in \(appName) — you press Send")
+            case .unverified:
+                finishDraft(draft, result: "Staged in \(appName), but couldn't confirm it landed. Check before you send.")
+            case .failed:
+                draftResult = "Failed to insert into \(appName)"
             }
         }
     }

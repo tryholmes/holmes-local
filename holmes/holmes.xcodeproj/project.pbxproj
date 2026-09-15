@@ -13,6 +13,12 @@
 		AA000001000000000000117 /* EmailPredictionSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000117 /* EmailPredictionSources.swift */; };
 		AA000001000000000000118 /* EmailPredictionActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000118 /* EmailPredictionActions.swift */; };
 		AA000001000000000000119 /* EmailUndoToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000119 /* EmailUndoToast.swift */; };
+		B7A500010000000000000006 /* ModelJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000006 /* ModelJSON.swift */; };
+		B7A500010000000000000005 /* TextEntrySupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000005 /* TextEntrySupport.swift */; };
+		B7A500010000000000000004 /* AutonomousRunTally.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000004 /* AutonomousRunTally.swift */; };
+		B7A500010000000000000003 /* AXElementSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000003 /* AXElementSearch.swift */; };
+		B7A500010000000000000002 /* ApprovalQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000002 /* ApprovalQueue.swift */; };
+		B7A500010000000000000001 /* ComputerUseRunRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000001 /* ComputerUseRunRegistry.swift */; };
 		AA000001000000000000113 /* EmailDraftCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000113 /* EmailDraftCoordinator.swift */; };
 		AA000001000000000000112 /* EmailDrafting.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000112 /* EmailDrafting.swift */; };
 		AA000001000000000000111 /* EmailDraftIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000111 /* EmailDraftIntent.swift */; };
@@ -131,6 +137,12 @@
 		AA000002000000000000117 /* EmailPredictionSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailPredictionSources.swift; sourceTree = "<group>"; };
 		AA000002000000000000118 /* EmailPredictionActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailPredictionActions.swift; sourceTree = "<group>"; };
 		AA000002000000000000119 /* EmailUndoToast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailUndoToast.swift; sourceTree = "<group>"; };
+		B7A500020000000000000006 /* ModelJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelJSON.swift; sourceTree = "<group>"; };
+		B7A500020000000000000005 /* TextEntrySupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextEntrySupport.swift; sourceTree = "<group>"; };
+		B7A500020000000000000004 /* AutonomousRunTally.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutonomousRunTally.swift; sourceTree = "<group>"; };
+		B7A500020000000000000003 /* AXElementSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AXElementSearch.swift; sourceTree = "<group>"; };
+		B7A500020000000000000002 /* ApprovalQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApprovalQueue.swift; sourceTree = "<group>"; };
+		B7A500020000000000000001 /* ComputerUseRunRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComputerUseRunRegistry.swift; sourceTree = "<group>"; };
 		AA000002000000000000113 /* EmailDraftCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailDraftCoordinator.swift; sourceTree = "<group>"; };
 		AA000002000000000000112 /* EmailDrafting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailDrafting.swift; sourceTree = "<group>"; };
 		AA000002000000000000111 /* EmailDraftIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailDraftIntent.swift; sourceTree = "<group>"; };
@@ -386,6 +398,12 @@
 				AA000002000000000000116 /* MailComposeMatcher.swift */,
 				AA000002000000000000117 /* EmailPredictionSources.swift */,
 				AA000002000000000000118 /* EmailPredictionActions.swift */,
+				B7A500020000000000000006 /* ModelJSON.swift */,
+				B7A500020000000000000005 /* TextEntrySupport.swift */,
+				B7A500020000000000000004 /* AutonomousRunTally.swift */,
+				B7A500020000000000000003 /* AXElementSearch.swift */,
+				B7A500020000000000000002 /* ApprovalQueue.swift */,
+				B7A500020000000000000001 /* ComputerUseRunRegistry.swift */,
 				AA000002000000000000105 /* GuidedDemo.swift */,
 				AA000005000000000000030 /* Setup */,
 				AA000002000000000000103 /* AppLauncher.swift */,
@@ -625,6 +643,12 @@
 				AA000001000000000000117 /* EmailPredictionSources.swift in Sources */,
 				AA000001000000000000118 /* EmailPredictionActions.swift in Sources */,
 				AA000001000000000000119 /* EmailUndoToast.swift in Sources */,
+				B7A500010000000000000006 /* ModelJSON.swift in Sources */,
+				B7A500010000000000000005 /* TextEntrySupport.swift in Sources */,
+				B7A500010000000000000004 /* AutonomousRunTally.swift in Sources */,
+				B7A500010000000000000003 /* AXElementSearch.swift in Sources */,
+				B7A500010000000000000002 /* ApprovalQueue.swift in Sources */,
+				B7A500010000000000000001 /* ComputerUseRunRegistry.swift in Sources */,
 				AA000001000000000000105 /* GuidedDemo.swift in Sources */,
 				AA000001000000000000001 /* holmesApp.swift in Sources */,
 				AA000001000000000000097 /* ExtensionInstaller.swift in Sources */,

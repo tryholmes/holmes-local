@@ -37,6 +37,45 @@ const HEARTBEAT_ALARM_MINUTES = 0.5;
 // evictions (which is exactly why the alarm above exists), but cheap when it works.
 const HEARTBEAT_SUPPLEMENT_MS = 15000;
 
+// Tunables. Tests shorten them through self.__holmesBridgeConfig; the browser never
+// sets that global, so production always runs with these defaults.
+const CONFIG_OVERRIDES = (typeof self !== "undefined" && self.__holmesBridgeConfig) || {};
+const CONFIG = Object.assign({
+  // How often a heartbeat re-probes the active tab's content script.
+  heartbeatProbeMs: 15000,
+  // Seconds the bridge may hold GET /commands open. Chrome kills a worker whose
+  // fetch waits 30s for a response, so the hold and its timeout stay below that.
+  longPollSeconds: 20,
+  // Gap between polls when the app does not support long polling, or did not
+  // actually hold this poll.
+  pollIdleMs: COMMAND_POLL_MS,
+  // An empty long poll answered faster than this was not really held (the bridge
+  // was at its long poll cap); wait pollIdleMs rather than re-polling at once.
+  longPollMinMs: 1000,
+  // First retry delay after a failed poll; doubles up to 30s.
+  pollErrorBackoffMs: 1000,
+  // While commands are active, call a cheap extension API this often (resets the
+  // MV3 idle timer) for keepaliveWindowMs after the last command activity.
+  keepaliveMs: 20000,
+  keepaliveWindowMs: 120000,
+  // Result POST retry schedule: one attempt plus one per delay.
+  resultRetryDelaysMs: [250, 1000, 3000],
+  // The bridge accepts 16 MB of result; stay a little under it.
+  maxResultBytes: 16 * 1024 * 1024 - 64 * 1024,
+  // Commands for different tabs run concurrently, up to this many at once.
+  maxConcurrentCommands: 4,
+  // After Holmes activates a background composer tab, how often and how long to
+  // wait for the page to report itself visible before inserting.
+  visibilityPollMs: 50,
+  visibilityTimeoutMs: 2000,
+  // Longest wait for a content script to answer a compose read or insert. Below
+  // the app's 20s result timeout, so a silent page frees its slot and lane.
+  composeMessageTimeoutMs: 10000
+}, CONFIG_OVERRIDES);
+// Every request to the bridge is bounded. A stalled app must never park a worker.
+CONFIG.fetchTimeoutMs = Object.assign({ heartbeat: 5000, relay: 5000, commands: 28000, result: 15000 },
+  CONFIG_OVERRIDES.fetchTimeoutMs || {});
+
 // MARK: - Token
 
 // Returns the persisted token, creating it on first call. Concurrent callers can race
@@ -69,10 +108,16 @@ function browserInstance() {
   return browserInstancePromise;
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   ensureToken().then((t) => {
     console.log("[Holmes] extension installed; token " + (t ? "ready" : "UNAVAILABLE"));
   });
+  // Chrome only runs manifest content scripts on pages loaded AFTER install or
+  // update. Tabs that were already open keep no script (fresh install) or an
+  // orphaned one (update/reload) that can no longer reach this worker, so inject
+  // again. A browser update needs nothing: its tabs reload with the scripts.
+  const reason = details && details.reason;
+  if (reason === "install" || reason === "update") reinjectContentScripts();
   ensureCommandLoop();
   ensureHeartbeatLoop();
 });
@@ -82,6 +127,182 @@ chrome.runtime.onStartup.addListener(() => {
   ensureCommandLoop();
   ensureHeartbeatLoop();
 });
+
+// MARK: - Content script injection and health
+
+function manifestContentScripts() {
+  try { return chrome.runtime.getManifest().content_scripts || []; } catch (_) { return []; }
+}
+
+function isInjectableTab(tab) {
+  return !!tab && typeof tab.id === "number" && !tab.discarded && /^https?:\/\//i.test(tab.url || "");
+}
+
+function isMissingReceiver(error) {
+  const text = String(error && error.message ? error.message : error);
+  return /receiving end does not exist|could not establish connection/i.test(text);
+}
+
+// fetch() with a hard deadline. Aborts the request (so the socket is released) and
+// rejects even if the underlying fetch ignores the abort.
+async function fetchWithTimeout(url, init, ms) {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  let timer;
+  const expiry = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (controller) { try { controller.abort(); } catch (_) { /* ignore */ } }
+      reject(new Error("request to " + url + " timed out after " + ms + "ms"));
+    }, ms);
+  });
+  try {
+    const options = Object.assign({}, init, controller ? { signal: controller.signal } : {});
+    return await Promise.race([fetch(url, options), expiry]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const expiry = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error((label || "operation") + " timed out after " + ms + "ms")), ms);
+  });
+  return Promise.race([promise, expiry]).finally(() => clearTimeout(timer));
+}
+
+// Injects this extension's content scripts into one tab exactly as the manifest
+// declares them: same order, same world, and document_start entries immediately.
+// Each entry is attempted even if an earlier one failed. Returns how many landed.
+async function injectContentScripts(tabId) {
+  let injected = 0;
+  for (const entry of manifestContentScripts()) {
+    const files = (entry.js || []).slice();
+    if (!files.length) continue;
+    const details = { target: { tabId }, files };
+    if (entry.world === "MAIN") details.world = "MAIN";
+    if (entry.run_at === "document_start") details.injectImmediately = true;
+    try {
+      await chrome.scripting.executeScript(details);
+      injected++;
+    } catch (e) {
+      // Restricted page, a tab that closed, or a page blocking one world.
+    }
+  }
+  return injected;
+}
+
+async function reinjectContentScripts() {
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] }); } catch (_) { return; }
+  for (const tab of tabs) {
+    if (isInjectableTab(tab)) await injectContentScripts(tab.id);
+  }
+}
+
+// Asks the active tab's content script whether it is alive, so the app can tell a
+// healthy page from one whose script went missing while this worker keeps beating.
+// A missing script in a normal page is reinjected once per tab per worker lifetime.
+// Keyed by tab and page origin, so a tab that later navigates to a normal page is
+// judged afresh.
+const reinjectedTabs = new Set();
+// Pages where injection itself was refused (Chrome Web Store, the PDF viewer and
+// other protected pages). Those are restricted, not a missing content script, and
+// must never make the app tell the user to refresh.
+const injectionBlockedTabs = new Set();
+
+function probeKey(tab) {
+  let origin = "";
+  try { origin = new URL(tab.url).origin; } catch (_) { origin = String(tab.url || ""); }
+  return tab.id + "|" + origin;
+}
+let lastProbe = { at: 0, value: null };
+
+async function probeActiveTab() {
+  const now = Date.now();
+  if (lastProbe.value && now - lastProbe.at < CONFIG.heartbeatProbeMs) return lastProbe.value;
+  let value;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const tab = tabs && tabs[0];
+    if (!tab || typeof tab.id !== "number") {
+      value = { script: "none" };
+    } else if (!isInjectableTab(tab)) {
+      value = { script: "restricted" };
+    } else {
+      try {
+        const reply = await withTimeout(chrome.tabs.sendMessage(tab.id, { type: "holmes:ping" }), 1500, "ping");
+        value = { script: reply && reply.ok ? "ok" : "missing" };
+      } catch (e) {
+        const key = probeKey(tab);
+        if (isMissingReceiver(e) && injectionBlockedTabs.has(key)) {
+          value = { script: "restricted" };
+        } else if (isMissingReceiver(e) && !reinjectedTabs.has(key)) {
+          reinjectedTabs.add(key);
+          if ((await injectContentScripts(tab.id)) > 0) {
+            value = { script: "reinjected" };
+          } else {
+            injectionBlockedTabs.add(key);
+            value = { script: "restricted" };
+          }
+        } else {
+          value = { script: "missing" };
+        }
+      }
+    }
+  } catch (_) {
+    value = { script: "none" };
+  }
+  lastProbe = { at: now, value };
+  return value;
+}
+
+// Waits until a just activated tab's content script reports the page visible and
+// active. tabs.update resolves before the page's visibilityState flips, and the
+// composer (correctly) refuses a hidden page, so inserting immediately raced it.
+// Bounded by visibilityTimeoutMs. A content script too old to answer holmes:ping
+// replies undefined and is not waited on.
+async function waitForTabVisible(tabId) {
+  const deadline = Date.now() + CONFIG.visibilityTimeoutMs;
+  for (;;) {
+    try {
+      const reply = await withTimeout(chrome.tabs.sendMessage(tabId, { type: "holmes:ping" }), 1000, "visibility ping");
+      if (reply === undefined) return true;
+      if (reply && reply.visible === true && reply.isActiveTab !== false) return true;
+    } catch (e) {
+      // A missing receiver is surfaced by the real message that follows.
+      if (isMissingReceiver(e)) return true;
+    }
+    if (Date.now() >= deadline) return false;
+    await delay(CONFIG.visibilityPollMs);
+  }
+}
+
+async function browserFocused() {
+  try {
+    const win = await chrome.windows.getLastFocused();
+    return !!(win && win.focused);
+  } catch (_) {
+    return false;
+  }
+}
+
+function extensionVersion() {
+  try { return chrome.runtime.getManifest().version || ""; } catch (_) { return ""; }
+}
+
+function browserName() {
+  try {
+    const brands = (typeof navigator !== "undefined" && navigator.userAgentData && navigator.userAgentData.brands) || [];
+    const named = brands.map(b => b.brand).find(b => !/chromium|not.?a.?brand/i.test(b));
+    return named || "";
+  } catch (_) {
+    return "";
+  }
+}
 
 // MARK: - Active tab tracking
 
@@ -186,11 +407,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         payload.tabId = sender.tab.id;
         payload.windowId = sender.tab.windowId;
         payload.isActiveTab = true;
-        const res = await fetch(ENDPOINT, {
+        const res = await fetchWithTimeout(ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
           body: JSON.stringify(payload)
-        });
+        }, CONFIG.fetchTimeoutMs.relay);
         sendResponse({ ok: res.ok, status: res.status });
       } catch (e) {
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
@@ -204,6 +425,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // A visible, active tab pings periodically. Any message wakes an evicted MV3
+  // worker and resets its idle timer, so this keeps command delivery alive while
+  // the user is actually looking at a page.
+  if (msg.type === "holmes:keepalive") {
+    ensureCommandLoop();
+    ensureHeartbeatAlarm();
+    sendResponse({ ok: true });
+    return false;
+  }
+
   // The popup arms adoption by making one authenticated request from the extension
   // origin (a heartbeat), which the Mac app adopts if the user opened the pairing
   // window in Settings. Nothing here can pair on its own — the human still arms it.
@@ -211,11 +442,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const token = await ensureToken();
       try {
-        const res = await fetch("http://127.0.0.1:5766/heartbeat", {
+        const res = await fetchWithTimeout(HEARTBEAT_ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
           body: "{}"
-        });
+        }, CONFIG.fetchTimeoutMs.heartbeat);
         sendResponse({ ok: res.ok, status: res.status });
       } catch (e) {
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
@@ -254,11 +485,20 @@ async function sendHeartbeat() {
   const token = await ensureToken();
   if (!token) return;
   try {
-    await fetch(HEARTBEAT_ENDPOINT, {
+    // The beat says which browser instance this is, whether it has OS focus (the
+    // app routes commands that name no browser to the one in front), and whether
+    // the active tab's content script is alive.
+    const [instanceId, focused, activeTab] = await Promise.all([
+      browserInstance().catch(() => ""), browserFocused(), probeActiveTab()
+    ]);
+    await fetchWithTimeout(HEARTBEAT_ENDPOINT, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
-      body: "{}"
-    });
+      headers: {
+        "Content-Type": "application/json", "X-Holmes-Token": token,
+        "X-Holmes-Browser-Instance": instanceId, "X-Holmes-Browser-Focused": focused ? "1" : "0"
+      },
+      body: JSON.stringify({ instanceId, focused, activeTab, version: extensionVersion(), browser: browserName() })
+    }, CONFIG.fetchTimeoutMs.heartbeat);
   } catch (e) {
     // Holmes app not running / port closed — expected, stay quiet.
   }
@@ -325,69 +565,401 @@ if (chrome.alarms && chrome.alarms.onAlarm) {
 // worker always restarts the loop. When the Holmes app isn't listening the GET simply
 // fails and is swallowed, costing nothing.
 
-let commandTimer = null;
+// Delivery is a long poll: GET /commands asks the bridge to hold the request until a
+// command arrives (or ~20s pass), so a command reaches a live worker immediately
+// instead of on the next 2s tick. The loop re-polls as soon as each poll returns;
+// against an older app without long polling it falls back to the 2s idle gap, and
+// when Holmes is not running it backs off. A watchdog interval restarts the loop if
+// it ever stops, and every fetch carries a timeout so the in-flight flag always clears.
+
+let commandLoopRunning = false;
+let commandWatchdog = null;
 let commandPollInFlight = false;
+let commandPollStartedAt = 0;
+let lastCommandActivityAt = 0;
+let runningCommandCount = 0;
+let selfKeepaliveTimer = null;
 
 function ensureCommandLoop() {
-  if (commandTimer !== null) return;
-  commandTimer = setInterval(pollCommands, COMMAND_POLL_MS);
-  pollCommands();
+  if (commandWatchdog === null) {
+    commandWatchdog = setInterval(() => { if (!commandLoopRunning) runCommandLoop(); }, COMMAND_POLL_MS);
+  }
+  if (!commandLoopRunning) runCommandLoop();
 }
 
+async function runCommandLoop() {
+  if (commandLoopRunning) return;
+  commandLoopRunning = true;
+  let failures = 0;
+  try {
+    for (;;) {
+      const outcome = await pollCommands();
+      if (outcome === "longpoll") { failures = 0; continue; }
+      if (outcome === "error") {
+        failures++;
+        await delay(Math.min(CONFIG.pollErrorBackoffMs * Math.pow(2, Math.min(failures - 1, 5)), 30000));
+        continue;
+      }
+      failures = 0;
+      await delay(CONFIG.pollIdleMs);  // "idle" (no long poll support) or "busy"
+    }
+  } catch (e) {
+    // Unexpected failure (timers unavailable, worker shutting down). The watchdog
+    // interval restarts the loop; never spin here.
+  } finally {
+    commandLoopRunning = false;
+  }
+}
+
+// One poll. Resolves "longpoll" | "idle" | "busy" | "error"; never throws.
 async function pollCommands() {
-  if (commandPollInFlight) return;
+  if (commandPollInFlight && Date.now() - commandPollStartedAt < CONFIG.fetchTimeoutMs.commands + 5000) return "busy";
   commandPollInFlight = true;
+  commandPollStartedAt = Date.now();
   try {
     const token = await ensureToken();
-    if (!token) return;
+    if (!token) return "error";
+    const [instanceId, focused] = await Promise.all([browserInstance().catch(() => ""), browserFocused()]);
 
     let res;
     try {
-      res = await fetch(COMMANDS_ENDPOINT, {
+      res = await fetchWithTimeout(COMMANDS_ENDPOINT, {
         method: "GET",
-        headers: { "X-Holmes-Token": token, "Accept": "application/json", "X-Holmes-Browser-Instance": await browserInstance() }
-      });
+        headers: {
+          "X-Holmes-Token": token, "Accept": "application/json",
+          "X-Holmes-Browser-Instance": instanceId, "X-Holmes-Browser-Focused": focused ? "1" : "0",
+          "X-Holmes-Long-Poll": String(CONFIG.longPollSeconds)
+        }
+      }, CONFIG.fetchTimeoutMs.commands);
     } catch (e) {
-      return; // Holmes app not running / port closed — expected, stay quiet.
+      return "error"; // Holmes app not running, port closed, or the poll timed out.
     }
-    if (!res.ok) return; // 401 (wrong token), 404 (older app without the channel), etc.
+    if (!res.ok) return "error"; // 401 (wrong token), 404 (older app without the channel), etc.
+    const longPoll = !!(res.headers && typeof res.headers.get === "function" && res.headers.get("X-Holmes-Long-Poll") === "1");
 
     let data;
-    try { data = await res.json(); } catch (e) { return; }
+    try { data = await res.json(); } catch (e) { return "error"; }
 
     const commands = Array.isArray(data)
       ? data
       : (data && Array.isArray(data.commands) ? data.commands : []);
-    for (const cmd of commands) {
-      await runOneCommand(cmd, token);
-    }
+    if (commands.length) noteCommandActivity();
+    // Dispatch without waiting: each tab has its own serial lane and an overall cap
+    // bounds concurrency, so a long waitForSelector never stalls other tabs or the
+    // next poll.
+    for (const cmd of commands) scheduleCommand(cmd, token);
+    // Commands arrived: poll again right away, follow ups are likely.
+    if (commands.length) return "longpoll";
+    // An empty answer only counts as a long poll if the bridge said it held it AND
+    // it really took a while. Otherwise wait, so several browsers over the bridge's
+    // long poll cap never spin both sides.
+    return longPoll && Date.now() - commandPollStartedAt >= CONFIG.longPollMinMs ? "longpoll" : "idle";
+  } catch (e) {
+    return "error";
   } finally {
     commandPollInFlight = false;
   }
 }
 
+// Commands are "expected" for a while after one arrives: the model usually sends a
+// follow up. Calling any extension API resets the MV3 idle timer, so a cheap call on
+// an interval keeps the worker (and its long poll) alive until things go quiet.
+function noteCommandActivity() {
+  lastCommandActivityAt = Date.now();
+  if (selfKeepaliveTimer !== null) return;
+  selfKeepaliveTimer = setInterval(() => {
+    if (runningCommandCount === 0 && Date.now() - lastCommandActivityAt > CONFIG.keepaliveWindowMs) {
+      clearInterval(selfKeepaliveTimer);
+      selfKeepaliveTimer = null;
+      return;
+    }
+    try { Promise.resolve(chrome.runtime.getPlatformInfo()).catch(() => {}); } catch (_) { /* ignore */ }
+  }, CONFIG.keepaliveMs);
+}
+
+// MARK: - Per tab scheduling
+//
+// Commands used to run strictly one after another, so one waitForSelector (up to
+// 15s) delayed every other command past the app's result timeout. Now each target
+// tab has a serial lane (two commands for the same page still run in order) and
+// lanes run in parallel up to maxConcurrentCommands.
+const commandLanes = new Map();
+let busyCommandSlots = 0;
+const commandSlotWaiters = [];
+
+function acquireCommandSlot() {
+  if (busyCommandSlots < CONFIG.maxConcurrentCommands) {
+    busyCommandSlots++;
+    return { immediate: true, ready: Promise.resolve() };
+  }
+  return { immediate: false, ready: new Promise(resolve => commandSlotWaiters.push(resolve)) };
+}
+
+function releaseCommandSlot() {
+  const next = commandSlotWaiters.shift();
+  if (next) next(); else busyCommandSlots--;
+}
+
+function commandLane(cmd) {
+  const params = (cmd && cmd.params) || {};
+  if (typeof params.tabId === "number") return Promise.resolve("tab:" + params.tabId);
+  if (cmd && cmd.action === "fill_email_draft") {
+    try {
+      const identity = JSON.parse(params.expected && params.expected.identity);
+      if (Array.isArray(identity) && Number.isInteger(identity[2])) return Promise.resolve("tab:" + identity[2]);
+    } catch (_) { /* fall through to the active tab */ }
+  }
+  if (cmd && (cmd.action === "openTab" || cmd.action === "listTabs")) return Promise.resolve("browser");
+  return activeTabId().then(id => (id >= 0 ? "tab:" + id : "browser"));
+}
+
+// Tells the app a delivered command has started running after waiting its turn,
+// so time spent queued in the browser does not count against its result timeout.
+function postStarted(cmd, token) {
+  const body = { id: cmd.id, action: cmd.action, session: cmd.session, _holmesStarted: true, at: Date.now() };
+  postResult(body, token);
+}
+
+// Lane assignment is serialized in arrival order. Resolving the active tab takes
+// an await, so without this a later command with an explicit tabId could claim the
+// same lane first and run before an earlier navigate for that tab.
+let laneAssignments = Promise.resolve();
+
+function scheduleCommand(cmd, token) {
+  const assigned = laneAssignments.then(async () => {
+    const lane = await commandLane(cmd);
+    const previous = commandLanes.get(lane);
+    let release;
+    const turn = new Promise(resolve => { release = resolve; });
+    const tail = (previous || Promise.resolve()).then(() => turn);
+    commandLanes.set(lane, tail);
+    return { lane, previous, tail, release };
+  });
+  laneAssignments = assigned.catch(() => {});
+  return (async () => {
+    const { lane, previous, tail, release } = await assigned;
+    if (previous) await previous;
+    const slot = acquireCommandSlot();
+    await slot.ready;
+    try {
+      if ((previous || !slot.immediate) && cmd && cmd.id !== undefined) postStarted(cmd, token);
+      await runOneCommand(cmd, token);
+    } finally {
+      releaseCommandSlot();
+      release();
+      if (commandLanes.get(lane) === tail) commandLanes.delete(lane);
+    }
+  })().catch(() => { /* runOneCommand reports its own failures */ });
+}
+
+// MARK: - Idempotent execution
+//
+// A command id can reach this worker more than once: the bridge requeues a command
+// whose poll response was lost, and an evicted worker restarts mid-command. Running
+// fill_field or click twice is exactly the bug, so every command is recorded in a
+// ledger keyed by app launch session plus id, kept in chrome.storage.session (which
+// survives worker restarts but not a browser restart) with an in-memory fallback.
+//   • done      → the stored result is posted again; nothing re-runs.
+//   • running   → in this worker life: the live run will post. From a previous life:
+//                 report "interrupted" rather than guess whether it took effect.
+const LEDGER_KEY = "holmesCommandLedger";
+const LEDGER_LIMIT = 100;
+const LEDGER_TTL_MS = 10 * 60 * 1000;
+// chrome.storage.session holds 10 MB in total, and every command rewrites the
+// ledger. So entries keep a compact outcome only, and the whole ledger stays
+// within a byte budget far below the quota.
+const LEDGER_REPLAY_BYTES = 4 * 1024;
+const LEDGER_BUDGET_BYTES = 512 * 1024;
+const ledgerMemory = new Map();
+const runningCommandKeys = new Set();
+let ledgerWrites = Promise.resolve();
+
+function ledgerKey(cmd) {
+  return (cmd && typeof cmd.session === "string" ? cmd.session : "nosession") + ":" + cmd.id;
+}
+
+function sessionArea() {
+  try { return chrome.storage && chrome.storage.session ? chrome.storage.session : null; } catch (_) { return null; }
+}
+
+function pruneLedger(ledger) {
+  const now = Date.now();
+  const keys = Object.keys(ledger).filter(key => ledger[key] && now - (ledger[key].at || 0) < LEDGER_TTL_MS);
+  keys.sort((a, b) => (ledger[b].at || 0) - (ledger[a].at || 0));
+  const kept = {};
+  let bytes = 2;
+  for (const key of keys.slice(0, LEDGER_LIMIT)) {
+    let size = 0;
+    try { size = JSON.stringify(ledger[key]).length + key.length + 4; } catch (_) { continue; }
+    if (bytes + size > LEDGER_BUDGET_BYTES) break;
+    bytes += size;
+    kept[key] = ledger[key];
+  }
+  return kept;
+}
+
+// After a failed write: keep the newer half (and always `keep`) and try again.
+function shrinkLedger(ledger, keep) {
+  const keys = Object.keys(ledger).sort((a, b) => (ledger[b].at || 0) - (ledger[a].at || 0));
+  const kept = {};
+  for (const key of keys.slice(0, Math.floor(keys.length / 2))) kept[key] = ledger[key];
+  if (ledger[keep]) kept[keep] = ledger[keep];
+  return kept;
+}
+
+async function ledgerEntry(key) {
+  if (ledgerMemory.has(key)) return ledgerMemory.get(key);
+  const area = sessionArea();
+  if (!area) return null;
+  try {
+    await ledgerWrites;
+    const stored = await area.get(LEDGER_KEY);
+    const ledger = (stored && stored[LEDGER_KEY]) || {};
+    return ledger[key] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// Serialized so concurrent commands never overwrite each other's entries.
+function recordLedger(key, entry) {
+  ledgerMemory.set(key, entry);
+  if (ledgerMemory.size > LEDGER_LIMIT) ledgerMemory.delete(ledgerMemory.keys().next().value);
+  const area = sessionArea();
+  if (!area) return Promise.resolve();
+  ledgerWrites = ledgerWrites.then(async () => {
+    try {
+      const stored = await area.get(LEDGER_KEY);
+      let ledger = pruneLedger(Object.assign((stored && stored[LEDGER_KEY]) || {}, { [key]: entry }));
+      // A failed write used to be swallowed, so "running" markers silently stopped
+      // persisting. Shrink and retry; the memory ledger covers a final failure.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await area.set({ [LEDGER_KEY]: ledger });
+          return;
+        } catch (e) {
+          ledger = shrinkLedger(ledger, key);
+        }
+      }
+    } catch (_) { /* storage unavailable: the memory ledger still dedupes */ }
+  });
+  return ledgerWrites;
+}
+
+// Keeps a result for replay when it is small enough; a large one (a screenshot)
+// is replaced by an honest note rather than replayed as a success without data.
+function replayableOutcome(outcome) {
+  let size = 0;
+  try { size = JSON.stringify(outcome).length; } catch (_) { size = Infinity; }
+  if (size <= LEDGER_REPLAY_BYTES) return outcome;
+  // Keep the summary (ok, counts, short strings) and drop bulky payloads such as
+  // extracted elements or screenshot data.
+  const compact = { replayTruncated: true,
+    note: "the earlier result was " + size + " bytes; only its summary was kept for replay, so request the data again if it is still needed" };
+  for (const [name, value] of Object.entries(outcome || {})) {
+    if (value === null || typeof value === "boolean" || typeof value === "number") compact[name] = value;
+    else if (typeof value === "string" && value.length <= 300) compact[name] = value;
+  }
+  return compact;
+}
+
 async function runOneCommand(cmd, token) {
   const id = cmd && cmd.id !== undefined ? cmd.id : null;
   const action = cmd && cmd.action;
+  const session = cmd && typeof cmd.session === "string" ? cmd.session : undefined;
+  const key = id !== null ? ledgerKey(cmd) : null;
+
+  if (key !== null) {
+    if (runningCommandKeys.has(key)) return; // already running here; that run posts the result
+    // Claim the key BEFORE any await: a second copy of this id in another lane
+    // could otherwise pass the check above while this one reads the ledger.
+    runningCommandKeys.add(key);
+    const prior = await ledgerEntry(key);
+    if (prior && prior.state === "done") {
+      runningCommandKeys.delete(key);
+      await postResult(Object.assign({ id, action, session, at: Date.now(), replayed: true }, prior.result), token);
+      return;
+    }
+    if (prior && prior.state === "running") {
+      const interrupted = { ok: false, interrupted: true,
+        error: "interrupted: the browser extension restarted while running this command, so it was not run again. Check the page before retrying." };
+      await recordLedger(key, { state: "done", action, at: Date.now(), result: interrupted });
+      runningCommandKeys.delete(key);
+      await postResult(Object.assign({ id, action, session, at: Date.now() }, interrupted), token);
+      return;
+    }
+    // Recorded before anything runs, so a restart mid-command is detectable.
+    await recordLedger(key, { state: "running", action, at: Date.now() });
+  }
 
   let outcome;
+  runningCommandCount++;
   try {
     outcome = action === "read_email_compose" || action === "fill_email_draft" || action === "undo_email_draft"
       ? await emailComposeCommand(cmd) : await HolmesAutomation.execute(cmd);
   } catch (e) {
     outcome = { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    runningCommandCount--;
+    noteCommandActivity();
   }
 
-  const body = Object.assign({ id, action, at: Date.now() }, outcome);
-  try {
-    await fetch(RESULT_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
-      body: JSON.stringify(body)
-    });
-  } catch (e) {
-    // The app went away between GET and POST — drop the result rather than retry-storm.
+  if (key !== null) {
+    await recordLedger(key, { state: "done", action, at: Date.now(), result: replayableOutcome(outcome) });
+    runningCommandKeys.delete(key);
   }
+  // The session echo lets the app ignore a result meant for a previous launch.
+  const body = Object.assign({ id, action, session, at: Date.now() }, outcome);
+  await postResult(body, token);
+}
+
+function byteLength(text) {
+  try { return new TextEncoder().encode(text).length; } catch (_) { return text.length; }
+}
+
+// A result the bridge cannot take is replaced by a small, explicit error, so the
+// app reports "too large" instead of timing out on a result that never arrived.
+function compactSizeError(body, bytes, limit) {
+  return JSON.stringify({
+    id: body.id, action: body.action, session: body.session, at: Date.now(), ok: false,
+    error: "result too large (" + bytes + " bytes; the Holmes bridge accepts " + limit + "). Narrow the selector or request less.",
+    bytes, limit
+  });
+}
+
+// POSTs one command result. Transient failures (network error, timeout, 5xx) are
+// retried with backoff; a 413 is answered with a compact size error; an auth or
+// protocol refusal is not retried. Never throws. Resolves true once delivered.
+async function postResult(body, token) {
+  const bytes = byteLength(JSON.stringify(body));
+  let text = bytes > CONFIG.maxResultBytes ? compactSizeError(body, bytes, CONFIG.maxResultBytes) : JSON.stringify(body);
+  const delays = CONFIG.resultRetryDelaysMs || [];
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    let status = 0;
+    let limit = CONFIG.maxResultBytes;
+    try {
+      const res = await fetchWithTimeout(RESULT_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Holmes-Token": token },
+        body: text
+      }, CONFIG.fetchTimeoutMs.result);
+      status = res.status;
+      if (res.ok) return true;
+      if (status === 413) {
+        try { const info = await res.json(); if (info && Number(info.limit) > 0) limit = Number(info.limit); } catch (_) { /* ignore */ }
+      }
+    } catch (e) {
+      status = 0; // network failure or timeout: retry below
+    }
+    if (status === 413) {
+      if (byteLength(text) < 4096) return false; // even the compact error was refused
+      text = compactSizeError(body, bytes, limit);
+      continue; // resend the small version right away
+    }
+    if (status === 400 || status === 401 || status === 403 || status === 404) return false;
+    if (attempt < delays.length) await delay(delays[attempt]);
+  }
+  return false;
 }
 
 async function emailComposeCommand(cmd) {
@@ -406,10 +978,11 @@ async function emailComposeCommand(cmd) {
     if (tab.windowId !== identity[1]) return { ok: false, refused: true, reason: "The composer window changed." };
     if (cmd.action === "fill_email_draft") {
       // Validate in the page first: a refused insert leaves windows and tabs
-      // exactly where the person had them.
-      const precheck = await chrome.tabs.sendMessage(tab.id, { type: "holmes:checkEmailDraft",
+      // exactly where the person had them. Bounded like every compose message.
+      const precheck = await withTimeout(chrome.tabs.sendMessage(tab.id, { type: "holmes:checkEmailDraft",
         environment: { tabId: tab.id, windowId: tab.windowId, instanceId },
-        body: params.body, expected: params.expected, options: params.options });
+        body: params.body, expected: params.expected, options: params.options }),
+        CONFIG.composeMessageTimeoutMs, "compose precheck");
       if (!precheck || precheck.ok !== true) {
         return precheck || { ok: false, refused: true, reason: "The composer did not answer." };
       }
@@ -418,6 +991,9 @@ async function emailComposeCommand(cmd) {
         await chrome.windows.update(tab.windowId, { focused: true });
         await chrome.tabs.update(tab.id, { active: true });
         await notifyActive(tab.id, true);
+        if (!(await waitForTabVisible(tab.id))) {
+          return { ok: false, refused: true, reason: "The composer tab did not become visible after Holmes switched to it." };
+        }
       }
     }
   } else {
@@ -432,10 +1008,12 @@ async function emailComposeCommand(cmd) {
   const environment = { tabId: tab.id, windowId: tab.windowId, instanceId };
   if (await activeTabId() !== tab.id) return { ok: false, refused: true, reason: "The active tab changed." };
   const messageTypes = { read_email_compose: "holmes:readEmailCompose", fill_email_draft: "holmes:fillEmailDraft", undo_email_draft: "holmes:undoEmailDraft" };
-  const result = await chrome.tabs.sendMessage(tab.id, {
+  // Bounded: a content script that never answers must not pin a command slot,
+  // block this tab's lane, or keep the worker awake indefinitely.
+  const result = await withTimeout(chrome.tabs.sendMessage(tab.id, {
     type: messageTypes[cmd.action],
     environment, body: params.body, expected: params.expected, options: params.options, token: params.token
-  });
+  }), CONFIG.composeMessageTimeoutMs, "compose message");
   // A tab switch while the response was in flight invalidates a refresh. The
   // page writer separately validates the exact identity before any mutation.
   if (cmd.action === "read_email_compose" && await activeTabId() !== tab.id) {

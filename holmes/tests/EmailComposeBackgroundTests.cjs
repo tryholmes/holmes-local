@@ -11,6 +11,7 @@ const tabs = new Map([[17, { id: 17, windowId: 23 }], [28, { id: 28, windowId: 2
 const messages = [], requests = [], activations = [];
 const context = vm.createContext({
   console, crypto: { randomUUID: () => 'test-profile' }, setInterval: () => 1,
+  setTimeout: (fn, ms) => { const timer = setTimeout(fn, ms); timer.unref(); return timer; }, clearTimeout, AbortController,
   importScripts() {},
   HolmesAutomation: { async execute() { genericExecutions++; return { ok: true }; } },
   fetch: async (url, options) => { requests.push({ url, options }); return { ok: true, json: async () => [] }; },
@@ -25,6 +26,7 @@ const context = vm.createContext({
       async sendMessage(tabId, message) {
         messages.push({ tabId, message });
         if (message.type === 'holmes:active') return {};
+        if (message.type === 'holmes:ping') return { ok: true, visible: true, isActiveTab: true };
         if (changeDuringRead && message.type === 'holmes:readEmailCompose') active = 28;
         if (message.type === 'holmes:checkEmailDraft') return checkReply;
         if (message.type === 'holmes:undoEmailDraft') return { ok: true, undone: true };

@@ -96,29 +96,58 @@ final class ComputerUseEngine {
 
     // MARK: - Session kill switch
 
-    /// Set by the global ⌘⌥Esc hotkey (and any "Stop" affordance) to abort an
-    /// in-flight run. Checked at the top of every `perform` — i.e. before any
-    /// event is posted — so the very next primitive the model asks for returns a
-    /// terminal outcome and the loop winds down. Reset by `beginRun()`.
-    private(set) var isCancelled: Bool = false
+    /// Kill switches and screenshots are owned PER RUN (see
+    /// ComputerUseRunRegistry). The run acting right now is the task local
+    /// `ComputerUseRunScope.token`; work with no token shares one unscoped slot.
+    private let runs = ComputerUseRunRegistry<ComputerUseCapture>()
 
-    /// The most recent frame the model was shown. A click/type/scroll is mapped
-    /// through THIS capture's geometry, so coordinates are always interpreted in
-    /// the pixel space of the screenshot the model actually reasoned about (never
-    /// a fresher frame the model hasn't seen). Reset by `beginRun()`.
-    private var lastCapture: ComputerUseCapture?
+    private var currentRunToken: ComputerUseRunToken? { ComputerUseRunScope.token }
 
-    /// Clears the kill flag and the stale capture at the start of a user-initiated
-    /// run. Called by HolmesBrain.run(goal:) — the only path that offers `computer`.
-    func beginRun() {
-        isCancelled = false
-        lastCapture = nil
+    /// True when the run in scope was stopped (by its owner, or by ⌘⌥Esc /
+    /// Pause, which stop every run). Checked at the top of every `perform`,
+    /// before any event is posted, so the next primitive returns a terminal
+    /// outcome and the loop winds down.
+    var isCancelled: Bool { runs.isCancelled(currentRunToken) }
+
+    func isCancelled(_ token: ComputerUseRunToken?) -> Bool { runs.isCancelled(token) }
+
+    /// The most recent frame THIS run's model was shown. A click/type/scroll is
+    /// mapped through this capture's geometry, so coordinates are interpreted in
+    /// the pixel space of the screenshot the model actually reasoned about, never
+    /// a fresher frame, and never a frame another concurrent run captured.
+    private var lastCapture: ComputerUseCapture? {
+        get { runs.capture(for: currentRunToken) }
+        set { runs.setCapture(newValue, for: currentRunToken) }
     }
 
-    /// Flips the kill flag. Idempotent and safe to call from the hotkey handler
-    /// mid-run; the in-flight primitive finishes, and the next one aborts.
+    /// Starts a fresh run with its own kill switch and no capture. A run begun
+    /// while another run is in scope is nested in it, so stopping the outer run
+    /// stops this one too. Never resets any other run. Pair with `endRun`, and
+    /// perform the run's work inside `ComputerUseRunScope.$token.withValue`.
+    @discardableResult
+    func beginRun() -> ComputerUseRunToken {
+        if currentRunToken == nil {
+            // A user initiated action with no run of its own re arms only the
+            // shared unscoped slot.
+            runs.resetUnscoped()
+        }
+        return runs.begin(parent: currentRunToken)
+    }
+
+    func endRun(_ token: ComputerUseRunToken) {
+        runs.end(token)
+    }
+
+    /// Stop all: flips the kill switch of EVERY run. Idempotent and safe to call
+    /// from the ⌘⌥Esc handler mid run; each in flight primitive finishes, and
+    /// the next one aborts.
     func cancelRun() {
-        isCancelled = true
+        runs.cancelAll()
+    }
+
+    /// Stops one run (and anything nested in it), leaving other runs alone.
+    func cancelRun(_ token: ComputerUseRunToken) {
+        runs.cancel(token)
     }
 
     // MARK: - Permissions (refuse, never force-enable)

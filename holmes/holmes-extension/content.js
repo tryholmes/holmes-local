@@ -22,9 +22,20 @@
 (function () {
   "use strict";
 
-  // Content scripts can be injected twice (bfcache restore, extension reload).
-  if (window.__holmesContentScript) return;
-  window.__holmesContentScript = true;
+  // Content scripts can be injected twice: bfcache restores, and the worker
+  // reinjecting already open tabs after an install or update. A second copy defers
+  // to a LIVE first copy, but takes over from an orphan left behind by the previous
+  // extension version: that copy's runtime is gone, so it can never send again.
+  // (An older build stored a plain `true` here; that copy is orphaned by definition.)
+  var RUNTIME = (typeof chrome !== "undefined" && chrome.runtime) || null;
+  var existingCopy = window.__holmesContentScript;
+  if (existingCopy && typeof existingCopy === "object" && typeof existingCopy.alive === "function" && existingCopy.alive()) return;
+  try { if (existingCopy && typeof existingCopy.teardown === "function") existingCopy.teardown(); } catch (_) { /* ignore */ }
+  var tornDown = false;
+  window.__holmesContentScript = {
+    alive: function () { return !tornDown && runtimeAlive(); },
+    teardown: function () { teardown(); }
+  };
 
   // MARK: - Configuration
 
@@ -2544,7 +2555,59 @@
   var transportMode = hasRuntime() ? "relay" : "fetch";
 
   function hasRuntime() {
-    return typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id;
+    return runtimeAlive();
+  }
+
+  // MARK: - Lifecycle (orphan detection)
+  //
+  // After the extension reloads or updates, this copy's runtime is invalidated
+  // (chrome.runtime.id becomes undefined) but its timers and listeners keep running,
+  // silently failing every send while the worker's own heartbeats keep the app
+  // saying "connected". Detect that on every activity and stop quietly; the worker
+  // reinjects a fresh copy, which takes over the page.
+
+  function runtimeAlive() {
+    try { return !!(RUNTIME && RUNTIME.id); } catch (_) { return false; }
+  }
+
+  var HAD_RUNTIME = runtimeAlive();
+
+  function teardown() {
+    if (tornDown) return;
+    tornDown = true;
+    try { if (heartbeatTimer) clearInterval(heartbeatTimer); } catch (_) { /* ignore */ }
+    try { if (keepaliveTimer) clearInterval(keepaliveTimer); } catch (_) { /* ignore */ }
+    try { if (flushTimer) clearTimeout(flushTimer); } catch (_) { /* ignore */ }
+    try { if (mutationObserver) mutationObserver.disconnect(); } catch (_) { /* ignore */ }
+    heartbeatTimer = null;
+    keepaliveTimer = null;
+    flushTimer = null;
+  }
+
+  // True once this copy is stopped. Only a copy that HAD a runtime can be orphaned;
+  // a runtime-less (userscript) build keeps its direct transport.
+  function checkOrphaned() {
+    if (!tornDown && HAD_RUNTIME && !runtimeAlive()) teardown();
+    return tornDown;
+  }
+
+  // An evicted MV3 worker only wakes for events. While the user is looking at this
+  // tab, ping it so queued browser commands are picked up promptly.
+  var KEEPALIVE_MS = (window.__holmesContentConfig && Number(window.__holmesContentConfig.keepaliveMs)) || 20000;
+  var keepaliveTimer = null;
+
+  function armKeepalive() {
+    if (!HAD_RUNTIME || tornDown) return;
+    try { if (keepaliveTimer) clearInterval(keepaliveTimer); } catch (_) { /* ignore */ }
+    keepaliveTimer = setInterval(function () {
+      if (checkOrphaned()) return;
+      if (document.visibilityState !== "visible" || !IS_ACTIVE_TAB) return;
+      try {
+        RUNTIME.sendMessage({ type: "holmes:keepalive" }, function () { void (RUNTIME && RUNTIME.lastError); });
+      } catch (_) {
+        checkOrphaned();
+      }
+    }, KEEPALIVE_MS);
   }
 
   function loadToken() {
@@ -2589,7 +2652,7 @@
   }
 
   function sendViaRelay(json) {
-    if (!hasRuntime()) return;
+    if (!hasRuntime()) { checkOrphaned(); return; }
     try {
       chrome.runtime.sendMessage({ type: "holmes:post", body: json }, function (res) {
         void chrome.runtime.lastError;
@@ -2655,6 +2718,7 @@
   var lastURL = location.href;
 
   function capture(force) {
+    if (checkOrphaned()) return;
     try {
       // Honor the per-site "Don't read this site" switch BEFORE any extraction runs:
       // an excluded host builds no payload and sends nothing at all.
@@ -2677,6 +2741,7 @@
   }
 
   function schedule(force) {
+    if (checkOrphaned()) return;
     if (flushTimer) return;
     var since = Date.now() - lastPostAt;
     var wait = Math.max(COALESCE_MS, MIN_POST_INTERVAL_MS - since);
@@ -2789,6 +2854,15 @@
             return false;
           }
 
+          // Liveness and visibility probe from the worker: heartbeat health checks
+          // and the wait for a just activated tab to become visible before insert.
+          if (msg.type === "holmes:ping") {
+            if (tornDown) return false;
+            sendResponse({ ok: true, visible: document.visibilityState === "visible", isActiveTab: IS_ACTIVE_TAB,
+              focused: typeof document.hasFocus === "function" ? document.hasFocus() : false });
+            return false;
+          }
+
           if (msg.type === "holmes:readEmailCompose" || msg.type === "holmes:fillEmailDraft" || msg.type === "holmes:undoEmailDraft") {
             if (isExcludedHost() || !IS_ACTIVE_TAB || document.visibilityState !== "visible") {
               sendResponse({ ok: false, refused: true, reason: "The composer is no longer in the active tab." });
@@ -2876,9 +2950,11 @@
   var heartbeatTimer = null;
   var heartbeatBeats = 0;
   function armHeartbeat() {
+    if (tornDown) return;
     try { if (heartbeatTimer) clearInterval(heartbeatTimer); } catch (e) { /* ignore */ }
     var period = effectiveHeartbeat();
     heartbeatTimer = setInterval(function () {
+      if (checkOrphaned()) return;
       heartbeatBeats++;
       var forceResend = heartbeatBeats % Math.max(1, Math.round(FORCE_RESEND_MS / period)) === 0;
       if (forceResend) lastHash = "";
@@ -2933,6 +3009,7 @@
     // that restarted mid-session gets the current page back without the user touching it.
     // Re-armable so the options page's heartbeat-interval setting takes effect live.
     armHeartbeat();
+    armKeepalive();
   }
 
   try {

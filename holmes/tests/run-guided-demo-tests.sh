@@ -8,6 +8,7 @@ xcrun swiftc -swift-version 5 \
   holmes/holmes/Core/OllamaConfig.swift \
   holmes/holmes/Core/WorkActivity.swift \
   holmes/holmes/Core/OllamaClient.swift \
+  holmes/holmes/Core/ModelJSON.swift \
   holmes/holmes/Core/AppLauncher.swift \
   holmes/holmes/Core/GuidedDemo.swift \
   holmes/tests/GuidedDemoTests.swift \

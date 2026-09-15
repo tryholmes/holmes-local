@@ -57,11 +57,16 @@ enum BackendRouter {
         let ok: Bool
         let text: String
         let undo: (() async -> Void)?
+        /// The step ran but its effect could not be read back (text typed into
+        /// a field that does not expose its value). Not a failure, not a plain
+        /// success: the run summary reports it as unverified.
+        let unverified: Bool
 
-        init(ok: Bool, text: String, undo: (() async -> Void)? = nil) {
+        init(ok: Bool, text: String, undo: (() async -> Void)? = nil, unverified: Bool = false) {
             self.ok = ok
             self.text = text
             self.undo = undo
+            self.unverified = unverified
         }
     }
 
@@ -408,16 +413,26 @@ enum BackendRouter {
         if matchesSendVerb(label), !userConfirmed {
             return needsConfirm(step, "pressing “\(label)” looks like a send/submit-class action")
         }
-        return await MainActor.run {
-            guard let app = runningApp(named: appName) else {
-                return StepResult(ok: false, text: "App '\(appName)' is not running.")
-            }
-            let ok = ActionExecutor.shared.clickButton(label: label, in: app)
-            diag("ax_press '\(label)' in \(appName) ok=\(ok)")
-            return StepResult(
-                ok: ok,
-                text: ok ? "Pressed “\(label)” in \(appName)."
-                         : "No accessible button labeled “\(label)” in \(appName) — a visible click may be needed instead.")
+        guard let app = runningApp(named: appName) else {
+            return StepResult(ok: false, text: "App '\(appName)' is not running.")
+        }
+        // The lookup is a bounded tree walk of blocking IPC calls: run it on
+        // the concurrency pool so a slow app never stalls the main thread.
+        // The send gate also runs on the control the label actually MATCHED:
+        // "later" can land on "Send later", which must hold for a confirm.
+        let outcome = await Task.detached(priority: .userInitiated) {
+            ActionExecutor.shared.pressControl(label: label, in: app, allowCommit: userConfirmed)
+        }.value
+        diag("ax_press '\(label)' in \(appName) outcome=\(outcome)")
+        switch outcome {
+        case .pressed(let matched):
+            return StepResult(ok: true, text: "Pressed “\(matched)” in \(appName).")
+        case .needsConfirmation(let matched):
+            return needsConfirm(step, "“\(label)” matched “\(matched)”, a send/submit-class control")
+        case .notFound:
+            return StepResult(ok: false, text: "Couldn't find a control labeled “\(label)” in \(appName). A visible click may be needed instead.")
+        case .failed(let code):
+            return StepResult(ok: false, text: "The control labeled “\(label)” in \(appName) refused the press (AXError \(code)).")
         }
     }
 
@@ -431,16 +446,20 @@ enum BackendRouter {
             return StepResult(ok: false, text: "ax_type needs {\"app\":\"AppName\",\"text\":\"…\"} (optional \"fieldHint\").")
         }
         let fieldHint = (input["fieldHint"] as? String) ?? (input["field"] as? String)
-        return await MainActor.run {
-            guard let app = runningApp(named: appName) else {
-                return StepResult(ok: false, text: "App '\(appName)' is not running.")
-            }
-            let ok = ActionExecutor.shared.focusAndType(in: app, fieldHint: fieldHint, text: text)
-            diag("ax_type into \(appName) ok=\(ok)")
-            return StepResult(
-                ok: ok,
-                text: ok ? "Typed into \(appName) via Accessibility."
-                         : "Couldn't find a writable field in \(appName)\(fieldHint.map { " matching “\($0)”" } ?? "").")
+        guard let app = runningApp(named: appName) else {
+            return StepResult(ok: false, text: "App '\(appName)' is not running.")
+        }
+        // focusAndType is nonisolated async, so its tree walk runs off the main thread.
+        let entry = await ActionExecutor.shared.focusAndType(in: app, fieldHint: fieldHint, text: text)
+        diag("ax_type into \(appName) result=\(entry)")
+        switch entry {
+        case .verified:
+            return StepResult(ok: true, text: "Typed into \(appName) via Accessibility (verified).")
+        case .unverified(let why):
+            return StepResult(ok: true, text: "Typed into \(appName), but it could not be verified: \(why)", unverified: true)
+        case .failed(let why):
+            return StepResult(ok: false,
+                              text: "Couldn't type into \(appName)\(fieldHint.map { " field “\($0)”" } ?? ""): \(why)")
         }
     }
 

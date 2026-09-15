@@ -133,6 +133,21 @@ final class HolmesBrain {
              narrateAloud: Bool = true,
              log: @escaping @MainActor (String) -> Void) async -> RunResult {
         guard !Task.isCancelled else { return .cancelled }
+        // Every run owns its computer control kill switch and screenshot, so a
+        // second request can never disarm ⌘⌥Esc for, or map clicks through the
+        // frame of, a run already in flight.
+        let engine = ComputerUseEngine.shared
+        let runToken = engine.beginRun()
+        defer { engine.endRun(runToken) }
+        return await ComputerUseRunScope.$token.withValue(runToken) {
+            await runInScope(goal: goal, narrateAloud: narrateAloud, log: log)
+        }
+    }
+
+    private func runInScope(goal: String,
+                            narrateAloud: Bool,
+                            log: @escaping @MainActor (String) -> Void) async -> RunResult {
+        guard !Task.isCancelled else { return .cancelled }
         guard OllamaConfig.isConfigured else { return .notConfigured }
 
         let narrates = narrateAloud && ClickyController.shared.narrateActionsEnabled
@@ -151,29 +166,35 @@ final class HolmesBrain {
         // model's job. A master-switch refusal also falls through: type_text,
         // MCP and browser tools need no switch, so the model may still succeed.
         if let (appName, text) = Self.typeIntoAppIntent(in: goal), Self.isExactInstalledApp(appName) {
-            ComputerUseEngine.shared.beginRun()
             let opened = await ComputerUseEngine.shared.perform(action: "open_app", input: ["name": appName])
             if !opened.isRefused && !opened.isError {
                 do { try await Task.sleep(nanoseconds: 900_000_000) }
                 catch { return .cancelled }
                 guard !Task.isCancelled else { return .cancelled }
-                let approved = await approve(title: "Type into \(appName)", preview: text, app: appName)
-                guard !Task.isCancelled, let approvedText = approved else { return .cancelled }
-                var typed = false
-                if let running = ActionExecutor.shared.runningApp(named: appName) {
-                    typed = await typeIntoApp(running, text: approvedText)
+                let tracked = await ApprovalTimeoutTracking.run {
+                    await approve(title: "Type into \(appName)", preview: text, app: appName)
                 }
-                let result = typed ? "Opened \(appName) and typed it." : "Opened \(appName) but couldn't type into it — click into a note or field and try again."
+                if tracked.timedOut { return .failed(ApprovalScope.timedOutMessage + ". Nothing was typed.") }
+                guard !Task.isCancelled, let approvedText = tracked.result else { return .cancelled }
+                var entry = TextEntryResult.failed("the app isn't running")
+                if let running = ActionExecutor.shared.runningApp(named: appName) {
+                    entry = await typeIntoAppResult(running, text: approvedText)
+                }
+                let result: String
+                switch entry {
+                case .verified: result = "Opened \(appName) and typed it."
+                case .unverified: result = "Opened \(appName) and typed it, but couldn't confirm the text landed. Check the app."
+                case .failed: result = "Opened \(appName) but couldn't type into it — click into a note or field and try again."
+                }
                 guard !Task.isCancelled else { return .cancelled }
                 log(result)
                 if narrates { SpeechSynthesizer.shared.enqueue(result, priority: .utterance) }
-                return typed ? .text(result) : .failed(result)
+                return entry.succeeded ? .text(result) : .failed(result)
             }
             // Refused or unknown app — let the model interpret the whole goal.
         }
 
         if let appName = Self.openAppIntent(in: goal), Self.isExactInstalledApp(appName) {
-            ComputerUseEngine.shared.beginRun()
             let outcome = await ComputerUseEngine.shared.perform(action: "open_app", input: ["name": appName])
             guard !Task.isCancelled else { return .cancelled }
             if !outcome.isRefused && !outcome.isError {
@@ -197,10 +218,9 @@ final class HolmesBrain {
         // Pin this run's screenshot resolution BEFORE building `builtinTools` and
         // the system prompt, so the `computer` tool's declared pixel space
         // (W×H in its description) equals the pixel dims every screenshot in the
-        // run is resized to. Reset the computer engine's kill flag + stale
-        // capture for a fresh session.
+        // run is resized to. The computer engine's kill switch and capture are
+        // already fresh: `run` opened this session's own run token.
         WindowCapture.resolveForCurrentRun()
-        ComputerUseEngine.shared.beginRun()
         let tools = builtinTools + Self.relevantMCPTools(MCPClient.shared.toolDefs(), for: goal)
         // The system prompt is split into the stable guidelines and the per-run
         // screen context. There is no prompt cache to protect with a local
@@ -282,6 +302,9 @@ final class HolmesBrain {
             return .failed("The local model \(model) isn't downloaded — download it in Settings ▸ Local Model, then try again.")
         } catch OllamaClient.AgentError.busy {
             return .failed("The local model is busy — try again in a moment.")
+        } catch let OllamaClient.AgentError.timedOut(detail) {
+            // OllamaClient already asked OllamaServer to re-probe the server.
+            return .failed("The local model stopped responding (\(detail)). Check the app before retrying.")
         } catch OllamaClient.AgentError.truncated {
             return .failed("Local model error: the model ran out of output tokens before finishing. Try a shorter goal, or raise the output/context limits in Settings ▸ Local Model.")
         } catch OllamaClient.AgentError.notConfigured {
@@ -932,7 +955,17 @@ final class HolmesBrain {
         }
     }
 
+    /// Dispatches one tool call. When an approval it raised timed out, the
+    /// model hears exactly that, never "the user declined".
     private func runTool(name: String, input: [String: Any]) async -> OllamaClient.ToolResult {
+        let tracked = await ApprovalTimeoutTracking.run { await dispatchTool(name: name, input: input) }
+        guard tracked.timedOut else { return tracked.result }
+        return OllamaClient.ToolResult(
+            "\(ApprovalScope.timedOutMessage): nobody answered the approval card in time, so \(name) was not run. Do not retry it; end your turn and report that approval timed out.",
+            isError: true)
+    }
+
+    private func dispatchTool(name: String, input: [String: Any]) async -> OllamaClient.ToolResult {
         switch name {
         case "read_screen":   return readScreen()
         case "zoom_screen":   return await zoomScreen(input)
@@ -1035,27 +1068,34 @@ final class HolmesBrain {
         guard let running = ActionExecutor.shared.runningApp(named: app) else {
             return OllamaClient.ToolResult("Could not find app '\(app)' to type into. Open it first with the computer tool's open_app.", isError: true)
         }
-        let ok = await typeIntoApp(running, text: approved)
-        return OllamaClient.ToolResult(ok ? "Typed the text into \(app)." : "Failed to type into \(app).", isError: !ok)
+        let entry = await typeIntoAppResult(running, text: approved)
+        return OllamaClient.ToolResult(entry.describe(action: "Typed the text", app: app), isError: !entry.succeeded)
     }
 
     /// Activates the app, makes sure something editable has focus (a fresh
     /// Notes/TextEdit window with no document swallows keystrokes — ⌘N fixes
     /// that), then types.
     func typeIntoApp(_ app: NSRunningApplication, text: String) async -> Bool {
-        guard !Task.isCancelled else { return false }
+        await typeIntoAppResult(app, text: text).succeeded
+    }
+
+    /// Same as typeIntoApp, but says whether the text was verified in the field.
+    func typeIntoAppResult(_ app: NSRunningApplication, text: String) async -> TextEntryResult {
+        let stopped = TextEntryResult.failed("Stopped.")
+        guard !Task.isCancelled else { return stopped }
         app.activate(options: [.activateIgnoringOtherApps])
         do { try await Task.sleep(nanoseconds: 450_000_000) }
-        catch { return false }
-        guard !Task.isCancelled else { return false }
+        catch { return stopped }
+        guard !Task.isCancelled else { return stopped }
         let editors: Set<String> = ["com.apple.Notes", "com.apple.TextEdit", "com.apple.iWork.Pages", "com.apple.Stickies"]
         if let bundle = app.bundleIdentifier, editors.contains(bundle), !ActionExecutor.shared.hasEditableFocus(in: app) {
             _ = await ComputerUseEngine.shared.perform(action: "key", input: ["text": "cmd+n"])
             do { try await Task.sleep(nanoseconds: 600_000_000) }
-            catch { return false }
+            catch { return stopped }
         }
-        guard !Task.isCancelled else { return false }
-        return await offMain { ActionExecutor.shared.typeIntoFocusedField(in: app, text: text) }
+        guard !Task.isCancelled else { return stopped }
+        // Nonisolated async: the AX work and paced key events run off the main thread.
+        return await ActionExecutor.shared.typeIntoFocusedField(in: app, text: text)
     }
 
     private func sendMessage(_ input: [String: Any]) async -> OllamaClient.ToolResult {
@@ -1068,8 +1108,10 @@ final class HolmesBrain {
             return OllamaClient.ToolResult("User declined to send the message.")
         }
         guard !Task.isCancelled else { return OllamaClient.ToolResult("Stopped", isError: true) }
-        let ok = await offMain { ActionExecutor.shared.sendMessageInApp(app, message: approved) }
-        return OllamaClient.ToolResult(ok ? "Placed the message into \(app)'s input field." : "Failed to send.", isError: !ok)
+        // Places the text at the cursor (no select all). AppleScript inside runs on the main actor.
+        let entry = await ActionExecutor.shared.sendMessageInApp(app, message: approved)
+        return OllamaClient.ToolResult(entry.describe(action: "Placed the message into the input field", app: app),
+                                       isError: !entry.succeeded)
     }
 
     private func openURL(_ input: [String: Any]) async -> OllamaClient.ToolResult {
@@ -1096,8 +1138,20 @@ final class HolmesBrain {
             return OllamaClient.ToolResult("Could not find app '\(app)'.", isError: true)
         }
         guard !Task.isCancelled else { return OllamaClient.ToolResult("Stopped", isError: true) }
-        let ok = await offMain { ActionExecutor.shared.clickButton(label: label, in: running) }
-        return OllamaClient.ToolResult(ok ? "Clicked '\(label)'." : "Could not find a button labeled '\(label)'.", isError: !ok)
+        // The user approved clicking "label". If that label only fuzzily
+        // matched a send/submit class control, do not press it on this approval.
+        let allowCommit = CommitControlGate.looksLikeCommit(label)
+        let outcome = await offMain { ActionExecutor.shared.pressControl(label: label, in: running, allowCommit: allowCommit) }
+        switch outcome {
+        case .pressed(let matched):
+            return OllamaClient.ToolResult("Clicked '\(matched)'.")
+        case .needsConfirmation(let matched):
+            return OllamaClient.ToolResult("Did not click: '\(label)' matched '\(matched)', which sends or commits. Ask for that control by its exact name so the user can approve it.", isError: true)
+        case .notFound:
+            return OllamaClient.ToolResult("Could not find a button labeled '\(label)'.", isError: true)
+        case .failed(let code):
+            return OllamaClient.ToolResult("The button labeled '\(label)' refused the press (AXError \(code)).", isError: true)
+        }
     }
 
     /// The producer half of the browser-automation channel: maps a model
@@ -1269,6 +1323,14 @@ final class HolmesBrain {
         switch await ConfirmationBus.shared.decide(action) {
         case .approved(let text): return Task.isCancelled ? nil : text
         case .dismissed:          return nil
+        case .timedOut:
+            // Only unattended (autonomous) work sets a deadline; show why it
+            // stopped, and let the tool call report a timeout, not a decline.
+            ApprovalTimeoutTracking.flag?.markTimedOut()
+            if let activity = WorkActivityScope.id {
+                WorkActivityCenter.shared.update(activity, phase: .working, detail: ApprovalScope.timedOutMessage)
+            }
+            return nil
         }
     }
 

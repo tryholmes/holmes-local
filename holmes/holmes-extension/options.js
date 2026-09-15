@@ -12,6 +12,16 @@
   var TOKEN_KEY = "holmesToken";
 
   var el = function (id) { return document.getElementById(id); };
+  var REQUEST_TIMEOUT_MS = 3000;
+
+  // Every bridge request is bounded, so a hung app shows a status instead of a
+  // page stuck on "checking…".
+  function fetchWithTimeout(url, init) {
+    var controller = typeof AbortController === "function" ? new AbortController() : null;
+    var timer = setTimeout(function () { if (controller) controller.abort(); }, REQUEST_TIMEOUT_MS);
+    var options = Object.assign({}, init || {}, controller ? { signal: controller.signal } : {});
+    return fetch(url, options).finally(function () { clearTimeout(timer); });
+  }
   var token = "";
   var revealed = false;
 
@@ -45,16 +55,17 @@
 
   async function checkPairing() {
     setPair("amber", "warn", "checking…", "Checking the Holmes bridge on 127.0.0.1:5766…");
-    var healthOk = false;
-    try { var r = await fetch(HEALTH_URL, { method: "GET" }); healthOk = r.ok; }
-    catch (e) { healthOk = false; }
+    var healthOk = false, healthTimedOut = false;
+    try { var r = await fetchWithTimeout(HEALTH_URL, { method: "GET" }); healthOk = r.ok; }
+    catch (e) { healthOk = false; healthTimedOut = !!(e && e.name === "AbortError"); }
     if (!healthOk) {
-      setPair("red", "err", "offline", "Holmes isn’t running. Start the Holmes app to pair.");
+      if (healthTimedOut) setPair("red", "err", "not responding", "Holmes is running but not answering on 127.0.0.1:5766. Quit and reopen Holmes.");
+      else setPair("red", "err", "offline", "Holmes isn’t running. Start the Holmes app to pair.");
       return;
     }
     var status = 0, netErr = false;
     try {
-      var r2 = await fetch(HEARTBEAT_URL, {
+      var r2 = await fetchWithTimeout(HEARTBEAT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Holmes-Token": token || "" },
         body: "{}"

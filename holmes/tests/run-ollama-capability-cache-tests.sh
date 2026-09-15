@@ -8,6 +8,7 @@ xcrun swiftc -swift-version 5 \
   holmes/holmes/Core/OllamaConfig.swift \
   holmes/holmes/Core/WorkActivity.swift \
   holmes/holmes/Core/OllamaClient.swift \
+  holmes/holmes/Core/ModelJSON.swift \
   holmes/tests/OllamaCapabilityCacheTests.swift \
   -o "$capability_test_dir/ollama-capability-cache-tests"
 "$capability_test_dir/ollama-capability-cache-tests"

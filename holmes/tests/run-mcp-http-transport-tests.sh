@@ -8,6 +8,7 @@ xcrun swiftc -swift-version 5 \
   holmes/holmes/Core/OllamaConfig.swift \
   holmes/holmes/Core/WorkActivity.swift \
   holmes/holmes/Core/OllamaClient.swift \
+  holmes/holmes/Core/ModelJSON.swift \
   holmes/holmes/Core/MCPModels.swift \
   holmes/holmes/Core/MCPClient.swift \
   holmes/tests/MCPHTTPTransportTests.swift \

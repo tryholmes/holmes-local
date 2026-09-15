@@ -28,6 +28,7 @@ xcrun swiftc -swift-version 5 \
   holmes/holmes/Core/WorkActivity.swift \
   holmes/holmes/Core/OllamaConfig.swift \
   holmes/holmes/Core/OllamaClient.swift \
+  holmes/holmes/Core/ModelJSON.swift \
   holmes/tests/OllamaWorkActivityTests.swift \
   -o "$work_test_dir/ollama-work-tests"
 "$work_test_dir/ollama-work-tests"

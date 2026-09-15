@@ -87,6 +87,9 @@ actor OllamaClient {
         case busy
         /// Kept for API parity (a hosted model can decline); never thrown here.
         case refused(String)
+        /// No response in time, or the stream went silent mid answer. The
+        /// request is safe to try again once the server answers.
+        case timedOut(String)
 
         var errorDescription: String? {
             switch self {
@@ -99,6 +102,7 @@ actor OllamaClient {
             case .truncated:                return "The model ran out of output tokens before answering"
             case .busy:                     return "The local model is busy"
             case .refused(let m):           return m
+            case .timedOut(let m):          return "The local model stopped responding (\(m)). Holmes is rechecking the Ollama server; try again in a moment."
             }
         }
     }
@@ -386,7 +390,10 @@ actor OllamaClient {
                                        // A thinking-capable model may deliberate even with
                                        // think:false (qwen3-vl's thinking tags do); leave
                                        // headroom so the answer is not guillotined.
-                                       numPredict: OllamaConfig.agentNumPredict + (caps.thinking ? 1536 : 0))
+                                       numPredict: OllamaConfig.agentNumPredict + (caps.thinking ? 1536 : 0),
+                                       // Never retry once a tool has taken effect in this
+                                       // session: the failure is surfaced instead.
+                                       allowTransientRetry: toolCalls == 0)
                 release()
             } catch {
                 release()
@@ -489,36 +496,67 @@ actor OllamaClient {
     /// `{"action":"screenshot"}` (bare computer-tool arguments). Returns nil for
     /// anything that is not unambiguously a call to one of `tools`.
     nonisolated static func toolCallFromContent(_ text: String, tools: [ToolDef]) -> ToolCall? {
-        // The whole message (after fence stripping) must BE the JSON object. A
-        // final prose answer that merely quotes an example call ("I clicked
-        // using {"action":…} and it worked") must not be re-executed.
-        let t = stripCodeFences(text).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard t.hasPrefix("{"), t.hasSuffix("}") else { return nil }
-        let candidate = t
-        guard let data = candidate.data(using: .utf8),
-              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
         let names = tools.map { $0.name }
         func match(_ raw: String) -> String? {
             if names.contains(raw) { return raw }
             return names.first { $0.lowercased() == raw.lowercased() }
         }
-        // {"name": …, "parameters"/"arguments"/"input": {…}}
-        for key in ["name", "tool", "function", "tool_name"] {
-            if let raw = obj[key] as? String, let name = match(raw) {
-                let args = (obj["parameters"] as? [String: Any]) ?? (obj["arguments"] as? [String: Any])
-                    ?? (obj["input"] as? [String: Any]) ?? [:]
-                return ToolCall(id: nil, name: name, arguments: args)
+        func namedCall(_ obj: [String: Any]) -> ToolCall? {
+            // {"name": …, "parameters"/"arguments"/"input": {…}}
+            for key in ["name", "tool", "function", "tool_name"] {
+                if let raw = obj[key] as? String, let name = match(raw) {
+                    let args = (obj["parameters"] as? [String: Any]) ?? (obj["arguments"] as? [String: Any])
+                        ?? (obj["input"] as? [String: Any]) ?? [:]
+                    return ToolCall(id: nil, name: name, arguments: args)
+                }
             }
+            // {"function": {"name": …, "arguments": {…}}}
+            if let fn = obj["function"] as? [String: Any], let raw = fn["name"] as? String, let name = match(raw) {
+                return ToolCall(id: nil, name: name, arguments: (fn["arguments"] as? [String: Any]) ?? [:])
+            }
+            return nil
         }
-        // {"function": {"name": …, "arguments": {…}}}
-        if let fn = obj["function"] as? [String: Any], let raw = fn["name"] as? String, let name = match(raw) {
-            return ToolCall(id: nil, name: name, arguments: (fn["arguments"] as? [String: Any]) ?? [:])
+
+        // Only a message that IS a call is one: the whole message, or a code
+        // fence that ends the message after at most a short lead in. A final
+        // answer that quotes a past call ("Opened it with {…open_app…}.") must
+        // never be re executed.
+        guard let (obj, nothingBefore) = callObject(in: text) else { return nil }
+        if let call = namedCall(obj) { return call }
+        // Bare computer arguments carry no tool name: only with no lead in.
+        guard nothingBefore, obj["action"] is String, let name = match("computer") else { return nil }
+        return ToolCall(id: nil, name: name, arguments: obj)
+    }
+
+    /// Longest sentence allowed before a fenced tool call ("I'll take a screenshot first.").
+    nonisolated static let maxToolCallLeadIn = 160
+
+    /// The JSON object a message consists of: the entire message, or the body
+    /// of a code fence that closes the message (nothing after it) with at most
+    /// `maxToolCallLeadIn` characters before it. `nothingBefore` is false when
+    /// a lead in precedes the fence.
+    nonisolated static func callObject(in text: String) -> (object: [String: Any], nothingBefore: Bool)? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var body = trimmed
+        var leadIn = ""
+        if let open = trimmed.range(of: "```") {
+            leadIn = String(trimmed[..<open.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard leadIn.count <= maxToolCallLeadIn else { return nil }
+            let rest = trimmed[open.upperBound...].drop(while: { $0.isLetter })
+            if let close = rest.range(of: "```") {
+                guard rest[close.upperBound...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                body = String(rest[..<close.lowerBound])
+            } else {
+                body = String(rest)   // an unterminated fence at the end of the message
+            }
+            body = body.trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        // Bare computer-tool arguments.
-        if obj["action"] is String, let name = match("computer") {
-            return ToolCall(id: nil, name: name, arguments: obj)
-        }
-        return nil
+        guard body.hasPrefix("{"),
+              let range = ModelJSON.balancedObjectRange(in: body, startingAt: body.startIndex),
+              range.upperBound == body.endIndex,
+              let data = ModelJSON.normalizeNewlinesInsideStrings(body).data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        return (obj, leadIn.isEmpty)
     }
 
     /// Runs one throwaway turn with exactly the system prompt + tools an agent
@@ -704,7 +742,8 @@ actor OllamaClient {
                                    format: format,
                                    think: caps.thinking ? false : nil,
                                    temperature: asJSON ? OllamaConfig.jsonTemperature : 0.3,
-                                   numPredict: max(maxTokens, OllamaConfig.quickNumPredictFloor) + (caps.thinking ? 1024 : 0))
+                                   numPredict: max(maxTokens, OllamaConfig.quickNumPredictFloor) + (caps.thinking ? 1024 : 0),
+                                   allowTransientRetry: true)
         var text = reply.content.trimmingCharacters(in: .whitespacesAndNewlines)
         if asJSON { text = Self.stripCodeFences(text) }
         if text.isEmpty && reply.doneReason == "length" { throw AgentError.truncated }
@@ -782,7 +821,8 @@ actor OllamaClient {
                       format: Any?,
                       think: Bool?,
                       temperature: Double,
-                      numPredict: Int) async throws -> ChatReply {
+                      numPredict: Int,
+                      allowTransientRetry: Bool = false) async throws -> ChatReply {
         var body: [String: Any] = [
             "model": model,
             "messages": messages,
@@ -802,15 +842,32 @@ actor OllamaClient {
         var thinking = ""
         var rawToolCalls: [[String: Any]] = []
         var doneReason = "stop"
+        var receivedAny = false
+        var retried = false
 
-        try await streamNDJSON(path: "/api/chat", body: body) { chunk in
-            if let message = chunk["message"] as? [String: Any] {
-                if let c = message["content"] as? String { content += c }
-                if let t = message["thinking"] as? String { thinking += t }
-                if let calls = message["tool_calls"] as? [[String: Any]] { rawToolCalls += calls }
-            }
-            if (chunk["done"] as? Bool) == true {
-                doneReason = (chunk["done_reason"] as? String) ?? "stop"
+        while true {
+            do {
+                try await streamNDJSON(path: "/api/chat", body: body) { chunk in
+                    receivedAny = true
+                    if let message = chunk["message"] as? [String: Any] {
+                        if let c = message["content"] as? String { content += c }
+                        if let t = message["thinking"] as? String { thinking += t }
+                        if let calls = message["tool_calls"] as? [[String: Any]] { rawToolCalls += calls }
+                    }
+                    if (chunk["done"] as? Bool) == true {
+                        doneReason = (chunk["done_reason"] as? String) ?? "stop"
+                    }
+                }
+                break
+            } catch let error as AgentError {
+                // One short retry for a dropped/refused connection that produced
+                // nothing yet. Timeouts, HTTP errors and partial streams are not
+                // retried: they are reported so the user can decide.
+                guard allowTransientRetry, !retried, !receivedAny, Self.isTransientConnectionFailure(error) else {
+                    throw error
+                }
+                retried = true
+                try await Task.sleep(nanoseconds: UInt64(max(0, OllamaConfig.transientRetryDelay) * 1_000_000_000))
             }
         }
 
@@ -883,8 +940,27 @@ actor OllamaClient {
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             throw Self.mapHTTP(status: status, json: json, data: data, body: body)
         }
+        // Stall watchdog: once output has started, silence longer than
+        // streamStallTimeout cancels the transfer and reports a timeout. The
+        // first byte may still take as long as a cold model load needs.
+        let activity = StreamActivity()
+        let stallLimit = max(0.05, OllamaConfig.streamStallTimeout)
+        let transfer = bytes.task
+        let watchdog = Task.detached {
+            let tick = UInt64(min(1.0, stallLimit / 4) * 1_000_000_000)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: tick)
+                if let idle = activity.secondsSinceLastChunk(), idle > stallLimit {
+                    activity.markStalled()
+                    transfer.cancel()
+                    return
+                }
+            }
+        }
+        defer { watchdog.cancel() }
         do {
             for try await line in bytes.lines {
+                activity.touch()
                 guard let data = line.data(using: .utf8),
                       let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
                 if let err = obj["error"] as? String {
@@ -895,11 +971,37 @@ actor OllamaClient {
                 }
                 onChunk(obj)
             }
+            if activity.didStall { throw Self.stalled(after: stallLimit) }
         } catch let e as AgentError {
             throw e
         } catch {
+            if activity.didStall { throw Self.stalled(after: stallLimit) }
             throw try Self.mapTransport(error)
         }
+    }
+
+    nonisolated private static func stalled(after seconds: TimeInterval) -> AgentError {
+        OllamaConfig.onModelTransportFailure?()
+        return .timedOut("no output for \(Int(seconds.rounded())) seconds")
+    }
+
+    nonisolated static func isTransientConnectionFailure(_ error: AgentError) -> Bool {
+        if case .serverUnreachable = error { return true }
+        return false
+    }
+
+    /// Last streamed chunk time, shared with the stall watchdog task.
+    private final class StreamActivity: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lastChunk: Date?
+        private var stalled = false
+        func touch() { lock.lock(); lastChunk = Date(); lock.unlock() }
+        func secondsSinceLastChunk() -> TimeInterval? {
+            lock.lock(); defer { lock.unlock() }
+            return lastChunk.map { Date().timeIntervalSince($0) }
+        }
+        func markStalled() { lock.lock(); stalled = true; lock.unlock() }
+        var didStall: Bool { lock.lock(); defer { lock.unlock() }; return stalled }
     }
 
     private func makeRequest(path: String, body: [String: Any], timeout: TimeInterval) throws -> URLRequest {
@@ -923,7 +1025,13 @@ actor OllamaClient {
             if u.code == .cancelled { throw CancellationError() }
             switch u.code {
             case .cannotConnectToHost, .networkConnectionLost, .cannotFindHost, .notConnectedToInternet:
+                OllamaConfig.onModelTransportFailure?()
                 return .serverUnreachable(u.localizedDescription)
+            case .timedOut:
+                // User visible and retryable by the user, never silently retried
+                // (another full wait). The server status is refreshed right away.
+                OllamaConfig.onModelTransportFailure?()
+                return .timedOut("no response for \(Int(OllamaConfig.requestTimeout)) seconds")
             default: break
             }
         }

@@ -968,10 +968,11 @@ final class HolmesAgent {
     }
 
     private static func parseEnrichment(_ raw: String) -> Enrichment? {
-        guard let start = raw.firstIndex(of: "{"), let end = raw.lastIndex(of: "}"), start < end,
-              let data = String(raw[start...end]).data(using: .utf8),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else { return nil }
+        // First balanced object carrying an enrichment field; trailing prose
+        // with its own braces no longer breaks a first "{" to last "}" slice.
+        guard let object = ModelJSON.firstObject(in: raw, where: { object in
+            ["goal", "lastMessageGist", "headline"].contains { object[$0] is String }
+        }) else { return nil }
         func string(_ key: String) -> String {
             (object[key] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         }
