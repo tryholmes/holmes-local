@@ -53,7 +53,8 @@ enum BridgeLoopbackTests {
         // Long poll: the request is already waiting when the command is enqueued and
         // must return right away with it instead of at the end of the hold.
         let longPollStart = Date()
-        let longPoll = Task.detached { poll(port, instance: "inst-a", wait: 15) }
+        // Blocking socket work runs on a Dispatch thread so a narrow Swift task pool (CI runners) never starves.
+        let longPoll = Task { await LoopbackHTTP.background { poll(port, instance: "inst-a", wait: 15) } }
         try? await Task.sleep(nanoseconds: 300_000_000)
         let producer = Task { @MainActor in await bridge.enqueueBrowserCommand("listTabs", ["_browserInstanceID": "inst-a"]) }
         let (longPollResponse, delivered) = await longPoll.value
@@ -214,7 +215,7 @@ enum BridgeLoopbackTests {
 
         // Long polls are capped so they can never occupy every handler slot.
         let holds = (0..<BridgeProtocol.maxConcurrentLongPolls).map { index in
-            Task.detached { poll(port, instance: "hold-\(index)", wait: 8) }
+            Task { await LoopbackHTTP.background { poll(port, instance: "hold-\(index)", wait: 8) } }
         }
         // Wait for the server to really hold every slot; a fixed sleep raced on slow CI runners.
         await waitUntil("every long poll slot is held", timeout: 10) {
@@ -240,11 +241,11 @@ enum BridgeLoopbackTests {
         // one slot wait after another (which pushed later ones past the extension's
         // 5s fetch timeout).
         let backlog = (0..<5).map { _ in
-            Task.detached { () -> (Int, TimeInterval) in
+            Task { await LoopbackHTTP.background { () -> (Int, TimeInterval) in
                 let start = Date()
                 let response = LoopbackHTTP.request(port: port, method: "GET", path: "/health", timeout: 8)
                 return (response?.status ?? -1, Date().timeIntervalSince(start))
-            }
+            } }
         }
         var backlogResults: [(Int, TimeInterval)] = []
         for request in backlog { backlogResults.append(await request.value) }
