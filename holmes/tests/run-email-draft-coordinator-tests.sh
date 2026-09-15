@@ -9,6 +9,7 @@ xcrun swiftc -swift-version 5 \
   holmes/holmes/Core/EmailComposeSnapshot.swift \
   holmes/holmes/Core/EmailDraftIntent.swift \
   holmes/holmes/Core/EmailDrafting.swift \
+  holmes/holmes/Core/EmailPrediction.swift \
   holmes/holmes/Core/EmailDraftCoordinator.swift \
   holmes/tests/EmailDraftCoordinatorTests.swift \
   -o "$coordinator_test_dir/email-draft-coordinator-tests"

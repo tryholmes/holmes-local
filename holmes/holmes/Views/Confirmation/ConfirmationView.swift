@@ -599,10 +599,26 @@ struct ConfirmationView: View {
     @ViewBuilder private func draftPrimaryControl(draft: ProactiveDraft) -> some View {
         switch draft.target {
         case .emailCompose(let expected):
-            NoirButton(expected.bodyIsEmpty ? "Insert draft" : "Replace body", icon: "text.insert") {
-                insertEmailDraft(draft, expected: expected)
+            // In browser composers both keep the signature and quoted thread. Apple
+            // Mail cannot separate them, so a Mail body with text gets Copy only.
+            // Nothing here ever sends.
+            if !expected.supportsReviewedWrite {
+                EmptyView()
+            } else if expected.isOwnTextEmpty {
+                NoirButton("Insert draft", icon: "text.insert") {
+                    insertEmailDraft(draft, expected: expected, mode: .replace)
+                }
+                .disabled(draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            } else {
+                NoirButton("Replace body", icon: "text.insert") {
+                    insertEmailDraft(draft, expected: expected, mode: .replace)
+                }
+                .disabled(draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                NoirButton("Insert", style: .secondary) {
+                    insertEmailDraft(draft, expected: expected, mode: .insert)
+                }
+                .disabled(draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .disabled(draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         case .typeIntoApp(let appName):
             NoirButton("Insert", icon: "text.insert") { insertDraft(draft, appName: appName) }
                 .disabled(draftBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -650,7 +666,7 @@ struct ConfirmationView: View {
         }
     }
 
-    private func insertEmailDraft(_ draft: ProactiveDraft, expected: EmailComposeSnapshot) {
+    private func insertEmailDraft(_ draft: ProactiveDraft, expected: EmailComposeSnapshot, mode: EmailWriteMode) {
         guard !draftIsExecuting else { return }
         draftIsExecuting = true
         draftResult = nil
@@ -661,7 +677,7 @@ struct ConfirmationView: View {
                 do {
                     try Task.checkCancellation()
                     WorkActivityCenter.shared.update(activity, phase: .working)
-                    let inserted = try await EmailDraftCoordinator.shared.insert(text, expected: expected)
+                    let inserted = try await EmailDraftCoordinator.shared.insert(text, expected: expected, mode: mode)
                     try Task.checkCancellation()
                     guard WorkActivityCenter.shared.isActive(activity) else { throw CancellationError() }
                     guard inserted else { throw EmailComposeError.unavailable("Couldn't verify the inserted email. Check Gmail before retrying.") }

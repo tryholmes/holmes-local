@@ -8,6 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		AA000001000000000000114 /* ActionRunEvidence.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000114 /* ActionRunEvidence.swift */; };
+		AA000001000000000000115 /* EmailPrediction.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000115 /* EmailPrediction.swift */; };
+		AA000001000000000000116 /* MailComposeMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000116 /* MailComposeMatcher.swift */; };
+		AA000001000000000000117 /* EmailPredictionSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000117 /* EmailPredictionSources.swift */; };
+		AA000001000000000000118 /* EmailPredictionActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000118 /* EmailPredictionActions.swift */; };
+		AA000001000000000000119 /* EmailUndoToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000119 /* EmailUndoToast.swift */; };
 		B7A500010000000000000006 /* ModelJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000006 /* ModelJSON.swift */; };
 		B7A500010000000000000005 /* TextEntrySupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000005 /* TextEntrySupport.swift */; };
 		B7A500010000000000000004 /* AutonomousRunTally.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000004 /* AutonomousRunTally.swift */; };
@@ -127,6 +132,11 @@
 
 /* Begin PBXFileReference section */
 		AA000002000000000000114 /* ActionRunEvidence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionRunEvidence.swift; sourceTree = "<group>"; };
+		AA000002000000000000115 /* EmailPrediction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailPrediction.swift; sourceTree = "<group>"; };
+		AA000002000000000000116 /* MailComposeMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailComposeMatcher.swift; sourceTree = "<group>"; };
+		AA000002000000000000117 /* EmailPredictionSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailPredictionSources.swift; sourceTree = "<group>"; };
+		AA000002000000000000118 /* EmailPredictionActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailPredictionActions.swift; sourceTree = "<group>"; };
+		AA000002000000000000119 /* EmailUndoToast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailUndoToast.swift; sourceTree = "<group>"; };
 		B7A500020000000000000006 /* ModelJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelJSON.swift; sourceTree = "<group>"; };
 		B7A500020000000000000005 /* TextEntrySupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextEntrySupport.swift; sourceTree = "<group>"; };
 		B7A500020000000000000004 /* AutonomousRunTally.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutonomousRunTally.swift; sourceTree = "<group>"; };
@@ -350,6 +360,7 @@
 			children = (
 				AA000002000000000000057 /* ConfirmationView.swift */,
 				AA000002000000000000058 /* ConfirmationWindowController.swift */,
+				AA000002000000000000119 /* EmailUndoToast.swift */,
 				B7C4A1E20F3D48A9C6510002 /* ReplyReadyCard.swift */,
 			);
 			path = Confirmation;
@@ -383,6 +394,10 @@
 				AA000002000000000000112 /* EmailDrafting.swift */,
 				AA000002000000000000113 /* EmailDraftCoordinator.swift */,
 				AA000002000000000000114 /* ActionRunEvidence.swift */,
+				AA000002000000000000115 /* EmailPrediction.swift */,
+				AA000002000000000000116 /* MailComposeMatcher.swift */,
+				AA000002000000000000117 /* EmailPredictionSources.swift */,
+				AA000002000000000000118 /* EmailPredictionActions.swift */,
 				B7A500020000000000000006 /* ModelJSON.swift */,
 				B7A500020000000000000005 /* TextEntrySupport.swift */,
 				B7A500020000000000000004 /* AutonomousRunTally.swift */,
@@ -623,6 +638,11 @@
 				AA000001000000000000112 /* EmailDrafting.swift in Sources */,
 				AA000001000000000000113 /* EmailDraftCoordinator.swift in Sources */,
 				AA000001000000000000114 /* ActionRunEvidence.swift in Sources */,
+				AA000001000000000000115 /* EmailPrediction.swift in Sources */,
+				AA000001000000000000116 /* MailComposeMatcher.swift in Sources */,
+				AA000001000000000000117 /* EmailPredictionSources.swift in Sources */,
+				AA000001000000000000118 /* EmailPredictionActions.swift in Sources */,
+				AA000001000000000000119 /* EmailUndoToast.swift in Sources */,
 				B7A500010000000000000006 /* ModelJSON.swift in Sources */,
 				B7A500010000000000000005 /* TextEntrySupport.swift in Sources */,
 				B7A500010000000000000004 /* AutonomousRunTally.swift in Sources */,

@@ -18,6 +18,8 @@ struct EmailDraftInput: Equatable {
     var isReply = false
 
     var hasContent: Bool {
+        // A known recipient or conversation is enough to predict the email.
+        if let compose, !compose.recipients.isEmpty || !compose.thread.isEmpty { return true }
         if !(compose?.subject ?? subject).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
         if !(compose?.body ?? sourceBody).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
         // A self-contained writing request can work without an open composer.
@@ -75,7 +77,14 @@ enum EmailDraftText {
               let value = object["body"] as? String else { throw EmailDraftTextError.unusable }
         let body = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty, body.count <= 8000 else { throw EmailDraftTextError.unusable }
-        let instructionPatterns = [
+        guard !instructionPatterns.contains(where: {
+            body.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil
+        }) else { throw EmailDraftTextError.unusable }
+        return body
+    }
+
+    /// Model output that teaches, refuses or holds placeholders instead of being an email.
+    static let instructionPatterns = [
             #"^(?:sure[,!.]?\s*)?(?:here(?:'s| is)|below is) (?:an? |the |your )?(?:draft(?: email)?|email(?: draft)?)(?: (?:for you|you can send|to send|to use|you requested))?\s*[:\n]"#,
             #"^you (?:can|should|need to) (?:draft|compose|write) (?:an? |the |your |this )?(?:email|reply|message)\b"#,
             #"^(?:you (?:can|should|need to)|please) (?:open|click|type|compose|write|paste)\b.{0,100}\b(?:email app|email client|compose button|mail app|send button)\b"#,
@@ -86,12 +95,7 @@ enum EmailDraftText {
             #"^as an? (?:ai|language model)\b"#,
             #"\[[^\]\n]{0,60}\b(?:name|time|reason|date|email|company|title|recipient|sender|boss|manager|insert)\b[^\]\n]{0,60}\]"#,
             #"^(?:subject|to):"#
-        ]
-        guard !instructionPatterns.contains(where: {
-            body.range(of: $0, options: [.regularExpression, .caseInsensitive]) != nil
-        }) else { throw EmailDraftTextError.unusable }
-        return body
-    }
+    ]
 
     /// One bounded repair attempt handles small models returning teaching prose.
     /// The invalid response is never published or offered for insertion.
@@ -116,6 +120,7 @@ struct EmailComposeTrigger {
     private var completed: [String: Date] = [:]
     private var attempts: [String: Date] = [:]
     private var insertedComposers: [String: Date] = [:]
+    private var offeredComposers: [String: Date] = [:]
 
     mutating func observe(_ snapshot: EmailComposeSnapshot?, now: Date = Date()) -> TimeInterval? {
         guard let snapshot, snapshot.canAutoDraft, snapshot.isFresh(at: now) else {
@@ -125,6 +130,10 @@ struct EmailComposeTrigger {
         let key = snapshot.revisionKey
         insertedComposers = insertedComposers.filter { now.timeIntervalSince($0.value) < 3600 }
         guard insertedComposers[snapshot.identity] == nil else { return nil }
+        // Every typing pause changes the body. Once a card was offered for this
+        // composer, typed text never triggers another one; clearing it can.
+        offeredComposers = offeredComposers.filter { now.timeIntervalSince($0.value) < 3600 }
+        guard offeredComposers[snapshot.identity] == nil || snapshot.canAutoWrite else { return nil }
         completed = completed.filter { now.timeIntervalSince($0.value) < 3600 }
         attempts = attempts.filter { now.timeIntervalSince($0.value) < 60 }
         guard completed[key] == nil, attempts[key] == nil else { return nil }
@@ -135,6 +144,7 @@ struct EmailComposeTrigger {
     mutating func claim(_ snapshot: EmailComposeSnapshot, now: Date = Date()) -> Bool {
         guard snapshot.canAutoDraft, snapshot.isFresh(at: now),
               insertedComposers[snapshot.identity] == nil,
+              offeredComposers[snapshot.identity] == nil || snapshot.canAutoWrite,
               let candidate, candidate.key == snapshot.revisionKey,
               now.timeIntervalSince(candidate.since) >= Self.dwell,
               completed[candidate.key] == nil, attempts[candidate.key] == nil else { return false }
@@ -152,6 +162,16 @@ struct EmailComposeTrigger {
         candidate = nil
     }
 
+    func hasOffered(_ snapshot: EmailComposeSnapshot, now: Date = Date()) -> Bool {
+        offeredComposers[snapshot.identity].map { now.timeIntervalSince($0) < 3600 } ?? false
+    }
+
+    /// A review card was offered for this composer instead of writing into it.
+    mutating func didOffer(for snapshot: EmailComposeSnapshot, now: Date = Date()) {
+        offeredComposers[snapshot.identity] = now
+        candidate = nil
+    }
+
     mutating func reset() { candidate = nil }
 }
 
@@ -160,6 +180,11 @@ struct PreparedEmailDraft {
     let input: EmailDraftInput
     let body: String
     let isUserInitiated: Bool
+    var prediction: EmailPrediction? = nil
+    /// Finished while the person was in another app; write when they return.
+    var deferred = false
+    /// The composer changed during an automatic run; offer, never write.
+    var reviewOnly = false
 }
 
 /// The production request lifecycle is dependency-injected for race tests. A
@@ -169,9 +194,12 @@ final class EmailDraftSession {
     struct Dependencies {
         var isReady: () -> Bool
         var notReadyMessage: () -> String
-        var generate: (EmailDraftInput, WorkActivityCenter.Origin) async throws -> String
+        var generate: (EmailDraftInput, WorkActivityCenter.Origin) async throws -> EmailPrediction
         var refresh: (EmailComposeSnapshot) async -> EmailComposeSnapshot?
         var publish: (PreparedEmailDraft) -> Void
+        /// True when the composer is simply not in front (the person switched
+        /// apps), so an automatic result may wait instead of being discarded.
+        var canDefer: (EmailComposeSnapshot) -> Bool = { _ in false }
     }
 
     private let dependencies: Dependencies
@@ -182,6 +210,8 @@ final class EmailDraftSession {
     private var ownedActivity: UUID?
     private(set) var origin: WorkActivityCenter.Origin?
     var isRunning: Bool { requestID != nil }
+    /// The composer the running request is predicting for.
+    var contextSnapshot: EmailComposeSnapshot? { requestID == nil ? nil : context }
 
     init(dependencies: Dependencies) { self.dependencies = dependencies }
 
@@ -212,6 +242,9 @@ final class EmailDraftSession {
     func noteContext(_ snapshot: EmailComposeSnapshot?) {
         guard let expected = context, requestID != nil else { return }
         guard snapshot?.revisionKey != expected.revisionKey else { return }
+        // The person typing into the same composer during an automatic run:
+        // finish, then offer the result for review instead of writing it.
+        if origin == .background, let snapshot, snapshot.identity == expected.identity { return }
         cancellationReason = "The email changed while Holmes was drafting. Review the current email and ask again."
         task?.cancel()
     }
@@ -258,24 +291,41 @@ final class EmailDraftSession {
                 result = .failed(dependencies.notReadyMessage())
                 return result
             }
-            WorkActivityCenter.shared.update(activity, phase: .working, detail: "Writing the email body")
-            let body = try await dependencies.generate(input, origin)
+            WorkActivityCenter.shared.update(activity, phase: .working,
+                                             detail: input.compose == nil ? "Writing the email body" : "Predicting your email")
+            let prediction = try await dependencies.generate(input, origin)
+            let body = prediction.body
             try Task.checkCancellation()
             guard requestID == id, WorkActivityCenter.shared.isActive(activity) else { return result }
+            guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw EmailDraftTextError.unusable }
             if let expected = input.compose {
                 WorkActivityCenter.shared.update(activity, phase: .working, detail: "Checking the email is unchanged")
                 let latest = await dependencies.refresh(expected)
                 try Task.checkCancellation()
                 guard requestID == id, WorkActivityCenter.shared.isActive(activity) else { return result }
+                if latest == nil, origin == .background, dependencies.canDefer(expected) {
+                    dependencies.publish(PreparedEmailDraft(id: UUID(), input: input, body: body, isUserInitiated: false,
+                                                            prediction: prediction, deferred: true))
+                    result = .ready("Holmes will finish this email when you return to it.")
+                    return result
+                }
+                if origin == .background, let latest, latest.isFresh(), latest.identity == expected.identity,
+                   latest.revisionKey != expected.revisionKey {
+                    dependencies.publish(PreparedEmailDraft(id: UUID(), input: EmailDraftInput(instruction: input.instruction, compose: latest),
+                                                            body: body, isUserInitiated: false, prediction: prediction, reviewOnly: true))
+                    result = .ready("Your email draft is ready to review.")
+                    return result
+                }
                 guard let latest, latest.isFresh(), latest.revisionKey == expected.revisionKey else {
                     result = .needsContext("The email changed while Holmes was drafting. Nothing was inserted. Ask again for the current email.")
                     return result
                 }
             }
-            guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw EmailDraftTextError.unusable }
             try Task.checkCancellation()
-            dependencies.publish(PreparedEmailDraft(id: UUID(), input: input, body: body, isUserInitiated: origin == .user))
-            result = .ready("Your email draft is ready to review.")
+            dependencies.publish(PreparedEmailDraft(id: UUID(), input: input, body: body, isUserInitiated: origin == .user,
+                                                    prediction: prediction))
+            result = .ready(origin == .background && input.compose?.canAutoWrite == true
+                            ? "Holmes is writing your email." : "Your email draft is ready to review.")
         } catch is CancellationError {
             if requestID == id, let reason = cancellationReason { result = .needsContext(reason) }
         } catch {

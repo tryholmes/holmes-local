@@ -2,14 +2,30 @@ import AppKit
 import ApplicationServices
 import Foundation
 
-/// Apple Mail's labeled AX fields. No OCR, clipboard, focus guessing or keystrokes.
+/// Apple Mail's labeled AX fields. No OCR or focus guessing. The body may be a
+/// plain text area or, in current Mail, a WebKit AXWebArea; writing uses the AX
+/// value when Mail allows it and otherwise a paste into that exact body, with the
+/// clipboard saved and restored. Nothing here ever sends.
 @MainActor
 enum MailComposeReader {
     private struct Candidate {
         let snapshot: EmailComposeSnapshot
+        let match: MailComposeMatch
         let body: AXUIElement
+        let subject: AXUIElement
+        let processIdentifier: pid_t
+    }
+    private struct UndoRecord {
+        let identity: String
+        let before: String
+        let after: String
+        let subjectBefore: String?
+        let subjectAfter: String?
+        let usedPaste: Bool
     }
     private static var identities: [(element: AXUIElement, id: String)] = []
+    private static var undoRecords: [String: UndoRecord] = [:]
+    private static var undoOrder: [String] = []
 
     static func readCurrent() -> EmailComposeSnapshot? { readCandidate()?.snapshot }
 
@@ -21,32 +37,167 @@ enum MailComposeReader {
     }
 
     static func stageEmailDraft(_ text: String, expected: EmailComposeSnapshot) async throws -> Bool {
+        _ = try await writeEmailDraft(text, subject: nil, mode: expected.bodyIsEmpty ? .auto : .replace, expected: expected)
+        return true
+    }
+
+    /// Mail's AX body includes its signature as plain text that cannot be told
+    /// apart, so automatic writes need a truly empty body, and replacing existing
+    /// text needs a settable AX value.
+    static func writeEmailDraft(_ text: String, subject: String?, mode: EmailWriteMode,
+                                expected: EmailComposeSnapshot) async throws -> EmailWriteReceipt {
         guard expected.source == .accessibility, expected.appBundleIdentifier == "com.apple.mail",
               expected.bodyReadable, !EmailComposeSnapshot.isBlankBody(text), text.count <= 16_000,
               let current = readCandidate(), current.snapshot.revisionKey == expected.revisionKey else {
             throw EmailComposeError.unavailable("The Mail composer or its contents changed. Refresh the draft before inserting.")
         }
-        var settable = DarwinBoolean(false)
-        guard AXUIElementIsAttributeSettable(current.body, kAXValueAttribute as CFString, &settable) == .success,
-              settable.boolValue else {
-            throw EmailComposeError.unavailable("Mail does not expose a writable message body. Copy the draft instead.")
+        if mode == .auto, !current.snapshot.bodyIsEmpty {
+            throw EmailComposeError.unavailable("The Mail message already has text, so Holmes did not write automatically.")
         }
-        // Re-read after the AX capability query. The setter below addresses only
-        // this exact body element; no app activation or keyboard paste is involved.
-        guard let validated = readCandidate(), CFEqual(validated.body, current.body),
-              validated.snapshot.revisionKey == expected.revisionKey else {
+        let before = current.snapshot.body
+        let hasText = !EmailComposeSnapshot.isBlankBody(before)
+        // Mail's body text includes its signature and quoted thread: replacing
+        // would erase them and inserting would land below them.
+        guard current.snapshot.supportsReviewedWrite else {
+            throw EmailComposeError.unavailable("This Mail message already has text, including any signature or quote, so Holmes will not change it. Copy the draft instead.")
+        }
+        let target = mode == .insert && hasText ? before + "\n\n" + text : text
+        let usedPaste: Bool
+        if current.match.bodyValueSettable {
+            guard AXUIElementSetAttributeValue(current.body, kAXValueAttribute as CFString, target as CFString) == .success else {
+                throw EmailComposeError.unavailable("Mail refused to insert the draft. Copy it instead.")
+            }
+            usedPaste = false
+        } else {
+            guard mode != .replace || !hasText else {
+                throw EmailComposeError.unavailable("Mail does not let Holmes replace this message's text. Copy the draft instead.")
+            }
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.mail" else {
+                throw EmailComposeError.unavailable("Return to the Mail message to insert the draft.")
+            }
+            try await paste(hasText ? "\n\n" + text : text, into: current)
+            usedPaste = true
+        }
+
+        var filled = false
+        if let subject, !subject.isEmpty, current.snapshot.subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           isSettable(current.subject),
+           AXUIElementSetAttributeValue(current.subject, kAXValueAttribute as CFString, subject as CFString) == .success {
+            filled = true
+        }
+
+        guard let after = readCandidate(), after.snapshot.identity == expected.identity,
+              after.snapshot.recipients == expected.recipients, after.snapshot.cc == expected.cc, after.snapshot.bcc == expected.bcc,
+              Self.lines(after.snapshot.body) == Self.lines(target),
+              after.snapshot.subject == (filled ? subject! : expected.subject) else {
+            await rollback(to: before, subject: filled ? expected.subject : nil, usedPaste: usedPaste)
+            throw EmailComposeError.unavailable("Mail did not confirm the inserted draft, so Holmes put the message back.")
+        }
+        let token = UUID().uuidString
+        undoRecords[token] = UndoRecord(identity: expected.identity, before: before, after: after.snapshot.body,
+                                        subjectBefore: filled ? expected.subject : nil, subjectAfter: filled ? subject : nil,
+                                        usedPaste: usedPaste)
+        // Evict the oldest records, never the newest, which the undo notice shows.
+        undoOrder.append(token)
+        while undoOrder.count > 10 {
+            undoRecords.removeValue(forKey: undoOrder.removeFirst())
+        }
+        return EmailWriteReceipt(undoToken: token, subjectFilled: filled)
+    }
+
+    /// Restores the body and subject exactly, but only while Mail still shows
+    /// exactly what Holmes wrote.
+    static func undoEmailDraft(token: String, expected: EmailComposeSnapshot) async throws {
+        guard let record = undoRecords[token] else {
+            throw EmailComposeError.unavailable("There is nothing of Holmes's left to undo in this message.")
+        }
+        guard let current = readCandidate(), current.snapshot.identity == record.identity else {
+            throw EmailComposeError.unavailable("The Mail message Holmes wrote into is no longer open.")
+        }
+        guard Self.lines(current.snapshot.body) == Self.lines(record.after),
+              record.subjectAfter == nil || current.snapshot.subject == record.subjectAfter else {
+            throw EmailComposeError.unavailable("You changed the message after Holmes wrote it, so Undo would erase your edits. Use Command Z in Mail instead.")
+        }
+        await rollback(to: record.before, subject: record.subjectBefore, usedPaste: record.usedPaste)
+        guard let restored = readCandidate(), Self.lines(restored.snapshot.body) == Self.lines(record.before) else {
+            throw EmailComposeError.unavailable("Holmes could not confirm the undo. Check the Mail message.")
+        }
+        undoRecords.removeValue(forKey: token)
+    }
+
+    private static func rollback(to body: String, subject: String?, usedPaste: Bool) async {
+        guard let current = readCandidate() else { return }
+        if let subject, isSettable(current.subject) {
+            AXUIElementSetAttributeValue(current.subject, kAXValueAttribute as CFString, subject as CFString)
+        }
+        switch MailComposeMatcher.rollback(bodyNow: current.snapshot.body, before: body,
+                                           valueSettable: current.match.bodyValueSettable, usedPaste: usedPaste) {
+        case .none:
+            break
+        case .setValue:
+            AXUIElementSetAttributeValue(current.body, kAXValueAttribute as CFString, body as CFString)
+        case .undoPaste:
+            // Mail's own undo reverses exactly the paste. Command Z is never a send shortcut.
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.mail",
+                  focusBody(current) else { break }
+            postCommandKey(0x06, to: current.processIdentifier)
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+    }
+
+    /// Pastes into the exact body element, then restores every clipboard item.
+    private static func paste(_ text: String, into candidate: Candidate) async throws {
+        let pasteboard = NSPasteboard.general
+        let saved: [NSPasteboardItem] = (pasteboard.pasteboardItems ?? []).map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+        var ourChange = -1
+        defer {
+            // If the person copied something meanwhile, their clipboard wins.
+            if pasteboard.changeCount == ourChange {
+                pasteboard.clearContents()
+                if !saved.isEmpty { pasteboard.writeObjects(saved) }
+            }
+        }
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            throw EmailComposeError.unavailable("Holmes could not use the clipboard. Copy the draft instead.")
+        }
+        ourChange = pasteboard.changeCount
+        guard focusBody(candidate) else {
+            throw EmailComposeError.unavailable("Mail did not move focus to the message body, so Holmes did not paste. Copy the draft instead.")
+        }
+        // Revalidate after focusing: the paste goes only to the same unchanged body.
+        guard let validated = readCandidate(), CFEqual(validated.body, candidate.body),
+              validated.snapshot.revisionKey == candidate.snapshot.revisionKey else {
             throw EmailComposeError.unavailable("The Mail composer changed before insertion.")
         }
-        guard AXUIElementSetAttributeValue(current.body, kAXValueAttribute as CFString, text as CFString) == .success else {
-            throw EmailComposeError.unavailable("Mail refused to insert the draft. Copy it instead.")
-        }
-        guard let after = readCandidate(), after.snapshot.identity == expected.identity,
-              after.snapshot.subject == expected.subject, after.snapshot.recipients == expected.recipients,
-              after.snapshot.cc == expected.cc, after.snapshot.bcc == expected.bcc,
-              after.snapshot.body == text else {
-            throw EmailComposeError.unavailable("Mail did not confirm the inserted draft. Check the composer before retrying.")
-        }
-        return true
+        postCommandKey(0x09, to: candidate.processIdentifier)
+        try? await Task.sleep(nanoseconds: 350_000_000)
+    }
+
+    /// Focuses the body, then confirms Mail's focused element really is that
+    /// body, so a paste or undo can never land in To, Subject or elsewhere.
+    private static func focusBody(_ candidate: Candidate) -> Bool {
+        guard AXUIElementSetAttributeValue(candidate.body, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success else { return false }
+        let axApp = AXUIElementCreateApplication(candidate.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 0.15)
+        let focused = element(axApp, kAXFocusedUIElementAttribute)
+        return MailComposeMatcher.canPaste(focusedID: focused.map { CFEqual($0, candidate.body) ? 1 : 0 }, bodyID: 1)
+    }
+
+    private static func postCommandKey(_ keyCode: CGKeyCode, to pid: pid_t) {
+        let source = CGEventSource(stateID: .combinedSessionState)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else { return }
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        down.postToPid(pid)
+        up.postToPid(pid)
     }
 
     private static func readCandidate() -> Candidate? {
@@ -58,64 +209,71 @@ enum MailComposeReader {
         AXUIElementSetMessagingTimeout(axApp, 0.15)
         guard let window = element(axApp, kAXFocusedWindowAttribute),
               value(window, kAXMinimizedAttribute) as? Bool != true else { return nil }
-        let nodes = descendants(window)
-        let editableRoles: Set<String> = ["AXTextField", "AXComboBox", "AXTextArea"]
-        func controls(_ names: Set<String>) -> [AXUIElement] {
-            nodes.filter { node in
-                editableRoles.contains(string(node, kAXRoleAttribute) ?? "")
-                    && !labels(node).isDisjoint(with: names)
-            }
-        }
-        let subjects = controls(["subject"])
-        let to = controls(["to", "to recipients"])
-        // Both labeled controls establish that this is an actual compose window,
-        // rather than Mail's reader pane containing arbitrary message text.
-        guard subjects.count == 1, to.count == 1,
-              let subject = string(subjects[0], kAXValueAttribute) else { return nil }
-        let bodies = nodes.filter { node in
+
+        var elements: [Int: AXUIElement] = [:]
+        var count = 0
+        let labeledRoles: Set<String> = ["AXTextField", "AXComboBox", "AXTextArea", "AXWebArea"]
+        func build(_ node: AXUIElement, depth: Int) -> MailAXNode {
+            count += 1
+            let id = count
+            elements[id] = node
             let role = string(node, kAXRoleAttribute) ?? ""
-            guard role == "AXTextArea" || role == "AXTextField" else { return false }
-            return !labels(node).isDisjoint(with: ["body", "message body", "message content", "messagecontentview", "message-body"])
-        }
-        guard bodies.count == 1 else { return nil }
-        let bodyElement = bodies[0]
-        let rawBody = string(bodyElement, kAXValueAttribute)
-        let bodyNodes = descendants(bodyElement)
-        let hasRichObjects = bodyNodes.contains {
-            ["AXImage", "AXTable", "AXAttachment", "AXWebArea"].contains(string($0, kAXRoleAttribute) ?? "")
-        } || nodes.contains { string($0, kAXRoleAttribute) == "AXAttachment" }
-        // Attributed text may carry attachments invisible in its .string.
-        let attributed = value(bodyElement, kAXValueAttribute) as? NSAttributedString
-        var attributedAttachment = false
-        attributed?.enumerateAttribute(.attachment, in: NSRange(location: 0, length: attributed?.length ?? 0)) { value, _, _ in
-            if value != nil { attributedAttachment = true }
-        }
-        let body = rawBody ?? ""
-        // Rich AX bodies are not fully serializable here, so refuse staging and
-        // auto-generation instead of silently erasing non-text content.
-        let readable = rawBody != nil && body.count <= 16_000 && !hasRichObjects && !attributedAttachment
-        func recipients(_ fields: [AXUIElement]) -> [String] {
-            guard fields.count <= 1 else { return ["(ambiguous recipient field)"] }
-            guard let field = fields.first else { return [] }
-            let values = ([field] + descendants(field)).compactMap { string($0, kAXValueAttribute) }
-            let text = values.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return [] }
-            let pattern = #"[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+"#
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-            let emails = regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
-                Range($0.range, in: text).map { String(text[$0]).lowercased() }
+            var copy = MailAXNode(id: id, role: role)
+            if labeledRoles.contains(role) {
+                copy.labels = labels(node)
+                copy.value = string(node, kAXValueAttribute)
+                copy.valueSettable = isSettable(node)
+            } else if role == "AXStaticText" {
+                copy.value = string(node, kAXValueAttribute)
             }
-            return emails.isEmpty ? ["(recipient address unavailable)"] : Array(Set(emails)).sorted()
+            guard depth < 14, count < 400 else { return copy }
+            let children = value(node, kAXChildrenAttribute) as? [AXUIElement] ?? []
+            for child in children.prefix(80) where count < 400 {
+                copy.children.append(build(child, depth: depth + 1))
+            }
+            return copy
         }
-        let from = controls(["from", "from account"]).first.flatMap { string($0, kAXValueAttribute) } ?? ""
+        let tree = build(window, depth: 0)
+        guard let match = MailComposeMatcher.match(window: tree),
+              let bodyElement = elements[match.bodyID], let subjectElement = elements[match.subjectID] else { return nil }
+
+        // Attributed text may carry attachments invisible in its .string.
+        var attributedAttachment = false
+        if match.bodyKind == .textArea, let attributed = value(bodyElement, kAXValueAttribute) as? NSAttributedString {
+            attributed.enumerateAttribute(.attachment, in: NSRange(location: 0, length: attributed.length)) { value, _, _ in
+                if value != nil { attributedAttachment = true }
+            }
+        }
+        let attachmentInWindow = MailComposeMatcher.flatten(tree).contains { $0.role == "AXAttachment" }
+        let body = match.bodyText
+        // Rich bodies are not fully serializable here, so refuse staging and
+        // automatic generation instead of silently erasing non-text content.
+        let readable = match.bodyReadable && !attributedAttachment && !attachmentInWindow
+        func recipients(_ ids: [Int]) -> [String] {
+            guard ids.count <= 1 else { return ["(ambiguous recipient field)"] }
+            return MailComposeMatcher.recipients(ids.first.flatMap { MailComposeMatcher.node($0, in: tree) })
+        }
+        let from = MailComposeMatcher.flatten(tree).first {
+            MailComposeMatcher.editableRoles.contains($0.role) && !$0.labels.isDisjoint(with: ["from", "from account"])
+        }?.value ?? ""
         let id = "mail|\(app.processIdentifier)|\(app.launchDate?.timeIntervalSince1970 ?? 0)|\(identity(window))|\(identity(bodyElement))|\(from)"
         let snapshot = EmailComposeSnapshot(source: .accessibility, identity: id, provider: "Apple Mail",
-            app: app.localizedName ?? "Mail", appBundleIdentifier: "com.apple.mail", recipients: recipients(to),
-            cc: recipients(controls(["cc", "cc recipients"])), bcc: recipients(controls(["bcc", "bcc recipients"])),
-            subject: subject, body: String(body.prefix(16_000)), bodyReadable: readable,
+            app: app.localizedName ?? "Mail", appBundleIdentifier: "com.apple.mail", recipients: recipients([match.toID]),
+            cc: recipients(match.ccIDs), bcc: recipients(match.bccIDs),
+            subject: match.subject, body: body, bodyReadable: readable,
             bodyIsEmpty: readable && EmailComposeSnapshot.isBlankBody(body), capturedAt: Date(),
             bodyRevision: body)
-        return Candidate(snapshot: snapshot, body: bodyElement)
+        return Candidate(snapshot: snapshot, match: match, body: bodyElement, subject: subjectElement,
+                         processIdentifier: app.processIdentifier)
+    }
+
+    private static func lines(_ text: String) -> [String] {
+        text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    private static func isSettable(_ node: AXUIElement) -> Bool {
+        var settable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(node, kAXValueAttribute as CFString, &settable) == .success && settable.boolValue
     }
 
     private static func identity(_ element: AXUIElement) -> String {
@@ -145,19 +303,5 @@ enum MailComposeReader {
             names.append(string(label, kAXValueAttribute) ?? string(label, kAXTitleAttribute) ?? "")
         }
         return Set(names.map { $0.lowercased().trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ":"))) })
-    }
-    private static func descendants(_ root: AXUIElement) -> [AXUIElement] {
-        var result: [AXUIElement] = []
-        func walk(_ node: AXUIElement, _ depth: Int) {
-            guard depth < 12, result.count < 180 else { return }
-            let children = value(node, kAXChildrenAttribute) as? [AXUIElement] ?? []
-            for child in children.prefix(40) {
-                guard result.count < 180 else { break }
-                result.append(child)
-                walk(child, depth + 1)
-            }
-        }
-        walk(root, 0)
-        return result
     }
 }
