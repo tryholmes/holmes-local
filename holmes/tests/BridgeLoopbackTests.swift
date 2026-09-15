@@ -214,9 +214,12 @@ enum BridgeLoopbackTests {
 
         // Long polls are capped so they can never occupy every handler slot.
         let holds = (0..<BridgeProtocol.maxConcurrentLongPolls).map { index in
-            Task.detached { poll(port, instance: "hold-\(index)", wait: 4) }
+            Task.detached { poll(port, instance: "hold-\(index)", wait: 8) }
         }
-        try? await Task.sleep(nanoseconds: 400_000_000)
+        // Wait for the server to really hold every slot; a fixed sleep raced on slow CI runners.
+        await waitUntil("every long poll slot is held", timeout: 10) {
+            contender.testHeldLongPollCount == BridgeProtocol.maxConcurrentLongPolls
+        }
         let extraStart = Date()
         let extra = await LoopbackHTTP.background { poll(port, instance: "hold-extra", wait: 4) }
         check(extra.0?.status == 200 && Date().timeIntervalSince(extraStart) < 1.5,
