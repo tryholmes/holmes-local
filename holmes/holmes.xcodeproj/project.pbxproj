@@ -13,6 +13,10 @@
 		AA000001000000000000117 /* EmailPredictionSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000117 /* EmailPredictionSources.swift */; };
 		AA000001000000000000118 /* EmailPredictionActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000118 /* EmailPredictionActions.swift */; };
 		AA000001000000000000119 /* EmailUndoToast.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000119 /* EmailUndoToast.swift */; };
+		AA000001000000000000120 /* AuthSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000120 /* AuthSupport.swift */; };
+		AA000001000000000000121 /* HolmesCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000121 /* HolmesCloud.swift */; };
+		AA000001000000000000122 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000122 /* AuthService.swift */; };
+		AA000001000000000000123 /* Appwrite in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000A000000000000002 /* Appwrite */; };
 		B7A500010000000000000006 /* ModelJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000006 /* ModelJSON.swift */; };
 		B7A500010000000000000005 /* TextEntrySupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000005 /* TextEntrySupport.swift */; };
 		B7A500010000000000000004 /* AutonomousRunTally.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000004 /* AutonomousRunTally.swift */; };
@@ -137,6 +141,9 @@
 		AA000002000000000000117 /* EmailPredictionSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailPredictionSources.swift; sourceTree = "<group>"; };
 		AA000002000000000000118 /* EmailPredictionActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailPredictionActions.swift; sourceTree = "<group>"; };
 		AA000002000000000000119 /* EmailUndoToast.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmailUndoToast.swift; sourceTree = "<group>"; };
+		AA000002000000000000120 /* AuthSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSupport.swift; sourceTree = "<group>"; };
+		AA000002000000000000121 /* HolmesCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolmesCloud.swift; sourceTree = "<group>"; };
+		AA000002000000000000122 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
 		B7A500020000000000000006 /* ModelJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelJSON.swift; sourceTree = "<group>"; };
 		B7A500020000000000000005 /* TextEntrySupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextEntrySupport.swift; sourceTree = "<group>"; };
 		B7A500020000000000000004 /* AutonomousRunTally.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutonomousRunTally.swift; sourceTree = "<group>"; };
@@ -262,6 +269,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA000001000000000000039 /* Lottie in Frameworks */,
+				AA000001000000000000123 /* Appwrite in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -398,6 +406,9 @@
 				AA000002000000000000116 /* MailComposeMatcher.swift */,
 				AA000002000000000000117 /* EmailPredictionSources.swift */,
 				AA000002000000000000118 /* EmailPredictionActions.swift */,
+				AA000002000000000000120 /* AuthSupport.swift */,
+				AA000002000000000000121 /* HolmesCloud.swift */,
+				AA000002000000000000122 /* AuthService.swift */,
 				B7A500020000000000000006 /* ModelJSON.swift */,
 				B7A500020000000000000005 /* TextEntrySupport.swift */,
 				B7A500020000000000000004 /* AutonomousRunTally.swift */,
@@ -567,6 +578,7 @@
 			name = holmes;
 			packageProductDependencies = (
 				AA00000A000000000000001 /* Lottie */,
+				AA00000A000000000000002 /* Appwrite */,
 			);
 			productName = holmes;
 			productReference = AA000003000000000000000 /* holmes.app */;
@@ -598,6 +610,7 @@
 			mainGroup = AA000005000000000000000;
 			packageReferences = (
 				AA00000B000000000000001 /* XCRemoteSwiftPackageReference "lottie-ios" */,
+				AA00000B000000000000002 /* XCRemoteSwiftPackageReference "sdk-for-apple" */,
 			);
 			productRefGroup = AA000005000000000000002 /* Products */;
 			projectDirPath = "";
@@ -667,6 +680,9 @@
 				AA000001000000000000011 /* OnboardingFlow.swift in Sources */,
 				AA000001000000000000012 /* OnboardingViewModel.swift in Sources */,
 				AA000001000000000000013 /* WelcomeScreen.swift in Sources */,
+				AA000001000000000000120 /* AuthSupport.swift in Sources */,
+				AA000001000000000000121 /* HolmesCloud.swift in Sources */,
+				AA000001000000000000122 /* AuthService.swift in Sources */,
 				AA000001000000000000014 /* HowItWorksScreen.swift in Sources */,
 				AA000001000000000000015 /* PermissionsScreen.swift in Sources */,
 				AA000001000000000000016 /* ReadyScreen.swift in Sources */,
@@ -959,6 +975,14 @@
 				minimumVersion = 4.4.0;
 			};
 		};
+		AA00000B000000000000002 /* XCRemoteSwiftPackageReference "sdk-for-apple" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/appwrite/sdk-for-apple.git";
+			requirement = {
+				kind = exactVersion;
+				version = 19.0.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -966,6 +990,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00000B000000000000001 /* XCRemoteSwiftPackageReference "lottie-ios" */;
 			productName = Lottie;
+		};
+		AA00000A000000000000002 /* Appwrite */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA00000B000000000000002 /* XCRemoteSwiftPackageReference "sdk-for-apple" */;
+			productName = Appwrite;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
