@@ -105,8 +105,9 @@ Holmes picks one automatically based on your Mac's memory. Change it anytime in 
 
 ## ➤ Privacy
 
-Everything stays on your Mac by default. No telemetry, no analytics, no account.
+What you do stays on your Mac. Holmes requires a free account, and the only data it sends is what counts users: your email, region, macOS version, and Holmes version.
 
+- Account: email and password sign in through Appwrite. A daily install ping sends a random install id, the Holmes and macOS versions, Mac model, region and locale. Nothing from your screen, voice or tasks is included
 - Screen capture, Accessibility reads, OCR, dictation: on device, always
 - Screen context during a task: sent to the local model on your Mac (or wherever you point Ollama)
 - Spoken text: sent to ElevenLabs only if you add a key
