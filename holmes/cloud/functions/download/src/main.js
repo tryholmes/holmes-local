@@ -15,28 +15,37 @@ const clip = (value, max) => {
 
 // Appwrite only fills the country header for some requests, so fall back to
 // country.is (open source) using the visitor's IP. Never waits long.
-async function countryFor(headers) {
+async function countryFor(headers, log) {
   const known = clip(headers['x-appwrite-country-code'], 8);
   if (known) return known.toUpperCase();
-  const ip = String(headers['x-appwrite-client-ip'] ?? headers['x-forwarded-for'] ?? '').split(',')[0].trim();
-  if (!ip) return null;
+  // The CDN puts the real visitor address in its own headers; x-forwarded-for can start with a proxy.
+  const ip = String(headers['fastly-client-ip'] ?? headers['x-cdn-client-ip'] ?? headers['x-real-ip']
+    ?? headers['x-appwrite-client-ip'] ?? headers['x-forwarded-for'] ?? '').split(',')[0].trim();
+  if (!ip) {
+    log('country lookup skipped: no client address header');
+    return null;
+  }
   try {
-    const response = await fetch(`https://api.country.is/${encodeURIComponent(ip)}`, { signal: AbortSignal.timeout(1500) });
-    if (!response.ok) return null;
+    const response = await fetch(`https://api.country.is/${encodeURIComponent(ip)}`, { signal: AbortSignal.timeout(2500) });
+    if (!response.ok) {
+      log(`country lookup failed: status ${response.status}`);
+      return null;
+    }
     const { country } = await response.json();
     return clip(country, 8);
-  } catch {
+  } catch (err) {
+    log(`country lookup failed: ${err.name}`);
     return null;
   }
 }
 
-export default async ({ req, res, error }) => {
+export default async ({ req, res, log, error }) => {
   const headers = req.headers ?? {};
   const agent = String(headers['user-agent'] ?? '');
 
   if (req.method === 'GET' && !AUTOMATED_AGENT.test(agent)) {
     try {
-      const country = await countryFor(headers);
+      const country = await countryFor(headers, log);
       const client = new Client()
         .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT)
         .setProject(process.env.APPWRITE_FUNCTION_PROJECT_ID)
