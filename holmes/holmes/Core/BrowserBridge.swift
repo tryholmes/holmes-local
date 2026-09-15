@@ -208,6 +208,12 @@ final class BrowserCommandQueue: @unchecked Sendable {
         return pending.map(\.id)
     }
 
+    /// Long polls currently held open. Tests wait on this instead of sleeping.
+    var heldLongPollCount: Int {
+        condition.lock(); defer { condition.unlock() }
+        return activeLongPolls
+    }
+
     var deliveredIDs: [Int] {
         condition.lock(); defer { condition.unlock() }
         return delivered.keys.sorted()
@@ -679,6 +685,7 @@ final class BrowserBridge {
     func testDrainCommands(instance: String?) -> Data { drainCommandsJSON(forInstance: instance) }
     func testCommandResult(_ data: Data) { recordCommandResult(data) }
     var testPendingCommandIDs: [Int] { commandQueue.pendingIDs }
+    var testHeldLongPollCount: Int { commandQueue.heldLongPollCount }
     var testAwaitingCommandCount: Int { commandContinuations.count }
     var testTrackedCommandCount: Int { commandCancellations.count }
     #endif
