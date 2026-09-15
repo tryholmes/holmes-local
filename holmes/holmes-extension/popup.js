@@ -14,6 +14,16 @@
   var TOKEN_KEY = "holmesToken";
 
   var el = function (id) { return document.getElementById(id); };
+  var REQUEST_TIMEOUT_MS = 3000;
+
+  // Every bridge request is bounded, so a hung app shows a status instead of a
+  // popup stuck on "checking…".
+  function fetchWithTimeout(url, init) {
+    var controller = typeof AbortController === "function" ? new AbortController() : null;
+    var timer = setTimeout(function () { if (controller) controller.abort(); }, REQUEST_TIMEOUT_MS);
+    var options = Object.assign({}, init || {}, controller ? { signal: controller.signal } : {});
+    return fetch(url, options).finally(function () { clearTimeout(timer); });
+  }
   var currentTab = null;
   var currentHost = "";
 
@@ -58,13 +68,15 @@
     setConn("amber", "warn", "checking…",
       "Checking whether Holmes is listening on 127.0.0.1:5766…", false);
 
-    var healthOk = false;
-    try { var r = await fetch(HEALTH_URL, { method: "GET" }); healthOk = r.ok; }
-    catch (e) { healthOk = false; }
+    var healthOk = false, healthTimedOut = false;
+    try { var r = await fetchWithTimeout(HEALTH_URL, { method: "GET" }); healthOk = r.ok; }
+    catch (e) { healthOk = false; healthTimedOut = !!(e && e.name === "AbortError"); }
 
     if (!healthOk) {
-      setConn("red", "err", "offline",
-        "Holmes isn’t running. Start the Holmes app, then reopen this popup.", false);
+      setConn("red", "err", healthTimedOut ? "not responding" : "offline",
+        healthTimedOut
+          ? "Holmes is running but not answering on 127.0.0.1:5766. Quit and reopen Holmes."
+          : "Holmes isn’t running. Start the Holmes app, then reopen this popup.", false);
       return;
     }
 
@@ -73,7 +85,7 @@
     var token = await getToken();
     var status = 0, netErr = false;
     try {
-      var r2 = await fetch(HEARTBEAT_URL, {
+      var r2 = await fetchWithTimeout(HEARTBEAT_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Holmes-Token": token || "" },
         body: "{}"

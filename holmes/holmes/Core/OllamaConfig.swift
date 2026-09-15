@@ -268,6 +268,36 @@ enum OllamaConfig {
     /// before the first byte arrives.
     static let requestTimeout: TimeInterval = 600
 
+    /// Longest silence tolerated BETWEEN streamed chunks once output has
+    /// started. Long generations stay possible (there is no total cap beyond
+    /// requestTimeout's idle limit), but a server that stops mid answer is
+    /// noticed in 90 seconds instead of 10 minutes. A var so tests can shorten it.
+    static var streamStallTimeout: TimeInterval = 90
+
+    /// Pause before the single retry of a dropped or refused connection.
+    static var transientRetryDelay: TimeInterval = 0.5
+
+    /// Called when a model request times out, stalls or loses the server, so
+    /// the server status is re-probed at once. OllamaServer installs it on the
+    /// main thread; the model client and its stall watchdog call it from other
+    /// threads, so every read and write goes through a lock.
+    static var onModelTransportFailure: (@Sendable () -> Void)? {
+        get { transportFailureHook.value }
+        set { transportFailureHook.value = newValue }
+    }
+
+    private static let transportFailureHook = LockedHook()
+
+    /// A lock protected optional closure, safe to set and read from any thread.
+    final class LockedHook: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: (@Sendable () -> Void)?
+        var value: (@Sendable () -> Void)? {
+            get { lock.lock(); defer { lock.unlock() }; return stored }
+            set { lock.lock(); stored = newValue; lock.unlock() }
+        }
+    }
+
     /// Oldest server that returns tool-call ids (needed to pair results).
     static let minimumServerVersion = "0.12.10"
 

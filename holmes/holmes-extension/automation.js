@@ -343,6 +343,104 @@ self.HolmesAutomation = (function () {
 
   var PAGE_ACTIONS = { click: 1, fillField: 1, readSelection: 1, extract: 1, scrollTo: 1, waitForSelector: 1 };
 
+  // Tunables (tests shorten them through self.__holmesBridgeConfig). Local to this
+  // closure so they never collide with the worker's own names.
+  var TUNING = (typeof self !== "undefined" && self.__holmesBridgeConfig) || {};
+  // A PNG of a Retina viewport is easily 5 to 15 MB of base64; results travel
+  // over the loopback bridge, so screenshots are JPEG and kept under this size.
+  var MAX_SCREENSHOT_CHARS = Number(TUNING.maxScreenshotChars) || 4 * 1024 * 1024;
+  var SCREENSHOT_MAX_WIDTH = 1600;
+  // How long navigate waits for the page to finish loading. Below the app's 20s
+  // result timeout so a slow page reports loaded:false instead of timing out.
+  var NAVIGATE_TIMEOUT_MS = Number(TUNING.navigateTimeoutMs) || 15000;
+
+  // Resolves when the tab reports status "complete" after arm() (so a completion
+  // from the page being replaced is ignored), when it closes, or at the timeout.
+  // Listeners are attached before navigation starts so a fast load is never missed.
+  function waitForTabComplete(tabId, timeoutMs, targetUrl) {
+    var started = Date.now(), armed = false, done = false, timer = null, finish;
+    // Chrome resolves tabs.update before the new load begins, while the tab still
+    // reports the PREVIOUS page as complete. So "complete" only counts once this
+    // navigation was seen loading, or when the tab is complete at the target URL
+    // with nothing pending (which also covers same document navigations).
+    var sawLoading = false;
+    function sameUrl(a, b) {
+      try { return new URL(a).href === new URL(b).href; } catch (e) { return a === b; }
+    }
+    function landedOn(tab) {
+      return !!tab && tab.status === "complete" && !tab.pendingUrl && !!targetUrl && sameUrl(tab.url, targetUrl);
+    }
+    var promise = new Promise(function (resolve) { finish = resolve; });
+    function settle(result) {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      try { chrome.tabs.onUpdated.removeListener(onUpdated); } catch (_) { /* ignore */ }
+      try { chrome.tabs.onRemoved.removeListener(onRemoved); } catch (_) { /* ignore */ }
+      result.waitedMs = Date.now() - started;
+      finish(result);
+    }
+    function onUpdated(id, info, tab) {
+      if (id !== tabId || !info) return;
+      if (info.status === "loading") { sawLoading = true; return; }
+      if (!armed) return;
+      if ((info.status === "complete" && sawLoading) || landedOn(tab)) settle({ complete: true });
+    }
+    function onRemoved(id) {
+      if (id === tabId) settle({ complete: false, closed: true });
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+    timer = setTimeout(function () { settle({ complete: false, timedOut: true }); }, timeoutMs);
+    return {
+      promise: promise,
+      arm: async function () {
+        armed = true;
+        try {
+          var tab = await chrome.tabs.get(tabId);
+          if (tab && tab.status === "complete" && (sawLoading || landedOn(tab))) settle({ complete: true });
+        } catch (e) {
+          settle({ complete: false, closed: true });
+        }
+      },
+      cancel: function () { settle({ complete: false, cancelled: true }); }
+    };
+  }
+
+  function toBase64(buffer) {
+    var bytes = new Uint8Array(buffer), binary = "";
+    for (var i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return btoa(binary);
+  }
+
+  // Downscales a captured image to at most SCREENSHOT_MAX_WIDTH wide and re-encodes
+  // it as JPEG until it fits. Null when the worker has no OffscreenCanvas.
+  async function downscaleDataUrl(dataUrl, maxChars) {
+    try {
+      if (typeof OffscreenCanvas !== "function" || typeof createImageBitmap !== "function") return null;
+      var blob = await (await fetch(dataUrl)).blob();
+      var bitmap = await createImageBitmap(blob);
+      var scale = Math.min(1, SCREENSHOT_MAX_WIDTH / bitmap.width);
+      var width = Math.max(1, Math.round(bitmap.width * scale));
+      var height = Math.max(1, Math.round(bitmap.height * scale));
+      var canvas = new OffscreenCanvas(width, height);
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
+      if (bitmap.close) bitmap.close();
+      var quality = 0.7, out = "";
+      for (;;) {
+        var jpeg = await canvas.convertToBlob({ type: "image/jpeg", quality: quality });
+        out = "data:image/jpeg;base64," + toBase64(await jpeg.arrayBuffer());
+        if (out.length <= maxChars || quality <= 0.3) break;
+        quality -= 0.2;
+      }
+      return { dataUrl: out, width: width, height: height };
+    } catch (e) {
+      return null;
+    }
+  }
+
   async function resolveTabId(params) {
     if (params && typeof params.tabId === "number" && params.tabId >= 0) return params.tabId;
     try {
@@ -379,8 +477,25 @@ self.HolmesAutomation = (function () {
           if (!params.url) return { ok: false, error: "navigate requires a url" };
           var navTabId = await resolveTabId(params);
           if (navTabId < 0) return { ok: false, error: "no target tab" };
-          var navTab = await chrome.tabs.update(navTabId, { url: String(params.url) });
-          return { ok: true, tabId: navTab.id, url: String(params.url) };
+          // Resolving right after tabs.update let the next command (click, extract)
+          // run against the page being replaced. Wait for the load, bounded.
+          var loading = waitForTabComplete(navTabId, NAVIGATE_TIMEOUT_MS, String(params.url));
+          var navTab;
+          try {
+            navTab = await chrome.tabs.update(navTabId, { url: String(params.url) });
+          } catch (e) {
+            loading.cancel();
+            throw e;
+          }
+          await loading.arm();
+          var loaded = await loading.promise;
+          if (loaded.closed) {
+            return { ok: false, tabId: navTabId, url: String(params.url), error: "the tab was closed while navigating" };
+          }
+          var landed = null;
+          try { landed = await chrome.tabs.get(navTabId); } catch (_) { /* closed after load */ }
+          return { ok: true, tabId: navTab.id, url: (landed && landed.url) || String(params.url),
+            title: landed ? landed.title : undefined, loaded: !!loaded.complete, waitedMs: loaded.waitedMs };
         }
 
         case "openTab": {
@@ -407,8 +522,20 @@ self.HolmesAutomation = (function () {
           var windowId = shotTab ? shotTab.windowId : undefined;
           // captureVisibleTab grabs the ACTIVE tab of the window; note that if the
           // requested tab isn't active this returns whatever is frontmost there.
-          var dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
-          return { ok: true, tabId: shotTab ? shotTab.id : -1, format: "png", dataUrl: dataUrl, bytes: dataUrl ? dataUrl.length : 0 };
+          var quality = 70;
+          var dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "jpeg", quality: quality });
+          var downscaled = false;
+          if (dataUrl && dataUrl.length > MAX_SCREENSHOT_CHARS) {
+            var scaled = await downscaleDataUrl(dataUrl, MAX_SCREENSHOT_CHARS);
+            if (scaled && scaled.dataUrl.length < dataUrl.length) { dataUrl = scaled.dataUrl; downscaled = true; }
+          }
+          // No canvas in this worker: fall back to recapturing at lower quality.
+          while (!downscaled && dataUrl && dataUrl.length > MAX_SCREENSHOT_CHARS && quality > 30) {
+            quality -= 20;
+            dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "jpeg", quality: quality });
+          }
+          return { ok: true, tabId: shotTab ? shotTab.id : -1, format: "jpeg", quality: quality, downscaled: downscaled,
+            dataUrl: dataUrl, bytes: dataUrl ? dataUrl.length : 0 };
         }
 
         default: {

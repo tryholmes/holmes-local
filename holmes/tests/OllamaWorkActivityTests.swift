@@ -10,6 +10,8 @@ final class WorkModelProtocol: URLProtocol {
         var doneReason = "stop"
         var tool: String?
         var networkFailure = false
+        var urlError: URLError.Code?
+        var stallAfterFirstChunk = false
     }
 
     private static let lock = NSLock()
@@ -97,6 +99,21 @@ final class WorkModelProtocol: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
             return
         }
+        if let code = reply.urlError {
+            client?.urlProtocol(self, didFailWithError: URLError(code))
+            return
+        }
+        if reply.stallAfterFirstChunk {
+            // One real chunk, then silence with the connection left open.
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                           headerFields: ["Content-Type": "application/x-ndjson"])!
+            var data = try! JSONSerialization.data(withJSONObject: [
+                "message": ["role": "assistant", "content": "partial"], "done": false])
+            data.append(10)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            return
+        }
         if reply.status != 200 {
             respondJSON(["error": "Controlled server failure"], status: reply.status)
             return
@@ -135,6 +152,13 @@ final class WorkModelProtocol: URLProtocol {
     }
 }
 
+final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func increment() { lock.lock(); value += 1; lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 @main
 struct OllamaWorkActivityTests {
     @MainActor static func main() async throws {
@@ -161,6 +185,8 @@ struct OllamaWorkActivityTests {
             OllamaConfig.updateReadiness(ready: wasReady, problem: previousProblem)
             OllamaConfig.onSettingsChanged = settingsCallback
             OllamaConfig.onStatusChanged = statusCallback
+            OllamaConfig.onModelTransportFailure = nil
+            OllamaConfig.streamStallTimeout = 90
         }
         OllamaConfig.host = "http://work-activity.invalid:11434"
         OllamaConfig.model = "work-test"
@@ -245,13 +271,14 @@ struct OllamaWorkActivityTests {
         let afterStop = try await client.complete(system: "Test", user: "after-stop", priority: .agent)
         expect(afterStop == "Still works" && center.activeCount == 0, "A stopped request must release the gate for the next user")
 
-        for (key, reply) in [
-            ("empty", WorkModelProtocol.Reply(text: "")),
-            ("truncated", WorkModelProtocol.Reply(text: "", doneReason: "length")),
-            ("server-error", WorkModelProtocol.Reply(status: 500)),
-            ("network-error", WorkModelProtocol.Reply(networkFailure: true))
+        for (key, replies) in [
+            ("empty", [WorkModelProtocol.Reply(text: "")]),
+            ("truncated", [WorkModelProtocol.Reply(text: "", doneReason: "length")]),
+            ("server-error", [WorkModelProtocol.Reply(status: 500)]),
+            // A refused connection is retried once, then reported.
+            ("network-error", [WorkModelProtocol.Reply(networkFailure: true), WorkModelProtocol.Reply(networkFailure: true)])
         ] {
-            WorkModelProtocol.configure(key, [reply])
+            WorkModelProtocol.configure(key, replies)
             do {
                 _ = try await client.complete(system: "Test", user: key, priority: .agent)
                 fatalError("\(key) must fail")
@@ -320,6 +347,85 @@ struct OllamaWorkActivityTests {
         WorkModelProtocol.release("busy-agent")
         _ = try await busyAgent.value
         center.finish(busyAgentID, outcome: .success, summary: "Finished")
+
+        expect(WorkModelProtocol.count("network-error") == 2 && WorkModelProtocol.count("server-error") == 1,
+               "Only a connection failure is retried, exactly once")
+
+        // Transient connection loss before any output: one retry recovers.
+        let refreshes = LockedCounter()
+        OllamaConfig.onModelTransportFailure = { refreshes.increment() }
+        OllamaConfig.transientRetryDelay = 0.05
+        WorkModelProtocol.configure("flaky", [.init(networkFailure: true), .init(text: "Recovered")])
+        let recovered = try await client.complete(system: "Test", user: "flaky", priority: .agent)
+        expect(recovered == "Recovered" && WorkModelProtocol.count("flaky") == 2,
+               "A dropped connection is retried once with a short backoff")
+
+        // Never retry after a tool took effect in the session.
+        let toolParent = center.begin(title: "Tool then a lost connection")
+        WorkModelProtocol.configure("tool-then-drop", [.init(text: "", tool: "probe"), .init(networkFailure: true)])
+        var toolRuns = 0
+        do {
+            _ = try await WorkActivityScope.$id.withValue(toolParent) {
+                try await client.runAgent(system: "Test", userText: "tool-then-drop",
+                                          tools: [.init(name: "probe", description: "Side effect", inputSchema: [:])],
+                                          maxIterations: 3, runTool: { _, _ in
+                    await MainActor.run { toolRuns += 1 }
+                    return OllamaClient.ToolResult("Did it")
+                })
+            }
+            fatalError("A lost connection after a tool must be reported")
+        } catch OllamaClient.AgentError.serverUnreachable {
+            expect(WorkModelProtocol.count("tool-then-drop") == 2 && toolRuns == 1,
+                   "No request is retried once a tool has run in the session")
+        }
+        center.finish(toolParent, outcome: .failure, summary: "Lost the server")
+
+        // A timeout is user visible, not retried, and refreshes server status.
+        let refreshesBeforeTimeout = refreshes.count
+        WorkModelProtocol.configure("timeout", [.init(urlError: .timedOut)])
+        do {
+            _ = try await client.complete(system: "Test", user: "timeout", priority: .agent)
+            fatalError("A timed out request must fail")
+        } catch let OllamaClient.AgentError.timedOut(detail) {
+            let message = OllamaClient.AgentError.timedOut(detail).localizedDescription
+            expect(WorkModelProtocol.count("timeout") == 1 && message.contains("try again"),
+                   "A timeout is classified as its own retryable, user visible error and not retried silently")
+            expect(refreshes.count > refreshesBeforeTimeout, "A timeout asks for a server status refresh")
+            expect(center.completion?.outcome == .failure, "A timeout finishes the fallback activity as a visible failure")
+        }
+
+        // A stream that goes silent mid answer times out on the stall limit.
+        OllamaConfig.streamStallTimeout = 0.3
+        let refreshesBeforeStall = refreshes.count
+        WorkModelProtocol.configure("stall", [.init(stallAfterFirstChunk: true)])
+        let stallStarted = Date()
+        do {
+            _ = try await client.complete(system: "Test", user: "stall", priority: .agent)
+            fatalError("A stalled stream must fail")
+        } catch OllamaClient.AgentError.timedOut {
+            let waited = Date().timeIntervalSince(stallStarted)
+            expect(waited >= 0.25 && waited < 10, "The stall timeout fires between chunks, not after the total request timeout (\(waited)s)")
+            expect(refreshes.count > refreshesBeforeStall && WorkModelProtocol.count("stall") == 1,
+                   "A stall refreshes server status and is not retried")
+        }
+        OllamaConfig.streamStallTimeout = 90
+        OllamaConfig.transientRetryDelay = 0.5
+        WorkModelProtocol.configure("after-stall", [.init(text: "Still serving")])
+        let afterStall = try await client.complete(system: "Test", user: "after-stall", priority: .agent)
+        expect(afterStall == "Still serving", "A stalled request releases the GPU gate for the next request")
+
+        // The failure hook is set on one thread and called from others.
+        let hookCalls = LockedCounter()
+        DispatchQueue.concurrentPerform(iterations: 400) { index in
+            if index % 2 == 0 {
+                OllamaConfig.onModelTransportFailure = { hookCalls.increment() }
+            } else {
+                OllamaConfig.onModelTransportFailure?()
+            }
+        }
+        OllamaConfig.onModelTransportFailure = nil
+        expect(OllamaConfig.onModelTransportFailure == nil && hookCalls.count <= 200,
+               "Concurrent sets and calls of the transport failure hook are synchronized")
 
         OllamaConfig.updateReadiness(ready: false, problem: "Ollama is stopped")
         do {

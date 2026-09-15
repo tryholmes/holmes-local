@@ -415,17 +415,12 @@ final class TriggerBrain {
     /// and raw newlines inside string values. Any failure returns nil (= none):
     /// malformed input can only cost a missed detection, never a false fire.
     static func parse(_ raw: String) -> Verdict? {
-        var searchFrom = raw.startIndex
-        while let candidateRange = nextJSONObjectRange(in: raw, from: searchFrom) {
-            let candidate = normalizeNewlinesInsideStrings(String(raw[candidateRange]))
-            if let data = candidate.data(using: .utf8),
-               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-               let verdict = verdict(from: object) {
-                return verdict
-            }
-            searchFrom = raw.index(after: candidateRange.lowerBound)
-        }
-        return nil
+        var found: Verdict?
+        _ = ModelJSON.firstObject(in: raw, where: { object in
+            found = verdict(from: object)
+            return found != nil
+        })
+        return found
     }
 
     private static func verdict(from object: [String: Any]) -> Verdict? {
@@ -467,69 +462,6 @@ final class TriggerBrain {
     /// Returns the first balanced `{...}` in the text — string- and escape-aware,
     /// so braces inside JSON string values can't unbalance the scan.
     static func extractFirstJSONObject(from raw: String) -> String? {
-        guard let range = nextJSONObjectRange(in: raw, from: raw.startIndex) else { return nil }
-        return String(raw[range])
-    }
-
-    /// The first balanced `{...}` at or after `from` — the scanner behind
-    /// extractFirstJSONObject, generalized so parse() can retry past a
-    /// non-JSON `{...}` embedded in prose.
-    private static func nextJSONObjectRange(in raw: String, from: String.Index) -> Range<String.Index>? {
-        guard let start = raw[from...].firstIndex(of: "{") else { return nil }
-        var depth = 0
-        var inString = false
-        var escaped = false
-        var index = start
-        while index < raw.endIndex {
-            let character = raw[index]
-            if escaped {
-                escaped = false
-            } else if inString {
-                if character == "\\" { escaped = true }
-                else if character == "\"" { inString = false }
-            } else {
-                switch character {
-                case "\"": inString = true
-                case "{": depth += 1
-                case "}":
-                    depth -= 1
-                    if depth == 0 { return start..<raw.index(after: index) }
-                default: break
-                }
-            }
-            index = raw.index(after: index)
-        }
-        return nil
-    }
-
-    /// Escapes literal newlines/carriage returns/tabs that appear INSIDE string
-    /// regions of a JSON candidate — spec-invalid, but cheap to tolerate, and
-    /// JSONSerialization rejects the whole object otherwise.
-    private static func normalizeNewlinesInsideStrings(_ candidate: String) -> String {
-        var out = String()
-        out.reserveCapacity(candidate.count + 8)
-        var inString = false
-        var escaped = false
-        for character in candidate {
-            if escaped {
-                escaped = false
-                out.append(character)
-                continue
-            }
-            if inString {
-                switch character {
-                case "\\": escaped = true; out.append(character)
-                case "\"": inString = false; out.append(character)
-                case "\n": out.append("\\n")
-                case "\r": out.append("\\r")
-                case "\t": out.append("\\t")
-                default: out.append(character)
-                }
-            } else {
-                if character == "\"" { inString = true }
-                out.append(character)
-            }
-        }
-        return out
+        ModelJSON.objectCandidates(in: raw).first
     }
 }
