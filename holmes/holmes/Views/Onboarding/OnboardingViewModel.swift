@@ -4,21 +4,35 @@ import AppKit
 import ScreenCaptureKit
 
 enum OnboardingStep: Int, CaseIterable {
-    case welcome = 0
-    case howItWorks = 1
-    case permissions = 2
+    /// Required account step, skipped when a session already exists.
+    case signIn = 0
+    case welcome = 1
+    case howItWorks = 2
+    case permissions = 3
     /// "Your local model": get Ollama running and the default model pulled,
     /// so a first-run user leaves onboarding with a working local brain.
-    case localModel = 3
+    case localModel = 4
     /// Install + pair the bundled browser extension (exact page reads).
-    case browser = 4
+    case browser = 5
     /// Optional Composio connection for the read-only playbook tools.
-    case integrations = 5
-    case ready = 6
+    case integrations = 6
+    case ready = 7
+
+    /// Sign in and Welcome are entry screens without progress dots.
+    var showsStepIndicator: Bool { self != .signIn && self != .welcome }
+
+    /// The steps the progress dots count. Sign in is not one of them.
+    static var indicatorSteps: [OnboardingStep] { allCases.filter { $0 != .signIn } }
+
+    var indicatorIndex: Int { Self.indicatorSteps.firstIndex(of: self) ?? 0 }
 }
 
 class OnboardingViewModel: ObservableObject {
-    @Published var currentStep: OnboardingStep = .welcome
+    @Published var currentStep: OnboardingStep
+
+    init(startStep: OnboardingStep = .welcome) {
+        currentStep = startStep
+    }
     @Published var hasScreenRecordingPermission = false
     @Published var hasAccessibilityPermission = false
     @Published var hasAutomationPermission = false

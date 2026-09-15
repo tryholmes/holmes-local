@@ -16,6 +16,7 @@
 		AA000001000000000000120 /* AuthSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000120 /* AuthSupport.swift */; };
 		AA000001000000000000121 /* HolmesCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000121 /* HolmesCloud.swift */; };
 		AA000001000000000000122 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000122 /* AuthService.swift */; };
+		AA000001000000000000124 /* SignInScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000002000000000000124 /* SignInScreen.swift */; };
 		AA000001000000000000123 /* Appwrite in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000A000000000000002 /* Appwrite */; };
 		B7A500010000000000000006 /* ModelJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000006 /* ModelJSON.swift */; };
 		B7A500010000000000000005 /* TextEntrySupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A500020000000000000005 /* TextEntrySupport.swift */; };
@@ -144,6 +145,7 @@
 		AA000002000000000000120 /* AuthSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthSupport.swift; sourceTree = "<group>"; };
 		AA000002000000000000121 /* HolmesCloud.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HolmesCloud.swift; sourceTree = "<group>"; };
 		AA000002000000000000122 /* AuthService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthService.swift; sourceTree = "<group>"; };
+		AA000002000000000000124 /* SignInScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignInScreen.swift; sourceTree = "<group>"; };
 		B7A500020000000000000006 /* ModelJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelJSON.swift; sourceTree = "<group>"; };
 		B7A500020000000000000005 /* TextEntrySupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextEntrySupport.swift; sourceTree = "<group>"; };
 		B7A500020000000000000004 /* AutonomousRunTally.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutonomousRunTally.swift; sourceTree = "<group>"; };
@@ -502,6 +504,7 @@
 			children = (
 				AA000002000000000000107 /* GuidedDemoWindow.swift */,
 				B7A500020000000000000F01 /* LaunchIntroView.swift */,
+				AA000002000000000000124 /* SignInScreen.swift */,
 				AA000002000000000000106 /* GuidedDemoView.swift */,
 				AA000002000000000000011 /* OnboardingFlow.swift */,
 				AA000002000000000000012 /* OnboardingViewModel.swift */,
@@ -683,6 +686,7 @@
 				AA000001000000000000120 /* AuthSupport.swift in Sources */,
 				AA000001000000000000121 /* HolmesCloud.swift in Sources */,
 				AA000001000000000000122 /* AuthService.swift in Sources */,
+				AA000001000000000000124 /* SignInScreen.swift in Sources */,
 				AA000001000000000000014 /* HowItWorksScreen.swift in Sources */,
 				AA000001000000000000015 /* PermissionsScreen.swift in Sources */,
 				AA000001000000000000016 /* ReadyScreen.swift in Sources */,

@@ -362,25 +362,47 @@ struct PlaybookToggleRow: View {
 struct GeneralSettingsView: View {
     @Binding var launchAtLogin: Bool
     @Binding var showNotchAnimation: Bool
-    
+    @ObservedObject private var auth = AuthService.shared
+
     var body: some View {
         Form {
             Toggle("Launch at Login", isOn: $launchAtLogin)
-            
+
             if NotchDetector.hasNotch {
                 Toggle("Show Notch Animation", isOn: $showNotchAnimation)
             }
-            
+
             Divider()
-            
+
             LabeledContent("Side Icon Position") {
                 Button("Reset to Default") {
                     UserDefaults.standard.removeObject(forKey: "SideIconPosition")
                 }
             }
+
+            Divider()
+
+            LabeledContent("Account") {
+                HStack(spacing: 10) {
+                    Text(accountLabel)
+                        .foregroundStyle(NoirColors.textSecondary)
+                    Button("Sign Out") {
+                        Task { @MainActor in
+                            await auth.signOut()
+                            NotificationCenter.default.post(name: .holmesDidSignOut, object: nil)
+                        }
+                    }
+                    .disabled(!auth.isSignedIn || auth.isWorking)
+                }
+            }
         }
         .scrollContentBackground(.hidden)
         .padding()
+    }
+
+    private var accountLabel: String {
+        guard let user = auth.currentUser else { return "Not signed in" }
+        return user.email.isEmpty ? "Signed in" : user.email
     }
 }
 
@@ -1022,7 +1044,7 @@ struct AboutSettingsView: View {
                 .font(NoirFonts.font(size: 11, weight: .regular, design: .monospaced))
                 .foregroundStyle(NoirColors.textTertiary)
 
-            Text("Runs entirely on this Mac through Ollama — no account, no API key, nothing leaves the machine.")
+            Text("Thinks with a local model through Ollama, no API key. Your screen, voice, and tasks stay on this Mac; your account stores only your email, region, macOS version, and Holmes version to count users.")
                 .font(NoirFonts.caption())
                 .foregroundStyle(NoirColors.textTertiary)
                 .multilineTextAlignment(.center)
