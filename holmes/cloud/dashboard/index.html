@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Holmes analytics</title>
+<link rel="icon" href="holmes.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/appwrite@27.0.0/dist/iife/sdk.js"></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --canvas: #060606;
+    --panel: #121212;
+    --raised: #1b1b1a;
+    --rule: rgba(246, 240, 233, 0.09);
+    --rule-strong: rgba(246, 240, 233, 0.16);
+    --ink: #f6f0e9;
+    --ink-2: rgba(246, 240, 233, 0.66);
+    --ink-3: rgba(246, 240, 233, 0.46);
+    --cream: #ebe2d1;
+    --danger: #ff7a70;
+    /* Validated categorical trio on the #121212 panel (dataviz validator, all pairs). */
+    --series-downloads: #3987e5;
+    --series-installs: #d95926;
+    --series-users: #199e70;
+    --radius-panel: 14px;
+    --radius-control: 8px;
+    font-family: "Geist", ui-sans-serif, -apple-system, "Helvetica Neue", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--canvas); color: var(--ink); }
+  body { font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  button, input, select { font: inherit; color: inherit; }
+  .num { font-variant-numeric: tabular-nums; }
+  :focus-visible { outline: 2px solid var(--cream); outline-offset: 2px; }
+  [hidden] { display: none !important; }
+
+  /* Sign in */
+  .gate { min-height: 100vh; display: grid; place-items: center; padding: 32px 16px; }
+  .gate-card { width: min(380px, 100%); text-align: center; }
+  .gate-card img.character { width: 96px; height: auto; display: block; margin: 0 auto 20px; filter: drop-shadow(0 18px 30px rgba(0,0,0,.6)); }
+  .gate-card .wordmark { width: 150px; height: auto; margin: 0 auto 6px; display: block; }
+  .gate-card p.lede { color: var(--ink-2); margin: 0 0 28px; }
+  .field { display: grid; gap: 6px; text-align: left; margin-bottom: 14px; }
+  .field label { color: var(--ink-2); font-size: 13px; }
+  .field input { width: 100%; padding: 11px 12px; border-radius: var(--radius-control); border: 1px solid var(--rule-strong); background: var(--panel); outline: none; }
+  .field input:focus { border-color: var(--cream); }
+  .primary { width: 100%; padding: 11px 14px; border: 0; border-radius: var(--radius-control); background: var(--cream); color: #16120c; font-weight: 600; cursor: pointer; }
+  .primary[disabled] { opacity: .55; cursor: progress; }
+  .quiet { background: none; border: 0; color: var(--ink-2); cursor: pointer; padding: 6px 4px; }
+  .quiet:hover { color: var(--ink); }
+  .message { min-height: 22px; margin-top: 12px; color: var(--ink-2); font-size: 13px; }
+  .message.error { color: var(--danger); }
+
+  /* Shell */
+  .top { position: sticky; top: 0; z-index: 5; background: rgba(6,6,6,.86); backdrop-filter: blur(14px); border-bottom: 1px solid var(--rule); }
+  .top-inner { max-width: 1180px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .top .wordmark { width: 92px; height: auto; display: block; }
+  .top .title { color: var(--ink-2); padding-left: 14px; border-left: 1px solid var(--rule-strong); }
+  .spacer { flex: 1; }
+  .ranges { display: inline-flex; background: var(--panel); border: 1px solid var(--rule); border-radius: 999px; padding: 3px; }
+  .ranges button { border: 0; background: none; padding: 5px 12px; border-radius: 999px; color: var(--ink-2); cursor: pointer; }
+  .ranges button[aria-pressed="true"] { background: var(--raised); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule-strong); }
+  .who { color: var(--ink-3); font-size: 13px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+
+  /* Headline band: one row, divided by rules rather than boxed cards. */
+  .band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); margin-bottom: 28px; }
+  .measure { padding: 18px 20px 20px; border-left: 1px solid var(--rule); }
+  .measure:first-child { border-left: 0; padding-left: 0; }
+  .measure h2 { margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
+  .measure h2 i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  .measure .value { font-size: 34px; font-weight: 500; letter-spacing: -0.02em; line-height: 1.1; }
+  .measure .sub { color: var(--ink-3); font-size: 12.5px; margin-top: 4px; }
+
+  .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--radius-panel); padding: 20px 22px; }
+  .panel + .panel, .grid + .panel, .panel + .grid, .grid + .grid { margin-top: 20px; }
+  .panel-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .panel-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  .panel-head .hint { color: var(--ink-3); font-size: 12.5px; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+
+  /* Line chart */
+  .chart-wrap { position: relative; }
+  .chart { width: 100%; height: 280px; display: block; overflow: visible; }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 8px; color: var(--ink-2); font-size: 13px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { width: 14px; height: 2px; border-radius: 2px; display: inline-block; }
+  .tooltip { position: absolute; pointer-events: none; background: #232321; border: 1px solid var(--rule-strong); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; min-width: 150px; box-shadow: 0 10px 30px rgba(0,0,0,.45); z-index: 4; }
+  .tooltip .t-head { color: var(--ink-2); margin-bottom: 4px; }
+  .tooltip .t-row { display: flex; align-items: center; gap: 8px; }
+  .tooltip .t-row i { width: 8px; height: 8px; border-radius: 2px; }
+  .tooltip .t-row b { margin-left: auto; font-weight: 500; }
+
+  /* Bars */
+  .bars { display: grid; gap: 9px; }
+  .bar-row { display: grid; grid-template-columns: minmax(110px, 38%) 1fr auto; align-items: center; gap: 12px; }
+  .bar-row .label { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar-track { height: 8px; position: relative; }
+  .bar-fill { height: 8px; border-radius: 0 4px 4px 0; background: var(--cream); min-width: 2px; }
+  .bar-row .count { color: var(--ink-2); min-width: 44px; text-align: right; }
+  .tabs { display: inline-flex; gap: 4px; margin-left: auto; }
+  .tabs button { border: 1px solid var(--rule); background: none; border-radius: 999px; padding: 3px 10px; color: var(--ink-2); cursor: pointer; font-size: 12.5px; }
+  .tabs button[aria-pressed="true"] { color: var(--ink); border-color: var(--rule-strong); background: var(--raised); }
+  .empty { color: var(--ink-3); padding: 18px 0; }
+
+  /* Users table */
+  .table-tools { display: flex; gap: 10px; align-items: center; margin-left: auto; }
+  .table-tools input { padding: 7px 10px; border-radius: var(--radius-control); border: 1px solid var(--rule-strong); background: var(--canvas); min-width: 220px; }
+  .table-tools button { border: 1px solid var(--rule-strong); background: var(--raised); border-radius: var(--radius-control); padding: 7px 12px; cursor: pointer; }
+  .table-scroll { overflow-x: auto; margin: 0 -22px; padding: 0 22px; }
+  table { width: 100%; border-collapse: collapse; min-width: 760px; }
+  th { text-align: left; font-weight: 500; color: var(--ink-3); font-size: 12.5px; padding: 8px 12px 8px 0; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th button { background: none; border: 0; padding: 0; color: inherit; cursor: pointer; }
+  td { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  td.email { color: var(--ink); }
+  td.muted { color: var(--ink-2); }
+  tr:last-child td { border-bottom: 0; }
+  .foot { color: var(--ink-3); font-size: 12.5px; margin-top: 12px; }
+
+  @media (max-width: 860px) {
+    .band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .measure:nth-child(3) { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); }
+    .measure:nth-child(4) { border-top: 1px solid var(--rule); }
+    .grid { grid-template-columns: 1fr; }
+    .table-tools { margin-left: 0; width: 100%; }
+    .table-tools input { min-width: 0; flex: 1; }
+  }
+  @media (max-width: 520px) {
+    .top .title { display: none; }
+    main { padding: 20px 16px 48px; }
+    .top-inner { padding: 12px 16px; }
+    .measure .value { font-size: 28px; }
+    .panel { padding: 16px; }
+    .table-scroll { margin: 0 -16px; padding: 0 16px; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .bar-fill { transition: width .5s cubic-bezier(.2,.7,.2,1); }
+  }
+</style>
+</head>
+<body>
+
+<!-- Sign in -->
+<section class="gate" id="gate" hidden>
+  <div class="gate-card">
+    <img class="character" src="holmes.png" alt="">
+    <img class="wordmark" src="wordmark.svg" alt="Holmes">
+    <p class="lede">Downloads, installs, and people using Holmes.</p>
+
+    <form id="email-form" novalidate>
+      <div class="field">
+        <label for="email">Admin email</label>
+        <input id="email" type="email" autocomplete="email" required placeholder="you@example.com">
+      </div>
+      <button class="primary" type="submit" id="email-submit">Email me a sign in code</button>
+    </form>
+
+    <form id="code-form" novalidate hidden>
+      <div class="field">
+        <label for="code">6 digit code sent to <span id="code-email"></span></label>
+        <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required>
+      </div>
+      <button class="primary" type="submit" id="code-submit">Sign in</button>
+      <button class="quiet" type="button" id="code-back">Use a different email</button>
+    </form>
+
+    <div class="message" id="gate-message" role="status" aria-live="polite"></div>
+  </div>
+</section>
+
+<!-- Dashboard -->
+<div id="app" hidden>
+  <header class="top">
+    <div class="top-inner">
+      <img class="wordmark" src="wordmark.svg" alt="Holmes">
+      <span class="title">Analytics</span>
+      <span class="spacer"></span>
+      <div class="ranges" role="group" aria-label="Time range">
+        <button type="button" data-range="7">7 days</button>
+        <button type="button" data-range="30" aria-pressed="true">30 days</button>
+        <button type="button" data-range="90">90 days</button>
+        <button type="button" data-range="0">All time</button>
+      </div>
+      <span class="who" id="who"></span>
+      <button class="quiet" type="button" id="sign-out">Sign out</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="band" aria-label="Totals for the selected range">
+      <div class="measure">
+        <h2><i style="background:var(--series-downloads)"></i>Downloads</h2>
+        <div class="value num" id="m-downloads">0</div>
+        <div class="sub" id="m-downloads-sub">Website button clicks</div>
+      </div>
+      <div class="measure">
+        <h2><i style="background:var(--series-installs)"></i>Installs</h2>
+        <div class="value num" id="m-installs">0</div>
+        <div class="sub" id="m-installs-sub">Macs that opened Holmes</div>
+      </div>
+      <div class="measure">
+        <h2><i style="background:var(--series-users)"></i>Users</h2>
+        <div class="value num" id="m-users">0</div>
+        <div class="sub" id="m-users-sub">Signed in accounts</div>
+      </div>
+      <div class="measure">
+        <h2>Regions</h2>
+        <div class="value num" id="m-regions">0</div>
+        <div class="sub" id="m-regions-sub">Distinct countries</div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="activity-title">
+      <div class="panel-head">
+        <h3 id="activity-title">Activity</h3>
+        <span class="hint">New downloads, installs, and sign ups per day</span>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--series-downloads)"></i>Downloads</span>
+        <span><i style="background:var(--series-installs)"></i>Installs</span>
+        <span><i style="background:var(--series-users)"></i>Sign ups</span>
+      </div>
+      <div class="chart-wrap" id="activity-wrap">
+        <svg class="chart" id="activity" role="img" aria-label="Daily activity chart"></svg>
+        <div class="tooltip" id="activity-tip" hidden></div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="panel" aria-labelledby="regions-title">
+        <div class="panel-head">
+          <h3 id="regions-title">Regions</h3>
+          <div class="tabs" role="group" aria-label="Region source">
+            <button type="button" data-region="users" aria-pressed="true">Users</button>
+            <button type="button" data-region="installs">Installs</button>
+            <button type="button" data-region="downloads">Downloads</button>
+          </div>
+        </div>
+        <div class="bars" id="regions"></div>
+      </section>
+
+      <section class="panel" aria-labelledby="versions-title">
+        <div class="panel-head">
+          <h3 id="versions-title">Versions</h3>
+          <div class="tabs" role="group" aria-label="Version kind">
+            <button type="button" data-version="macos_version" aria-pressed="true">macOS</button>
+            <button type="button" data-version="holmes_version">Holmes</button>
+            <button type="button" data-version="mac_model">Mac model</button>
+          </div>
+        </div>
+        <div class="bars" id="versions"></div>
+      </section>
+    </div>
+
+    <section class="panel" aria-labelledby="releases-title">
+      <div class="panel-head">
+        <h3 id="releases-title">GitHub release downloads</h3>
+        <span class="hint">All time totals reported by GitHub for each installer</span>
+      </div>
+      <div class="bars" id="releases"></div>
+    </section>
+
+    <section class="panel" aria-labelledby="users-title">
+      <div class="panel-head">
+        <h3 id="users-title">People</h3>
+        <span class="hint" id="users-hint"></span>
+        <div class="table-tools">
+          <input type="search" id="user-search" placeholder="Search email, name, or region" aria-label="Search people">
+          <button type="button" id="export">Export CSV</button>
+        </div>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th><button type="button" data-sort="email">Email</button></th>
+              <th><button type="button" data-sort="name">Name</button></th>
+              <th><button type="button" data-sort="region">Region</button></th>
+              <th><button type="button" data-sort="macos_version">macOS</button></th>
+              <th><button type="button" data-sort="holmes_version">Holmes</button></th>
+              <th><button type="button" data-sort="signed_up_at">Signed up</button></th>
+              <th><button type="button" data-sort="last_sign_in_at">Last sign in</button></th>
+              <th><button type="button" data-sort="sign_ins">Sign ins</button></th>
+            </tr>
+          </thead>
+          <tbody id="users"></tbody>
+        </table>
+      </div>
+      <div class="foot" id="updated"></div>
+    </section>
+  </main>
+</div>
+
+<script>
+(() => {
+  const { Client, Account, TablesDB, Teams, Query, ID } = Appwrite;
+  const ENDPOINT = 'https://sfo.cloud.appwrite.io/v1';
+  const PROJECT = 'holmes';
+  const DATABASE = 'holmes';
+  const ADMIN_TEAM = 'admins';
+  const RELEASES_API = 'https://api.github.com/repos/tryholmes/holmes-local/releases?per_page=100';
+
+  const client = new Client().setEndpoint(ENDPOINT).setProject(PROJECT);
+  const account = new Account(client);
+  const tables = new TablesDB(client);
+  const teams = new Teams(client);
+
+  const $ = (id) => document.getElementById(id);
+  const regionName = (() => {
+    let names = null;
+    try { names = new Intl.DisplayNames(['en'], { type: 'region' }); } catch {}
+    return (code) => {
+      if (!code) return 'Unknown';
+      try { return names ? `${names.of(code.toUpperCase())}` : code; } catch { return code; }
+    };
+  })();
+  const fmt = new Intl.NumberFormat('en-US');
+  const dateFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const dayFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
+  const escapeHTML = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  const state = { rangeDays: 30, regionSource: 'users', versionKey: 'macos_version', sort: { key: 'signed_up_at', dir: -1 }, search: '', data: null, pendingUserId: null };
+
+  /* ---------- Sign in with an emailed code ---------- */
+  function setGateMessage(text, isError = false) {
+    const m = $('gate-message');
+    m.textContent = text;
+    m.classList.toggle('error', isError);
+  }
+
+  $('email-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const email = $('email').value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setGateMessage('Enter a valid email address.', true);
+    $('email-submit').disabled = true;
+    setGateMessage('Sending a code…');
+    try {
+      const token = await account.createEmailToken({ userId: ID.unique(), email });
+      state.pendingUserId = token.userId;
+      $('code-email').textContent = email;
+      $('email-form').hidden = true;
+      $('code-form').hidden = false;
+      $('code').focus();
+      setGateMessage('Check your inbox. The code expires in 15 minutes.');
+    } catch (err) {
+      setGateMessage(err?.code === 429 ? 'Too many attempts. Wait a minute, then try again.' : `Couldn't send a code: ${err.message}`, true);
+    } finally {
+      $('email-submit').disabled = false;
+    }
+  });
+
+  $('code-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const secret = $('code').value.trim();
+    if (!/^\d{6}$/.test(secret)) return setGateMessage('Enter the 6 digit code from the email.', true);
+    $('code-submit').disabled = true;
+    setGateMessage('Signing in…');
+    try {
+      await account.createSession({ userId: state.pendingUserId, secret });
+      await enter();
+    } catch (err) {
+      setGateMessage(err?.code === 401 ? 'That code is wrong or expired. Request a new one.' : `Couldn't sign in: ${err.message}`, true);
+    } finally {
+      $('code-submit').disabled = false;
+    }
+  });
+
+  $('code-back').addEventListener('click', () => {
+    $('code-form').hidden = true;
+    $('email-form').hidden = false;
+    $('code').value = '';
+    setGateMessage('');
+  });
+
+  $('sign-out').addEventListener('click', async () => {
+    try { await account.deleteSession({ sessionId: 'current' }); } catch {}
+    showGate();
+  });
+
+  function showGate(message = '', isError = false) {
+    $('app').hidden = true;
+    $('gate').hidden = false;
+    $('email-form').hidden = false;
+    $('code-form').hidden = true;
+    setGateMessage(message, isError);
+  }
+
+  async function enter() {
+    const me = await account.get();
+    const membership = await teams.list({ queries: [Query.equal('$id', ADMIN_TEAM)] }).catch(() => ({ teams: [] }));
+    if (!membership.teams.some((t) => t.$id === ADMIN_TEAM)) {
+      try { await account.deleteSession({ sessionId: 'current' }); } catch {}
+      return showGate(`${me.email} isn't an admin for Holmes analytics. Ask an admin to add you to the admins team.`, true);
+    }
+    $('who').textContent = me.email;
+    $('gate').hidden = true;
+    $('app').hidden = false;
+    await load();
+  }
+
+  /* ---------- Data ---------- */
+  async function allRows(tableId) {
+    const rows = [];
+    let cursor = null;
+    for (;;) {
+      const queries = [Query.limit(100), Query.orderAsc('$id')];
+      if (cursor) queries.push(Query.cursorAfter(cursor));
+      const page = await tables.listRows({ databaseId: DATABASE, tableId, queries });
+      rows.push(...page.rows);
+      if (page.rows.length < 100) break;
+      cursor = page.rows[page.rows.length - 1].$id;
+    }
+    return rows;
+  }
+
+  async function releaseCounts() {
+    try {
+      const response = await fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' } });
+      if (!response.ok) throw new Error(`GitHub answered ${response.status}`);
+      const releases = await response.json();
+      return releases.map((r) => ({
+        tag: r.tag_name,
+        count: r.assets.filter((a) => a.name.endsWith('.dmg')).reduce((sum, a) => sum + a.download_count, 0),
+      }));
+    } catch (err) {
+      return { error: err.message };
+    }
+  }
+
+  async function load() {
+    $('updated').textContent = 'Loading…';
+    try {
+      const [downloads, installs, users, releases] = await Promise.all([
+        allRows('downloads'), allRows('installs'), allRows('users'), releaseCounts(),
+      ]);
+      state.data = { downloads, installs, users, releases };
+      render();
+      $('updated').textContent = `Updated ${new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+    } catch (err) {
+      if (err?.code === 401) return showGate('Your session ended. Sign in again.', true);
+      $('updated').textContent = `Couldn't load analytics: ${err.message}`;
+    }
+  }
+
+  /* ---------- Rendering ---------- */
+  const since = () => state.rangeDays ? Date.now() - state.rangeDays * 86400000 : 0;
+  const stamp = (row, key) => Date.parse(row[key] ?? row.$createdAt);
+  const inRange = (rows, key) => rows.filter((r) => stamp(r, key) >= since());
+
+  function render() {
+    const { downloads, installs, users, releases } = state.data;
+    const d = inRange(downloads, '$createdAt');
+    const i = inRange(installs, 'first_seen');
+    const u = inRange(users, 'signed_up_at');
+    const scope = state.rangeDays ? `in the last ${state.rangeDays} days` : 'all time';
+
+    $('m-downloads').textContent = fmt.format(d.length);
+    $('m-downloads-sub').textContent = `Website clicks ${scope}`;
+    $('m-installs').textContent = fmt.format(i.length);
+    $('m-installs-sub').textContent = `${fmt.format(installs.length)} Macs all time`;
+    $('m-users').textContent = fmt.format(u.length);
+    $('m-users-sub').textContent = `${fmt.format(users.length)} accounts all time`;
+    const regions = new Set([...u, ...i].map((r) => r.region || r.country).filter(Boolean));
+    $('m-regions').textContent = fmt.format(regions.size);
+    $('m-regions-sub').textContent = `From users and installs ${scope}`;
+
+    renderActivity(d, i, u);
+    renderRegions();
+    renderVersions();
+    renderReleases(releases);
+    renderUsers();
+  }
+
+  function renderBars(container, entries, total, emptyText, valueLabel = (n) => fmt.format(n)) {
+    if (!entries.length) {
+      container.innerHTML = `<div class="empty">${escapeHTML(emptyText)}</div>`;
+      return;
+    }
+    const max = Math.max(...entries.map((e) => e.count));
+    container.innerHTML = entries.map((e) => {
+      const share = total ? Math.round((e.count / total) * 100) : 0;
+      return `<div class="bar-row" title="${escapeHTML(e.label)}: ${fmt.format(e.count)}${total ? ` (${share}%)` : ''}">
+        <span class="label">${escapeHTML(e.label)}</span>
+        <span class="bar-track"><span class="bar-fill" style="width:${Math.max(1, (e.count / max) * 100)}%"></span></span>
+        <span class="count num">${valueLabel(e.count)}</span>
+      </div>`;
+    }).join('');
+  }
+
+  function tally(rows, pick, limit = 10) {
+    const counts = new Map();
+    rows.forEach((r) => {
+      const key = pick(r);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    });
+    const sorted = [...counts.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
+    if (sorted.length <= limit) return sorted;
+    const rest = sorted.slice(limit - 1).reduce((s, e) => s + e.count, 0);
+    return [...sorted.slice(0, limit - 1), { label: 'Other', count: rest }];
+  }
+
+  function renderRegions() {
+    const source = state.regionSource;
+    const key = source === 'downloads' ? '$createdAt' : source === 'installs' ? 'first_seen' : 'signed_up_at';
+    const rows = inRange(state.data[source], key);
+    const entries = tally(rows, (r) => regionName(source === 'downloads' ? r.country : (r.region || r.country)));
+    renderBars($('regions'), entries, rows.length, `No ${source} with a region in this range yet.`);
+  }
+
+  function renderVersions() {
+    const k = state.versionKey;
+    const rows = inRange(state.data.installs, 'first_seen');
+    const entries = tally(rows, (r) => r[k] ? (k === 'holmes_version' ? `Holmes ${r[k]}` : k === 'macos_version' ? `macOS ${r[k]}` : r[k]) : 'Unknown');
+    renderBars($('versions'), entries, rows.length, 'No installs in this range yet.');
+  }
+
+  function renderReleases(releases) {
+    if (releases.error) {
+      $('releases').innerHTML = `<div class="empty">Couldn't reach GitHub: ${escapeHTML(releases.error)}</div>`;
+      return;
+    }
+    const total = releases.reduce((s, r) => s + r.count, 0);
+    renderBars($('releases'), releases.map((r) => ({ label: r.tag, count: r.count })), total, 'No releases published yet.');
+  }
+
+  function renderUsers() {
+    const q = state.search.toLowerCase();
+    const { key, dir } = state.sort;
+    const rows = state.data.users
+      .filter((r) => !q || [r.email, r.name, r.region, regionName(r.region)].some((v) => String(v ?? '').toLowerCase().includes(q)))
+      .sort((a, b) => {
+        const av = a[key] ?? '', bv = b[key] ?? '';
+        return (typeof av === 'number' ? av - bv : String(av).localeCompare(String(bv))) * dir;
+      });
+    $('users-hint').textContent = `${fmt.format(rows.length)} of ${fmt.format(state.data.users.length)} accounts`;
+    const date = (v) => v ? dateFmt.format(new Date(v)) : '';
+    $('users').innerHTML = rows.length ? rows.map((r) => `<tr>
+        <td class="email">${escapeHTML(r.email)}</td>
+        <td>${escapeHTML(r.name)}</td>
+        <td class="muted">${escapeHTML(regionName(r.region || r.country))}</td>
+        <td class="muted num">${escapeHTML(r.macos_version)}</td>
+        <td class="muted num">${escapeHTML(r.holmes_version)}</td>
+        <td class="muted num">${date(r.signed_up_at)}</td>
+        <td class="muted num">${date(r.last_sign_in_at)}</td>
+        <td class="muted num">${fmt.format(r.sign_ins ?? 0)}</td>
+      </tr>`).join('')
+      : `<tr><td colspan="8" class="empty">${state.data.users.length ? 'Nobody matches that search.' : 'No one has signed in to Holmes yet.'}</td></tr>`;
+  }
+
+  function renderActivity(d, i, u) {
+    const svg = $('activity');
+    const width = svg.clientWidth || 900, height = 280;
+    const pad = { top: 12, right: 18, bottom: 28, left: 36 };
+    const earliest = state.rangeDays ? since() : Math.min(Date.now() - 6 * 86400000, ...[...d, ...i, ...u].map((r) => stamp(r, r.first_seen ? 'first_seen' : r.signed_up_at ? 'signed_up_at' : '$createdAt')));
+    const start = new Date(earliest); start.setHours(0, 0, 0, 0);
+    const days = Math.max(2, Math.ceil((Date.now() - start) / 86400000));
+    const bucket = (rows, key) => {
+      const counts = new Array(days).fill(0);
+      rows.forEach((r) => {
+        const idx = Math.floor((stamp(r, key) - start) / 86400000);
+        if (idx >= 0 && idx < days) counts[idx] += 1;
+      });
+      return counts;
+    };
+    const series = [
+      { name: 'Downloads', color: 'var(--series-downloads)', values: bucket(d, '$createdAt') },
+      { name: 'Installs', color: 'var(--series-installs)', values: bucket(i, 'first_seen') },
+      { name: 'Sign ups', color: 'var(--series-users)', values: bucket(u, 'signed_up_at') },
+    ];
+    const maxY = Math.max(4, ...series.flatMap((s) => s.values));
+    const niceMax = Math.ceil(maxY / 4) * 4;
+    const x = (idx) => pad.left + (idx / (days - 1)) * (width - pad.left - pad.right);
+    const y = (v) => pad.top + (1 - v / niceMax) * (height - pad.top - pad.bottom);
+    const dayDate = (idx) => new Date(start.getTime() + idx * 86400000);
+
+    let markup = '';
+    for (let t = 0; t <= 4; t++) {
+      const v = (niceMax / 4) * t;
+      markup += `<line x1="${pad.left}" x2="${width - pad.right}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(246,240,233,${t === 0 ? 0.16 : 0.07})" stroke-width="1"/>`;
+      markup += `<text x="${pad.left - 8}" y="${y(v) + 4}" text-anchor="end" fill="rgba(246,240,233,.46)" font-size="11" class="num">${fmt.format(v)}</text>`;
+    }
+    const ticks = Math.min(6, days);
+    for (let t = 0; t < ticks; t++) {
+      const idx = Math.round((t / (ticks - 1)) * (days - 1));
+      markup += `<text x="${x(idx)}" y="${height - 8}" text-anchor="${t === 0 ? 'start' : t === ticks - 1 ? 'end' : 'middle'}" fill="rgba(246,240,233,.46)" font-size="11">${dayFmt.format(dayDate(idx))}</text>`;
+    }
+    series.forEach((s) => {
+      const path = s.values.map((v, idx) => `${idx ? 'L' : 'M'}${x(idx).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+      markup += `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    });
+    markup += `<line id="cross" y1="${pad.top}" y2="${height - pad.bottom}" stroke="rgba(246,240,233,.28)" stroke-width="1" visibility="hidden"/>`;
+    series.forEach((s, n) => { markup += `<circle id="dot-${n}" r="4.5" fill="${s.color}" stroke="#121212" stroke-width="2" visibility="hidden"/>`; });
+    markup += `<rect x="${pad.left}" y="0" width="${width - pad.left - pad.right}" height="${height}" fill="transparent" id="hit"/>`;
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.innerHTML = markup;
+    svg.setAttribute('aria-label', `Daily activity: ${series.map((s) => `${s.values.reduce((a, b) => a + b, 0)} ${s.name.toLowerCase()}`).join(', ')}`);
+
+    const tip = $('activity-tip');
+    const hit = svg.querySelector('#hit');
+    const move = (clientX) => {
+      const rect = svg.getBoundingClientRect();
+      const px = ((clientX - rect.left) / rect.width) * width;
+      const idx = Math.max(0, Math.min(days - 1, Math.round(((px - pad.left) / (width - pad.left - pad.right)) * (days - 1))));
+      const cx = x(idx);
+      const cross = svg.querySelector('#cross');
+      cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.setAttribute('visibility', 'visible');
+      series.forEach((s, n) => {
+        const dot = svg.querySelector(`#dot-${n}`);
+        dot.setAttribute('cx', cx); dot.setAttribute('cy', y(s.values[idx])); dot.setAttribute('visibility', 'visible');
+      });
+      tip.innerHTML = `<div class="t-head">${dateFmt.format(dayDate(idx))}</div>` + series.map((s) =>
+        `<div class="t-row"><i style="background:${s.color}"></i>${s.name}<b class="num">${fmt.format(s.values[idx])}</b></div>`).join('');
+      tip.hidden = false;
+      const left = (cx / width) * rect.width;
+      tip.style.left = `${Math.min(rect.width - tip.offsetWidth, Math.max(0, left + (left > rect.width / 2 ? -tip.offsetWidth - 14 : 14)))}px`;
+      tip.style.top = '16px';
+    };
+    const leave = () => {
+      tip.hidden = true;
+      svg.querySelector('#cross')?.setAttribute('visibility', 'hidden');
+      series.forEach((_, n) => svg.querySelector(`#dot-${n}`)?.setAttribute('visibility', 'hidden'));
+    };
+    hit.addEventListener('pointermove', (e) => move(e.clientX));
+    hit.addEventListener('pointerleave', leave);
+  }
+
+  /* ---------- Controls ---------- */
+  document.querySelectorAll('[data-range]').forEach((btn) => btn.addEventListener('click', () => {
+    state.rangeDays = Number(btn.dataset.range);
+    document.querySelectorAll('[data-range]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+    if (state.data) render();
+  }));
+  document.querySelectorAll('[data-region]').forEach((btn) => btn.addEventListener('click', () => {
+    state.regionSource = btn.dataset.region;
+    document.querySelectorAll('[data-region]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+    if (state.data) renderRegions();
+  }));
+  document.querySelectorAll('[data-version]').forEach((btn) => btn.addEventListener('click', () => {
+    state.versionKey = btn.dataset.version;
+    document.querySelectorAll('[data-version]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+    if (state.data) renderVersions();
+  }));
+  document.querySelectorAll('[data-sort]').forEach((btn) => btn.addEventListener('click', () => {
+    const key = btn.dataset.sort;
+    state.sort = { key, dir: state.sort.key === key ? -state.sort.dir : 1 };
+    if (state.data) renderUsers();
+  }));
+  $('user-search').addEventListener('input', (e) => { state.search = e.target.value; if (state.data) renderUsers(); });
+  $('export').addEventListener('click', () => {
+    if (!state.data) return;
+    const cols = ['email', 'name', 'region', 'country', 'macos_version', 'holmes_version', 'mac_model', 'signed_up_at', 'last_sign_in_at', 'sign_ins'];
+    const csv = [cols.join(',')].concat(state.data.users.map((r) => cols.map((c) => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))).join('\n');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    link.download = `holmes-users-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  });
+  let resizeTimer;
+  window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => state.data && render(), 150); });
+
+  /* ---------- Start ---------- */
+  enter().catch(() => showGate());
+})();
+</script>
+</body>
+</html>
