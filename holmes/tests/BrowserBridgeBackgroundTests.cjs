@@ -542,6 +542,7 @@ async function visibilityTests() {
     fetch: async () => ({ status: 503, body: {} }),
     sendMessage(tabId, message) {
       if (message.type === 'holmes:ping') { pings++; return { ok: true, visible: pings > 3, isActiveTab: pings > 3 }; }
+      if (message.type === 'holmes:checkEmailDraft') return { ok: true, deferred: true };
       if (message.type === 'holmes:fillEmailDraft') { pingsBeforeFill = pings; return { ok: true, inserted: true, identity: message.expected.identity }; }
       return {};
     }
@@ -557,6 +558,7 @@ async function visibilityTests() {
     fetch: async () => ({ status: 503, body: {} }),
     sendMessage(tabId, message) {
       if (message.type === 'holmes:ping') return { ok: true, visible: false, isActiveTab: true };
+      if (message.type === 'holmes:checkEmailDraft') return { ok: true, deferred: true };
       if (message.type === 'holmes:fillEmailDraft') { fills++; return { ok: true, inserted: true, identity: message.expected.identity }; }
       return {};
     }
