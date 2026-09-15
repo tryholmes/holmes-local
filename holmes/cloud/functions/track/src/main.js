@@ -1,4 +1,4 @@
-import { Client, TablesDB, Users } from 'node-appwrite';
+import { Client, TablesDB, Users, ID } from 'node-appwrite';
 
 // Holmes calls this on launch ("install") and after signing in ("signin").
 // The email always comes from the verified Appwrite account, never the body.
@@ -16,7 +16,8 @@ const clip = (value, max) => {
 async function countryFor(headers) {
   const known = clip(headers['x-appwrite-country-code'], 8);
   if (known) return known.toUpperCase();
-  const ip = String(headers['x-appwrite-client-ip'] ?? headers['x-forwarded-for'] ?? '').split(',')[0].trim();
+  const ip = String(headers['fastly-client-ip'] ?? headers['x-cdn-client-ip'] ?? headers['x-real-ip']
+    ?? headers['x-appwrite-client-ip'] ?? headers['x-forwarded-for'] ?? '').split(',')[0].trim();
   if (!ip) return null;
   try {
     const response = await fetch(`https://api.country.is/${encodeURIComponent(ip)}`, { signal: AbortSignal.timeout(1500) });
@@ -101,15 +102,33 @@ export default async ({ req, res, error }) => {
 
     if (event === 'signin') {
       const user = await new Users(client).get(userId);
-      await upsert(db, 'users', userId, (existing) => ({
-        ...device,
-        email: clip(user.email, 320),
-        name: clip(user.name, 128),
-        install_id: installId,
-        last_sign_in_at: now,
-        sign_ins: (existing?.sign_ins ?? 0) + 1,
-        ...(existing ? {} : { signed_up_at: user.$createdAt ?? now }),
-      }));
+      let isNewAccount = false;
+      await upsert(db, 'users', userId, (existing) => {
+        isNewAccount = !existing;
+        return {
+          ...device,
+          email: clip(user.email, 320),
+          name: clip(user.name, 128),
+          install_id: installId,
+          last_sign_in_at: now,
+          sign_ins: (existing?.sign_ins ?? 0) + 1,
+          ...(existing ? {} : { signed_up_at: user.$createdAt ?? now }),
+        };
+      });
+      // One row per sign in, so the dashboard can chart sign ins per day.
+      await db.createRow({
+        databaseId: DATABASE_ID,
+        tableId: 'sign_ins',
+        rowId: ID.unique(),
+        data: {
+          user_id: userId,
+          new_account: isNewAccount,
+          region: device.region,
+          country: device.country,
+          holmes_version: device.holmes_version,
+          macos_version: device.macos_version,
+        },
+      });
     }
 
     return res.json({ ok: true });

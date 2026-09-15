@@ -24,9 +24,9 @@
     --cream: #ebe2d1;
     --danger: #ff7a70;
     /* Validated categorical trio on the #121212 panel (dataviz validator, all pairs). */
-    --series-downloads: #3987e5;
-    --series-installs: #d95926;
-    --series-users: #199e70;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
     --radius-panel: 14px;
     --radius-control: 8px;
     font-family: "Geist", ui-sans-serif, -apple-system, "Helvetica Neue", sans-serif;
@@ -57,8 +57,9 @@
   .message.error { color: var(--danger); }
 
   /* Shell */
-  .top { position: sticky; top: 0; z-index: 5; background: rgba(6,6,6,.86); backdrop-filter: blur(14px); border-bottom: 1px solid var(--rule); }
-  .top-inner { max-width: 1180px; margin: 0 auto; padding: 14px 24px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .top { position: sticky; top: 0; z-index: 5; background: rgba(6,6,6,.88); backdrop-filter: blur(14px); border-bottom: 1px solid var(--rule); }
+  .top-inner { max-width: 1180px; margin: 0 auto; padding: 14px 24px 0; }
+  .top-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
   .top .wordmark { width: 92px; height: auto; display: block; }
   .top .title { color: var(--ink-2); padding-left: 14px; border-left: 1px solid var(--rule-strong); }
   .spacer { flex: 1; }
@@ -66,10 +67,20 @@
   .ranges button { border: 0; background: none; padding: 5px 12px; border-radius: 999px; color: var(--ink-2); cursor: pointer; }
   .ranges button[aria-pressed="true"] { background: var(--raised); color: var(--ink); box-shadow: inset 0 0 0 1px var(--rule-strong); }
   .who { color: var(--ink-3); font-size: 13px; }
-  main { max-width: 1180px; margin: 0 auto; padding: 28px 24px 64px; }
+
+  /* Section tabs: the three categories. */
+  .sections { display: flex; gap: 4px; margin-top: 12px; overflow-x: auto; }
+  .sections button { position: relative; border: 0; background: none; color: var(--ink-2); padding: 10px 14px 12px; cursor: pointer; white-space: nowrap; display: inline-flex; align-items: baseline; gap: 8px; }
+  .sections button .count { color: var(--ink-3); font-size: 12.5px; }
+  .sections button:hover { color: var(--ink); }
+  .sections button[aria-selected="true"] { color: var(--ink); }
+  .sections button[aria-selected="true"]::after { content: ""; position: absolute; left: 14px; right: 14px; bottom: -1px; height: 2px; border-radius: 2px; background: var(--cream); }
+
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 24px 64px; }
+  .section-intro { color: var(--ink-2); margin: 0 0 18px; max-width: 72ch; }
 
   /* Headline band: one row, divided by rules rather than boxed cards. */
-  .band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); margin-bottom: 28px; }
+  .band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); margin-bottom: 24px; }
   .measure { padding: 18px 20px 20px; border-left: 1px solid var(--rule); }
   .measure:first-child { border-left: 0; padding-left: 0; }
   .measure h2 { margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--ink-2); display: flex; align-items: center; gap: 8px; }
@@ -87,7 +98,7 @@
 
   /* Line chart */
   .chart-wrap { position: relative; }
-  .chart { width: 100%; height: 280px; display: block; overflow: visible; }
+  .chart { width: 100%; height: 260px; display: block; overflow: visible; }
   .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 8px; color: var(--ink-2); font-size: 13px; }
   .legend span { display: inline-flex; align-items: center; gap: 7px; }
   .legend i { width: 14px; height: 2px; border-radius: 2px; display: inline-block; }
@@ -104,12 +115,12 @@
   .bar-track { display: block; height: 8px; position: relative; border-radius: 0 4px 4px 0; }
   .bar-fill { display: block; height: 8px; border-radius: 0 4px 4px 0; background: var(--cream); min-width: 2px; }
   .bar-row .count { color: var(--ink-2); min-width: 44px; text-align: right; }
-  .tabs { display: inline-flex; gap: 4px; margin-left: auto; }
+  .tabs { display: inline-flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
   .tabs button { border: 1px solid var(--rule); background: none; border-radius: 999px; padding: 3px 10px; color: var(--ink-2); cursor: pointer; font-size: 12.5px; }
   .tabs button[aria-pressed="true"] { color: var(--ink); border-color: var(--rule-strong); background: var(--raised); }
   .empty { color: var(--ink-3); padding: 18px 0; }
 
-  /* Users table */
+  /* People table */
   .table-tools { display: flex; gap: 10px; align-items: center; margin-left: auto; }
   .table-tools input { padding: 7px 10px; border-radius: var(--radius-control); border: 1px solid var(--rule-strong); background: var(--canvas); min-width: 220px; }
   .table-tools button { border: 1px solid var(--rule-strong); background: var(--raised); border-radius: var(--radius-control); padding: 7px 12px; cursor: pointer; }
@@ -121,7 +132,7 @@
   td.email { color: var(--ink); }
   td.muted { color: var(--ink-2); }
   tr:last-child td { border-bottom: 0; }
-  .foot { color: var(--ink-3); font-size: 12.5px; margin-top: 12px; }
+  .foot { color: var(--ink-3); font-size: 12.5px; margin-top: 16px; }
 
   @media (max-width: 860px) {
     .band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -134,7 +145,7 @@
   @media (max-width: 520px) {
     .top .title { display: none; }
     main { padding: 20px 16px 48px; }
-    .top-inner { padding: 12px 16px; }
+    .top-inner { padding: 12px 16px 0; }
     .measure .value { font-size: 28px; }
     .panel { padding: 16px; }
     .table-scroll { margin: 0 -16px; padding: 0 16px; }
@@ -151,7 +162,7 @@
   <div class="gate-card">
     <img class="character" src="holmes.png" alt="">
     <img class="wordmark" src="wordmark.svg" alt="Holmes">
-    <p class="lede">Downloads, installs, and people using Holmes.</p>
+    <p class="lede">Downloads, accounts, and installs for Holmes.</p>
 
     <form id="email-form" novalidate>
       <div class="field">
@@ -178,122 +189,146 @@
 <div id="app" hidden>
   <header class="top">
     <div class="top-inner">
-      <img class="wordmark" src="wordmark.svg" alt="Holmes">
-      <span class="title">Analytics</span>
-      <span class="spacer"></span>
-      <div class="ranges" role="group" aria-label="Time range">
-        <button type="button" data-range="7">7 days</button>
-        <button type="button" data-range="30" aria-pressed="true">30 days</button>
-        <button type="button" data-range="90">90 days</button>
-        <button type="button" data-range="0">All time</button>
+      <div class="top-row">
+        <img class="wordmark" src="wordmark.svg" alt="Holmes">
+        <span class="title">Analytics</span>
+        <span class="spacer"></span>
+        <div class="ranges" role="group" aria-label="Time range">
+          <button type="button" data-range="7">7 days</button>
+          <button type="button" data-range="30" aria-pressed="true">30 days</button>
+          <button type="button" data-range="90">90 days</button>
+          <button type="button" data-range="0">All time</button>
+        </div>
+        <span class="who" id="who"></span>
+        <button class="quiet" type="button" id="sign-out">Sign out</button>
       </div>
-      <span class="who" id="who"></span>
-      <button class="quiet" type="button" id="sign-out">Sign out</button>
+      <nav class="sections" role="tablist" aria-label="Analytics sections">
+        <button type="button" role="tab" id="tab-downloads" aria-controls="view-downloads" aria-selected="true" data-view="downloads">Website downloads <span class="count num" id="tab-count-downloads"></span></button>
+        <button type="button" role="tab" id="tab-accounts" aria-controls="view-accounts" aria-selected="false" data-view="accounts">Accounts <span class="count num" id="tab-count-accounts"></span></button>
+        <button type="button" role="tab" id="tab-installs" aria-controls="view-installs" aria-selected="false" data-view="installs">Installs <span class="count num" id="tab-count-installs"></span></button>
+      </nav>
     </div>
   </header>
 
   <main>
-    <section class="band" aria-label="Totals for the selected range">
-      <div class="measure">
-        <h2><i style="background:var(--series-downloads)"></i>Downloads</h2>
-        <div class="value num" id="m-downloads">0</div>
-        <div class="sub" id="m-downloads-sub">Website button clicks</div>
+    <!-- 1. Website downloads -->
+    <section id="view-downloads" role="tabpanel" aria-labelledby="tab-downloads">
+      <p class="section-intro">Every click on a Download button on the Holmes website, counted before visitors land on the GitHub releases page.</p>
+      <div class="band">
+        <div class="measure"><h2><i style="background:var(--series-1)"></i>Clicks</h2><div class="value num" id="d-range">0</div><div class="sub" id="d-range-sub"></div></div>
+        <div class="measure"><h2>All time clicks</h2><div class="value num" id="d-total">0</div><div class="sub">Since tracking started</div></div>
+        <div class="measure"><h2>Countries</h2><div class="value num" id="d-countries">0</div><div class="sub" id="d-countries-sub"></div></div>
+        <div class="measure"><h2>GitHub installer downloads</h2><div class="value num" id="d-github">0</div><div class="sub">All releases, reported by GitHub</div></div>
       </div>
-      <div class="measure">
-        <h2><i style="background:var(--series-installs)"></i>Installs</h2>
-        <div class="value num" id="m-installs">0</div>
-        <div class="sub" id="m-installs-sub">Macs that opened Holmes</div>
+      <section class="panel">
+        <div class="panel-head"><h3>Clicks per day</h3></div>
+        <div class="chart-wrap"><svg class="chart" id="d-chart" role="img"></svg><div class="tooltip" hidden></div></div>
+      </section>
+      <div class="grid">
+        <section class="panel">
+          <div class="panel-head"><h3>Countries</h3><span class="hint">Where clicks came from</span></div>
+          <div class="bars" id="d-countries-bars"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h3>Referrers</h3><span class="hint">The page people clicked from</span></div>
+          <div class="bars" id="d-referrers-bars"></div>
+        </section>
       </div>
-      <div class="measure">
-        <h2><i style="background:var(--series-users)"></i>Users</h2>
-        <div class="value num" id="m-users">0</div>
-        <div class="sub" id="m-users-sub">Signed in accounts</div>
-      </div>
-      <div class="measure">
-        <h2>Regions</h2>
-        <div class="value num" id="m-regions">0</div>
-        <div class="sub" id="m-regions-sub">Distinct countries</div>
-      </div>
+      <section class="panel">
+        <div class="panel-head"><h3>GitHub release downloads</h3><span class="hint">All time totals for each installer</span></div>
+        <div class="bars" id="d-releases-bars"></div>
+      </section>
     </section>
 
-    <section class="panel" aria-labelledby="activity-title">
-      <div class="panel-head">
-        <h3 id="activity-title">Activity</h3>
-        <span class="hint">New downloads, installs, and sign ups per day</span>
+    <!-- 2. Accounts -->
+    <section id="view-accounts" role="tabpanel" aria-labelledby="tab-accounts" hidden>
+      <p class="section-intro">People who signed up and signed in to the Holmes app, with the email and region from their account.</p>
+      <div class="band">
+        <div class="measure"><h2>Total accounts</h2><div class="value num" id="a-total">0</div><div class="sub">All time</div></div>
+        <div class="measure"><h2><i style="background:var(--series-3)"></i>New sign ups</h2><div class="value num" id="a-signups">0</div><div class="sub" id="a-signups-sub"></div></div>
+        <div class="measure"><h2><i style="background:var(--series-1)"></i>Sign ins</h2><div class="value num" id="a-signins">0</div><div class="sub" id="a-signins-sub"></div></div>
+        <div class="measure"><h2>Regions</h2><div class="value num" id="a-regions">0</div><div class="sub">Across all accounts</div></div>
       </div>
-      <div class="legend">
-        <span><i style="background:var(--series-downloads)"></i>Downloads</span>
-        <span><i style="background:var(--series-installs)"></i>Installs</span>
-        <span><i style="background:var(--series-users)"></i>Sign ups</span>
+      <section class="panel">
+        <div class="panel-head"><h3>Sign ups and sign ins per day</h3></div>
+        <div class="legend">
+          <span><i style="background:var(--series-3)"></i>Sign ups</span>
+          <span><i style="background:var(--series-1)"></i>Sign ins</span>
+        </div>
+        <div class="chart-wrap"><svg class="chart" id="a-chart" role="img"></svg><div class="tooltip" hidden></div></div>
+      </section>
+      <div class="grid">
+        <section class="panel">
+          <div class="panel-head"><h3>Accounts by region</h3><span class="hint">From each Mac's Region setting</span></div>
+          <div class="bars" id="a-regions-bars"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h3>Most active accounts</h3><span class="hint">Sign ins in the selected range</span></div>
+          <div class="bars" id="a-active-bars"></div>
+        </section>
       </div>
-      <div class="chart-wrap" id="activity-wrap">
-        <svg class="chart" id="activity" role="img" aria-label="Daily activity chart"></svg>
-        <div class="tooltip" id="activity-tip" hidden></div>
-      </div>
-    </section>
-
-    <div class="grid">
-      <section class="panel" aria-labelledby="regions-title">
+      <section class="panel">
         <div class="panel-head">
-          <h3 id="regions-title">Regions</h3>
-          <div class="tabs" role="group" aria-label="Region source">
-            <button type="button" data-region="users" aria-pressed="true">Users</button>
-            <button type="button" data-region="installs">Installs</button>
-            <button type="button" data-region="downloads">Downloads</button>
+          <h3>People</h3>
+          <span class="hint" id="users-hint"></span>
+          <div class="table-tools">
+            <input type="search" id="user-search" placeholder="Search email, name, or region" aria-label="Search people">
+            <button type="button" id="export">Export CSV</button>
           </div>
         </div>
-        <div class="bars" id="regions"></div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th><button type="button" data-sort="email">Email</button></th>
+                <th><button type="button" data-sort="name">Name</button></th>
+                <th><button type="button" data-sort="region">Region</button></th>
+                <th><button type="button" data-sort="macos_version">macOS</button></th>
+                <th><button type="button" data-sort="holmes_version">Holmes</button></th>
+                <th><button type="button" data-sort="signed_up_at">Signed up</button></th>
+                <th><button type="button" data-sort="last_sign_in_at">Last sign in</button></th>
+                <th><button type="button" data-sort="sign_ins">Sign ins</button></th>
+              </tr>
+            </thead>
+            <tbody id="users"></tbody>
+          </table>
+        </div>
       </section>
+    </section>
 
-      <section class="panel" aria-labelledby="versions-title">
-        <div class="panel-head">
-          <h3 id="versions-title">Versions</h3>
-          <div class="tabs" role="group" aria-label="Version kind">
-            <button type="button" data-version="macos_version" aria-pressed="true">macOS</button>
-            <button type="button" data-version="holmes_version">Holmes</button>
-            <button type="button" data-version="mac_model">Mac model</button>
+    <!-- 3. Installs -->
+    <section id="view-installs" role="tabpanel" aria-labelledby="tab-installs" hidden>
+      <p class="section-intro">Macs running Holmes. Each Mac checks in at most once a day when Holmes opens, whether or not someone has signed in.</p>
+      <div class="band">
+        <div class="measure"><h2>Current installs</h2><div class="value num" id="i-current">0</div><div class="sub">Opened Holmes in the last 30 days</div></div>
+        <div class="measure"><h2><i style="background:var(--series-2)"></i>New installs</h2><div class="value num" id="i-new">0</div><div class="sub" id="i-new-sub"></div></div>
+        <div class="measure"><h2>All time installs</h2><div class="value num" id="i-total">0</div><div class="sub">Every Mac that ever checked in</div></div>
+        <div class="measure"><h2>Signed in Macs</h2><div class="value num" id="i-linked">0</div><div class="sub" id="i-linked-sub"></div></div>
+      </div>
+      <section class="panel">
+        <div class="panel-head"><h3>New installs per day</h3></div>
+        <div class="chart-wrap"><svg class="chart" id="i-chart" role="img"></svg><div class="tooltip" hidden></div></div>
+      </section>
+      <div class="grid">
+        <section class="panel">
+          <div class="panel-head"><h3>Current installs by region</h3></div>
+          <div class="bars" id="i-regions-bars"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head">
+            <h3>Versions</h3>
+            <div class="tabs" role="group" aria-label="Version kind">
+              <button type="button" data-version="macos_version" aria-pressed="true">macOS</button>
+              <button type="button" data-version="holmes_version">Holmes</button>
+              <button type="button" data-version="mac_model">Mac model</button>
+            </div>
           </div>
-        </div>
-        <div class="bars" id="versions"></div>
-      </section>
-    </div>
-
-    <section class="panel" aria-labelledby="releases-title">
-      <div class="panel-head">
-        <h3 id="releases-title">GitHub release downloads</h3>
-        <span class="hint">All time totals reported by GitHub for each installer</span>
+          <div class="bars" id="i-versions-bars"></div>
+        </section>
       </div>
-      <div class="bars" id="releases"></div>
     </section>
 
-    <section class="panel" aria-labelledby="users-title">
-      <div class="panel-head">
-        <h3 id="users-title">People</h3>
-        <span class="hint" id="users-hint"></span>
-        <div class="table-tools">
-          <input type="search" id="user-search" placeholder="Search email, name, or region" aria-label="Search people">
-          <button type="button" id="export">Export CSV</button>
-        </div>
-      </div>
-      <div class="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th><button type="button" data-sort="email">Email</button></th>
-              <th><button type="button" data-sort="name">Name</button></th>
-              <th><button type="button" data-sort="region">Region</button></th>
-              <th><button type="button" data-sort="macos_version">macOS</button></th>
-              <th><button type="button" data-sort="holmes_version">Holmes</button></th>
-              <th><button type="button" data-sort="signed_up_at">Signed up</button></th>
-              <th><button type="button" data-sort="last_sign_in_at">Last sign in</button></th>
-              <th><button type="button" data-sort="sign_ins">Sign ins</button></th>
-            </tr>
-          </thead>
-          <tbody id="users"></tbody>
-        </table>
-      </div>
-      <div class="foot" id="updated"></div>
-    </section>
+    <div class="foot" id="updated"></div>
   </main>
 </div>
 
@@ -305,6 +340,8 @@
   const DATABASE = 'holmes';
   const ADMIN_TEAM = 'admins';
   const RELEASES_API = 'https://api.github.com/repos/tryholmes/holmes-local/releases?per_page=100';
+  const DAY = 86400000;
+  const CURRENT_WINDOW_DAYS = 30;
 
   const client = new Client().setEndpoint(ENDPOINT).setProject(PROJECT);
   const account = new Account(client);
@@ -312,20 +349,23 @@
   const teams = new Teams(client);
 
   const $ = (id) => document.getElementById(id);
+  const fmt = new Intl.NumberFormat('en-US');
+  const dateFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const dayFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
+  const escapeHTML = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const regionName = (() => {
     let names = null;
     try { names = new Intl.DisplayNames(['en'], { type: 'region' }); } catch {}
     return (code) => {
       if (!code) return 'Unknown';
-      try { return names ? `${names.of(code.toUpperCase())}` : code; } catch { return code; }
+      try { return names ? names.of(String(code).toUpperCase()) : code; } catch { return code; }
     };
   })();
-  const fmt = new Intl.NumberFormat('en-US');
-  const dateFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  const dayFmt = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' });
-  const escapeHTML = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  const state = { rangeDays: 30, regionSource: 'users', versionKey: 'macos_version', sort: { key: 'signed_up_at', dir: -1 }, search: '', data: null, pendingUserId: null };
+  const state = {
+    view: 'downloads', rangeDays: 30, versionKey: 'macos_version',
+    sort: { key: 'signed_up_at', dir: -1 }, search: '', data: null, pendingUserId: null,
+  };
 
   /* ---------- Sign in with an emailed code ---------- */
   function setGateMessage(text, isError = false) {
@@ -401,6 +441,7 @@
     $('who').textContent = me.email;
     $('gate').hidden = true;
     $('app').hidden = false;
+    showView(location.hash.replace('#', '') || 'downloads');
     await load();
   }
 
@@ -436,10 +477,10 @@
   async function load() {
     $('updated').textContent = 'Loading…';
     try {
-      const [downloads, installs, users, releases] = await Promise.all([
-        allRows('downloads'), allRows('installs'), allRows('users'), releaseCounts(),
+      const [downloads, installs, users, signIns, releases] = await Promise.all([
+        allRows('downloads'), allRows('installs'), allRows('users'), allRows('sign_ins'), releaseCounts(),
       ]);
-      state.data = { downloads, installs, users, releases };
+      state.data = { downloads, installs, users, signIns, releases };
       render();
       $('updated').textContent = `Updated ${new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
     } catch (err) {
@@ -448,52 +489,13 @@
     }
   }
 
-  /* ---------- Rendering ---------- */
-  const since = () => state.rangeDays ? Date.now() - state.rangeDays * 86400000 : 0;
+  /* ---------- Helpers ---------- */
+  const since = () => state.rangeDays ? Date.now() - state.rangeDays * DAY : 0;
   const stamp = (row, key) => Date.parse(row[key] ?? row.$createdAt);
   const inRange = (rows, key) => rows.filter((r) => stamp(r, key) >= since());
+  const scopeText = () => state.rangeDays ? `In the last ${state.rangeDays} days` : 'All time';
 
-  function render() {
-    const { downloads, installs, users, releases } = state.data;
-    const d = inRange(downloads, '$createdAt');
-    const i = inRange(installs, 'first_seen');
-    const u = inRange(users, 'signed_up_at');
-    const scope = state.rangeDays ? `in the last ${state.rangeDays} days` : 'all time';
-
-    $('m-downloads').textContent = fmt.format(d.length);
-    $('m-downloads-sub').textContent = `Website clicks ${scope}`;
-    $('m-installs').textContent = fmt.format(i.length);
-    $('m-installs-sub').textContent = `${fmt.format(installs.length)} Macs all time`;
-    $('m-users').textContent = fmt.format(u.length);
-    $('m-users-sub').textContent = `${fmt.format(users.length)} accounts all time`;
-    const regions = new Set([...u, ...i].map((r) => r.region || r.country).filter(Boolean));
-    $('m-regions').textContent = fmt.format(regions.size);
-    $('m-regions-sub').textContent = `From users and installs ${scope}`;
-
-    renderActivity(d, i, u);
-    renderRegions();
-    renderVersions();
-    renderReleases(releases);
-    renderUsers();
-  }
-
-  function renderBars(container, entries, total, emptyText, valueLabel = (n) => fmt.format(n)) {
-    if (!entries.length) {
-      container.innerHTML = `<div class="empty">${escapeHTML(emptyText)}</div>`;
-      return;
-    }
-    const max = Math.max(...entries.map((e) => e.count));
-    container.innerHTML = entries.map((e) => {
-      const share = total ? Math.round((e.count / total) * 100) : 0;
-      return `<div class="bar-row" title="${escapeHTML(e.label)}: ${fmt.format(e.count)}${total ? ` (${share}%)` : ''}">
-        <span class="label">${escapeHTML(e.label)}</span>
-        <span class="bar-track"><span class="bar-fill" style="width:${Math.max(1, (e.count / max) * 100)}%"></span></span>
-        <span class="count num">${valueLabel(e.count)}</span>
-      </div>`;
-    }).join('');
-  }
-
-  function tally(rows, pick, limit = 10) {
+  function tally(rows, pick, limit = 10, groupRest = true) {
     const counts = new Map();
     rows.forEach((r) => {
       const key = pick(r);
@@ -501,32 +503,145 @@
     });
     const sorted = [...counts.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
     if (sorted.length <= limit) return sorted;
+    if (!groupRest) return sorted.slice(0, limit);
     const rest = sorted.slice(limit - 1).reduce((s, e) => s + e.count, 0);
     return [...sorted.slice(0, limit - 1), { label: 'Other', count: rest }];
   }
 
-  function renderRegions() {
-    const source = state.regionSource;
-    const key = source === 'downloads' ? '$createdAt' : source === 'installs' ? 'first_seen' : 'signed_up_at';
-    const rows = inRange(state.data[source], key);
-    const entries = tally(rows, (r) => regionName(source === 'downloads' ? r.country : (r.region || r.country)));
-    renderBars($('regions'), entries, rows.length, `No ${source} with a region in this range yet.`);
-  }
-
-  function renderVersions() {
-    const k = state.versionKey;
-    const rows = inRange(state.data.installs, 'first_seen');
-    const entries = tally(rows, (r) => r[k] ? (k === 'holmes_version' ? `Holmes ${r[k]}` : k === 'macos_version' ? `macOS ${r[k]}` : r[k]) : 'Unknown');
-    renderBars($('versions'), entries, rows.length, 'No installs in this range yet.');
-  }
-
-  function renderReleases(releases) {
-    if (releases.error) {
-      $('releases').innerHTML = `<div class="empty">Couldn't reach GitHub: ${escapeHTML(releases.error)}</div>`;
+  function renderBars(container, entries, emptyText) {
+    if (!entries.length) {
+      container.innerHTML = `<div class="empty">${escapeHTML(emptyText)}</div>`;
       return;
     }
-    const total = releases.reduce((s, r) => s + r.count, 0);
-    renderBars($('releases'), releases.map((r) => ({ label: r.tag, count: r.count })), total, 'No releases published yet.');
+    const total = entries.reduce((s, e) => s + e.count, 0);
+    const max = Math.max(...entries.map((e) => e.count), 1);
+    container.innerHTML = entries.map((e) => {
+      const share = total ? Math.round((e.count / total) * 100) : 0;
+      return `<div class="bar-row" title="${escapeHTML(e.label)}: ${fmt.format(e.count)} (${share}%)">
+        <span class="label">${escapeHTML(e.label)}</span>
+        <span class="bar-track"><span class="bar-fill" style="width:${Math.max(1, (e.count / max) * 100)}%"></span></span>
+        <span class="count num">${fmt.format(e.count)}</span>
+      </div>`;
+    }).join('');
+  }
+
+  function referrerLabel(raw) {
+    if (!raw) return 'Direct or unknown';
+    try { return new URL(raw).hostname.replace(/^www\./, ''); } catch { return 'Direct or unknown'; }
+  }
+
+  // Daily line chart for one or more series that share one count axis.
+  function renderLineChart(svg, rowsBySeries) {
+    const tip = svg.parentElement.querySelector('.tooltip');
+    const width = svg.clientWidth || 900, height = 260;
+    const pad = { top: 12, right: 18, bottom: 28, left: 36 };
+    const allStamps = rowsBySeries.flatMap((s) => s.rows.map((r) => stamp(r, s.key))).filter((n) => Number.isFinite(n));
+    const earliest = state.rangeDays ? since() : Math.min(Date.now() - 6 * DAY, ...(allStamps.length ? allStamps : [Date.now()]));
+    const start = new Date(earliest); start.setHours(0, 0, 0, 0);
+    const days = Math.max(2, Math.min(400, Math.ceil((Date.now() - start) / DAY)));
+    const series = rowsBySeries.map((s) => {
+      const values = new Array(days).fill(0);
+      s.rows.forEach((r) => {
+        const idx = Math.floor((stamp(r, s.key) - start) / DAY);
+        if (idx >= 0 && idx < days) values[idx] += 1;
+      });
+      return { ...s, values };
+    });
+    const maxY = Math.max(4, ...series.flatMap((s) => s.values));
+    const niceMax = Math.ceil(maxY / 4) * 4;
+    const x = (i) => pad.left + (i / (days - 1)) * (width - pad.left - pad.right);
+    const y = (v) => pad.top + (1 - v / niceMax) * (height - pad.top - pad.bottom);
+    const dayDate = (i) => new Date(start.getTime() + i * DAY);
+
+    let markup = '';
+    for (let t = 0; t <= 4; t++) {
+      const v = (niceMax / 4) * t;
+      markup += `<line x1="${pad.left}" x2="${width - pad.right}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(246,240,233,${t === 0 ? 0.16 : 0.07})"/>`;
+      markup += `<text x="${pad.left - 8}" y="${y(v) + 4}" text-anchor="end" fill="rgba(246,240,233,.46)" font-size="11">${fmt.format(v)}</text>`;
+    }
+    const ticks = Math.min(6, days);
+    for (let t = 0; t < ticks; t++) {
+      const i = Math.round((t / (ticks - 1)) * (days - 1));
+      markup += `<text x="${x(i)}" y="${height - 8}" text-anchor="${t === 0 ? 'start' : t === ticks - 1 ? 'end' : 'middle'}" fill="rgba(246,240,233,.46)" font-size="11">${dayFmt.format(dayDate(i))}</text>`;
+    }
+    series.forEach((s) => {
+      const d = s.values.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+      markup += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    });
+    markup += `<line class="cross" y1="${pad.top}" y2="${height - pad.bottom}" stroke="rgba(246,240,233,.28)" visibility="hidden"/>`;
+    series.forEach((s, n) => { markup += `<circle class="dot-${n}" r="4.5" fill="${s.color}" stroke="#121212" stroke-width="2" visibility="hidden"/>`; });
+    markup += `<rect class="hit" x="${pad.left}" y="0" width="${width - pad.left - pad.right}" height="${height}" fill="transparent"/>`;
+    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    svg.innerHTML = markup;
+    svg.setAttribute('aria-label', series.map((s) => `${s.values.reduce((a, b) => a + b, 0)} ${s.name.toLowerCase()}`).join(', '));
+
+    const hit = svg.querySelector('.hit');
+    hit.addEventListener('pointermove', (e) => {
+      const rect = svg.getBoundingClientRect();
+      const px = ((e.clientX - rect.left) / rect.width) * width;
+      const i = Math.max(0, Math.min(days - 1, Math.round(((px - pad.left) / (width - pad.left - pad.right)) * (days - 1))));
+      const cx = x(i);
+      const cross = svg.querySelector('.cross');
+      cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.setAttribute('visibility', 'visible');
+      series.forEach((s, n) => {
+        const dot = svg.querySelector(`.dot-${n}`);
+        dot.setAttribute('cx', cx); dot.setAttribute('cy', y(s.values[i])); dot.setAttribute('visibility', 'visible');
+      });
+      tip.innerHTML = `<div class="t-head">${dateFmt.format(dayDate(i))}</div>` + series.map((s) =>
+        `<div class="t-row"><i style="background:${s.color}"></i>${s.name}<b class="num">${fmt.format(s.values[i])}</b></div>`).join('');
+      tip.hidden = false;
+      const left = (cx / width) * rect.width;
+      tip.style.left = `${Math.min(rect.width - tip.offsetWidth, Math.max(0, left + (left > rect.width / 2 ? -tip.offsetWidth - 14 : 14)))}px`;
+      tip.style.top = '16px';
+    });
+    hit.addEventListener('pointerleave', () => {
+      tip.hidden = true;
+      svg.querySelector('.cross').setAttribute('visibility', 'hidden');
+      series.forEach((_, n) => svg.querySelector(`.dot-${n}`).setAttribute('visibility', 'hidden'));
+    });
+  }
+
+  /* ---------- Sections ---------- */
+  function renderDownloads() {
+    const { downloads, releases } = state.data;
+    const clicks = inRange(downloads, '$createdAt');
+    $('d-range').textContent = fmt.format(clicks.length);
+    $('d-range-sub').textContent = scopeText();
+    $('d-total').textContent = fmt.format(downloads.length);
+    const countries = new Set(clicks.map((r) => r.country).filter(Boolean));
+    $('d-countries').textContent = fmt.format(countries.size);
+    $('d-countries-sub').textContent = scopeText();
+    renderLineChart($('d-chart'), [{ name: 'Clicks', color: 'var(--series-1)', rows: clicks, key: '$createdAt' }]);
+    renderBars($('d-countries-bars'), tally(clicks, (r) => regionName(r.country)), 'No clicks in this range yet.');
+    renderBars($('d-referrers-bars'), tally(clicks, (r) => referrerLabel(r.referrer), 8), 'No clicks in this range yet.');
+    if (releases.error) {
+      $('d-github').textContent = '0';
+      $('d-releases-bars').innerHTML = `<div class="empty">Couldn't reach GitHub: ${escapeHTML(releases.error)}</div>`;
+    } else {
+      $('d-github').textContent = fmt.format(releases.reduce((s, r) => s + r.count, 0));
+      renderBars($('d-releases-bars'), releases.map((r) => ({ label: r.tag, count: r.count })), 'No releases published yet.');
+    }
+  }
+
+  function renderAccounts() {
+    const { users, signIns } = state.data;
+    const signups = inRange(users, 'signed_up_at');
+    const signinRows = inRange(signIns, '$createdAt');
+    const activeAccounts = new Set(signinRows.map((r) => r.user_id));
+    $('a-total').textContent = fmt.format(users.length);
+    $('a-signups').textContent = fmt.format(signups.length);
+    $('a-signups-sub').textContent = scopeText();
+    $('a-signins').textContent = fmt.format(signinRows.length);
+    $('a-signins-sub').textContent = `${fmt.format(activeAccounts.size)} accounts signed in`;
+    $('a-regions').textContent = fmt.format(new Set(users.map((u) => u.region || u.country).filter(Boolean)).size);
+    renderLineChart($('a-chart'), [
+      { name: 'Sign ups', color: 'var(--series-3)', rows: signups, key: 'signed_up_at' },
+      { name: 'Sign ins', color: 'var(--series-1)', rows: signinRows, key: '$createdAt' },
+    ]);
+    renderBars($('a-regions-bars'), tally(users, (u) => regionName(u.region || u.country)), 'No accounts yet.');
+    const emails = new Map(users.map((u) => [u.$id, u.email]));
+    renderBars($('a-active-bars'), tally(signinRows, (r) => emails.get(r.user_id) ?? 'Deleted account', 8, false), 'No sign ins in this range yet.');
+    renderUsers();
   }
 
   function renderUsers() {
@@ -550,96 +665,72 @@
         <td class="muted num">${date(r.last_sign_in_at)}</td>
         <td class="muted num">${fmt.format(r.sign_ins ?? 0)}</td>
       </tr>`).join('')
-      : `<tr><td colspan="8" class="empty">${state.data.users.length ? 'Nobody matches that search.' : 'No one has signed in to Holmes yet.'}</td></tr>`;
+      : `<tr><td colspan="8" class="empty">${state.data.users.length ? 'Nobody matches that search.' : 'No one has signed up yet.'}</td></tr>`;
   }
 
-  function renderActivity(d, i, u) {
-    const svg = $('activity');
-    const width = svg.clientWidth || 900, height = 280;
-    const pad = { top: 12, right: 18, bottom: 28, left: 36 };
-    const earliest = state.rangeDays ? since() : Math.min(Date.now() - 6 * 86400000, ...[...d, ...i, ...u].map((r) => stamp(r, r.first_seen ? 'first_seen' : r.signed_up_at ? 'signed_up_at' : '$createdAt')));
-    const start = new Date(earliest); start.setHours(0, 0, 0, 0);
-    const days = Math.max(2, Math.ceil((Date.now() - start) / 86400000));
-    const bucket = (rows, key) => {
-      const counts = new Array(days).fill(0);
-      rows.forEach((r) => {
-        const idx = Math.floor((stamp(r, key) - start) / 86400000);
-        if (idx >= 0 && idx < days) counts[idx] += 1;
-      });
-      return counts;
-    };
-    const series = [
-      { name: 'Downloads', color: 'var(--series-downloads)', values: bucket(d, '$createdAt') },
-      { name: 'Installs', color: 'var(--series-installs)', values: bucket(i, 'first_seen') },
-      { name: 'Sign ups', color: 'var(--series-users)', values: bucket(u, 'signed_up_at') },
-    ];
-    const maxY = Math.max(4, ...series.flatMap((s) => s.values));
-    const niceMax = Math.ceil(maxY / 4) * 4;
-    const x = (idx) => pad.left + (idx / (days - 1)) * (width - pad.left - pad.right);
-    const y = (v) => pad.top + (1 - v / niceMax) * (height - pad.top - pad.bottom);
-    const dayDate = (idx) => new Date(start.getTime() + idx * 86400000);
+  const currentInstalls = () => state.data.installs.filter((r) => stamp(r, 'last_seen') >= Date.now() - CURRENT_WINDOW_DAYS * DAY);
 
-    let markup = '';
-    for (let t = 0; t <= 4; t++) {
-      const v = (niceMax / 4) * t;
-      markup += `<line x1="${pad.left}" x2="${width - pad.right}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(246,240,233,${t === 0 ? 0.16 : 0.07})" stroke-width="1"/>`;
-      markup += `<text x="${pad.left - 8}" y="${y(v) + 4}" text-anchor="end" fill="rgba(246,240,233,.46)" font-size="11" class="num">${fmt.format(v)}</text>`;
-    }
-    const ticks = Math.min(6, days);
-    for (let t = 0; t < ticks; t++) {
-      const idx = Math.round((t / (ticks - 1)) * (days - 1));
-      markup += `<text x="${x(idx)}" y="${height - 8}" text-anchor="${t === 0 ? 'start' : t === ticks - 1 ? 'end' : 'middle'}" fill="rgba(246,240,233,.46)" font-size="11">${dayFmt.format(dayDate(idx))}</text>`;
-    }
-    series.forEach((s) => {
-      const path = s.values.map((v, idx) => `${idx ? 'L' : 'M'}${x(idx).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
-      markup += `<path d="${path}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  function renderInstalls() {
+    const { installs, users } = state.data;
+    const current = currentInstalls();
+    const fresh = inRange(installs, 'first_seen');
+    $('i-current').textContent = fmt.format(current.length);
+    $('i-new').textContent = fmt.format(fresh.length);
+    $('i-new-sub').textContent = scopeText();
+    $('i-total').textContent = fmt.format(installs.length);
+    const linked = new Set(users.map((u) => u.install_id).filter(Boolean));
+    const linkedCurrent = current.filter((r) => linked.has(r.$id)).length;
+    $('i-linked').textContent = fmt.format(linkedCurrent);
+    $('i-linked-sub').textContent = current.length ? `${Math.round((linkedCurrent / current.length) * 100)}% of current installs` : 'Of current installs';
+    renderLineChart($('i-chart'), [{ name: 'New installs', color: 'var(--series-2)', rows: fresh, key: 'first_seen' }]);
+    renderBars($('i-regions-bars'), tally(current, (r) => regionName(r.region || r.country)), 'No current installs yet.');
+    renderVersions();
+  }
+
+  function renderVersions() {
+    const k = state.versionKey;
+    const label = (r) => r[k] ? (k === 'holmes_version' ? `Holmes ${r[k]}` : k === 'macos_version' ? `macOS ${r[k]}` : r[k]) : 'Unknown';
+    renderBars($('i-versions-bars'), tally(currentInstalls(), label), 'No current installs yet.');
+  }
+
+  function render() {
+    if (!state.data) return;
+    const { downloads, users } = state.data;
+    $('tab-count-downloads').textContent = fmt.format(inRange(downloads, '$createdAt').length);
+    $('tab-count-accounts').textContent = fmt.format(users.length);
+    $('tab-count-installs').textContent = fmt.format(currentInstalls().length);
+    if (state.view === 'downloads') renderDownloads();
+    if (state.view === 'accounts') renderAccounts();
+    if (state.view === 'installs') renderInstalls();
+  }
+
+  function showView(view) {
+    if (!['downloads', 'accounts', 'installs'].includes(view)) view = 'downloads';
+    state.view = view;
+    document.querySelectorAll('[data-view]').forEach((tab) => {
+      const selected = tab.dataset.view === view;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      $(`view-${tab.dataset.view}`).hidden = !selected;
     });
-    markup += `<line id="cross" y1="${pad.top}" y2="${height - pad.bottom}" stroke="rgba(246,240,233,.28)" stroke-width="1" visibility="hidden"/>`;
-    series.forEach((s, n) => { markup += `<circle id="dot-${n}" r="4.5" fill="${s.color}" stroke="#121212" stroke-width="2" visibility="hidden"/>`; });
-    markup += `<rect x="${pad.left}" y="0" width="${width - pad.left - pad.right}" height="${height}" fill="transparent" id="hit"/>`;
-    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-    svg.innerHTML = markup;
-    svg.setAttribute('aria-label', `Daily activity: ${series.map((s) => `${s.values.reduce((a, b) => a + b, 0)} ${s.name.toLowerCase()}`).join(', ')}`);
-
-    const tip = $('activity-tip');
-    const hit = svg.querySelector('#hit');
-    const move = (clientX) => {
-      const rect = svg.getBoundingClientRect();
-      const px = ((clientX - rect.left) / rect.width) * width;
-      const idx = Math.max(0, Math.min(days - 1, Math.round(((px - pad.left) / (width - pad.left - pad.right)) * (days - 1))));
-      const cx = x(idx);
-      const cross = svg.querySelector('#cross');
-      cross.setAttribute('x1', cx); cross.setAttribute('x2', cx); cross.setAttribute('visibility', 'visible');
-      series.forEach((s, n) => {
-        const dot = svg.querySelector(`#dot-${n}`);
-        dot.setAttribute('cx', cx); dot.setAttribute('cy', y(s.values[idx])); dot.setAttribute('visibility', 'visible');
-      });
-      tip.innerHTML = `<div class="t-head">${dateFmt.format(dayDate(idx))}</div>` + series.map((s) =>
-        `<div class="t-row"><i style="background:${s.color}"></i>${s.name}<b class="num">${fmt.format(s.values[idx])}</b></div>`).join('');
-      tip.hidden = false;
-      const left = (cx / width) * rect.width;
-      tip.style.left = `${Math.min(rect.width - tip.offsetWidth, Math.max(0, left + (left > rect.width / 2 ? -tip.offsetWidth - 14 : 14)))}px`;
-      tip.style.top = '16px';
-    };
-    const leave = () => {
-      tip.hidden = true;
-      svg.querySelector('#cross')?.setAttribute('visibility', 'hidden');
-      series.forEach((_, n) => svg.querySelector(`#dot-${n}`)?.setAttribute('visibility', 'hidden'));
-    };
-    hit.addEventListener('pointermove', (e) => move(e.clientX));
-    hit.addEventListener('pointerleave', leave);
+    if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
+    render();
   }
 
   /* ---------- Controls ---------- */
+  document.querySelectorAll('[data-view]').forEach((tab, index, all) => {
+    tab.addEventListener('click', () => showView(tab.dataset.view));
+    tab.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      const next = all[(index + (e.key === 'ArrowRight' ? 1 : all.length - 1)) % all.length];
+      next.focus();
+      showView(next.dataset.view);
+    });
+  });
   document.querySelectorAll('[data-range]').forEach((btn) => btn.addEventListener('click', () => {
     state.rangeDays = Number(btn.dataset.range);
     document.querySelectorAll('[data-range]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
-    if (state.data) render();
-  }));
-  document.querySelectorAll('[data-region]').forEach((btn) => btn.addEventListener('click', () => {
-    state.regionSource = btn.dataset.region;
-    document.querySelectorAll('[data-region]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
-    if (state.data) renderRegions();
+    render();
   }));
   document.querySelectorAll('[data-version]').forEach((btn) => btn.addEventListener('click', () => {
     state.versionKey = btn.dataset.version;
@@ -658,12 +749,13 @@
     const csv = [cols.join(',')].concat(state.data.users.map((r) => cols.map((c) => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))).join('\n');
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    link.download = `holmes-users-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `holmes-accounts-${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     URL.revokeObjectURL(link.href);
   });
+  window.addEventListener('hashchange', () => showView(location.hash.replace('#', '')));
   let resizeTimer;
-  window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => state.data && render(), 150); });
+  window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 150); });
 
   /* ---------- Start ---------- */
   enter().catch(() => showGate());
