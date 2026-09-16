@@ -1,11 +1,17 @@
 import SwiftUI
 
 struct OnboardingFlow: View {
-    @StateObject private var viewModel = OnboardingViewModel()
-    // The brand intro plays once before Welcome; Reduce Motion skips it.
+    @StateObject private var viewModel: OnboardingViewModel
+    // The brand intro plays once before the first screen; Reduce Motion skips it.
     @State private var showLaunchIntro = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     let onComplete: () -> Void
-    
+
+    /// `requiresSignIn` is false when a valid session was restored at launch.
+    init(requiresSignIn: Bool = false, onComplete: @escaping () -> Void) {
+        _viewModel = StateObject(wrappedValue: OnboardingViewModel(startStep: requiresSignIn ? .signIn : .welcome))
+        self.onComplete = onComplete
+    }
+
     var body: some View {
         ZStack {
             VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
@@ -13,21 +19,28 @@ struct OnboardingFlow: View {
             VStack(spacing: 0) {
                 HStack {
                     Spacer()
-                    
-                    if viewModel.currentStep != .welcome {
+
+                    if viewModel.currentStep.showsStepIndicator {
                         StepIndicator(
-                            currentStep: viewModel.currentStep.rawValue,
-                            totalSteps: OnboardingStep.allCases.count
+                            currentStep: viewModel.currentStep.indicatorIndex,
+                            totalSteps: OnboardingStep.indicatorSteps.count
                         )
                     }
-                    
+
                     Spacer()
                 }
                 .padding(.top, 40)
                 .padding(.horizontal, 40)
-                
+
                 Group {
                     switch viewModel.currentStep {
+                    case .signIn:
+                        // Held back until the intro ends, like Welcome.
+                        if !showLaunchIntro {
+                            SignInScreen(auth: .shared) {
+                                viewModel.goToStep(.welcome)
+                            }
+                        }
                     case .welcome:
                         // Held back until the intro ends so its entrance animation plays.
                         if !showLaunchIntro {
@@ -101,7 +114,7 @@ struct LocalModelScreen: View {
                         .font(NoirFonts.headline())
                         .foregroundColor(NoirColors.textPrimary)
 
-                    Text("Holmes thinks with an open model that runs on this Mac\nthrough Ollama. Nothing you do is sent to a server.")
+                    Text("Holmes thinks with an open model that runs on this Mac\nthrough Ollama. What you do on screen is never sent to a server.")
                         .font(NoirFonts.caption())
                         .foregroundColor(NoirColors.textSecondary)
                         .multilineTextAlignment(.center)

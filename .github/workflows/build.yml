@@ -81,6 +81,9 @@ jobs:
           holmes/tests/run-text-entry-tests.sh
           holmes/tests/run-model-json-tests.sh
 
+      - name: Test sign in validation and install tracking
+        run: holmes/tests/run-auth-validation-tests.sh
+
       - name: Test browser bridge reliability
         run: |
           holmes/tests/run-browser-bridge-extension-tests.sh

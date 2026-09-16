@@ -17,6 +17,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // FileHandle.write then throws EPIPE, which MCPClient already handles.
         signal(SIGPIPE, SIG_IGN)
 
+        // Fire and forget: the service sends once per install, then at most
+        // once a day, and never blocks launch.
+        HolmesCloud.sendInstallPing()
+
         do {
             if let folder = try ExtensionInstaller.refreshInstalledIfNeeded() {
                 extensionUpdateNeedsNotice = true
@@ -88,17 +92,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func handleAuthAndLaunch() async {
-        // There is no account in Holmes Local: nothing to sign in to, so launch
-        // goes straight to onboarding (first run) or the main app.
-        launch()
+        // Holmes requires an account. The SDK keeps the session between
+        // launches, so this only asks when no valid session exists.
+        let signedIn = await AuthService.shared.restoreSession()
+        observeSignOut()
+        let hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
+        if !hasCompletedOnboarding {
+            showOnboarding(requiresSignIn: !signedIn)
+        } else if signedIn {
+            startMainAppOnce()
+        } else {
+            // Finished onboarding before accounts existed, or signed out.
+            SignInWindowController.shared.show { [weak self] in
+                self?.startMainAppOnce()
+            }
+        }
     }
 
-    private func launch() {
-        let hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
-        if hasCompletedOnboarding {
-            startMainApp()
-        } else {
-            showOnboarding()
+    private var signOutObserver: NSObjectProtocol?
+
+    private func observeSignOut() {
+        guard signOutObserver == nil else { return }
+        signOutObserver = NotificationCenter.default.addObserver(
+            forName: .holmesDidSignOut, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                for window in NSApp.windows where window.identifier?.rawValue.contains("Settings") == true {
+                    window.close()
+                }
+                SignInWindowController.shared.show {
+                    self?.startMainAppOnce()
+                }
+            }
         }
     }
 
@@ -183,8 +208,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         HotkeyManager.shared.registerHotkeys()
     }
 
-    private func showOnboarding() {
-        let onboardingView = OnboardingFlow {
+    private func showOnboarding(requiresSignIn: Bool) {
+        let onboardingView = OnboardingFlow(requiresSignIn: requiresSignIn) {
             DispatchQueue.main.async { [weak self] in
                 self?.finishOnboarding()
             }
@@ -238,6 +263,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             onboardingWindow = nil
             if window.isVisible { window.close() }
         }
+        guard AuthService.shared.isSignedIn else {
+            // Closed before signing in. Sign in is required, so quit;
+            // onboarding shows again next launch.
+            NSApp.terminate(nil)
+            return
+        }
+        startMainAppOnce()
+    }
+
+    private func startMainAppOnce() {
         guard !mainAppStarted else { return }
         mainAppStarted = true
         startMainApp()
