@@ -79,6 +79,65 @@ struct LaunchIntroView: NSViewRepresentable {
     }
 }
 
+// MARK: - Launch intro window
+// Returning launches have no onboarding window to play the intro over, so it
+// plays on its own in a borderless, transparent window centered on the screen.
+// The first run still plays it inside onboarding. Reduce Motion skips it.
+@MainActor
+final class LaunchIntroWindowController {
+    static let shared = LaunchIntroWindowController()
+
+    private var window: NSWindow?
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    /// Returns once the intro ends or is clicked away.
+    func play() async {
+        guard window == nil, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            show()
+        }
+    }
+
+    private func show() {
+        let root = LaunchIntroView(onFinish: { [weak self] in self?.finish() })
+            .overlay {
+                // Click anywhere to skip.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { [weak self] in self?.finish() }
+            }
+
+        // The clip is 16:9 with a transparent background.
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 450),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.level = .floating
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: root)
+        window.center()
+        window.orderFrontRegardless()
+        self.window = window
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func finish() {
+        guard let continuation else { return }
+        self.continuation = nil
+        window?.orderOut(nil)
+        // Dropping the hosting view dismantles the player, which stops playback.
+        window?.contentView = nil
+        window = nil
+        continuation.resume()
+    }
+}
+
 final class PlayerLayerView: NSView {
     let playerLayer = AVPlayerLayer()
 
