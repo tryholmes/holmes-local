@@ -92,11 +92,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     private func handleAuthAndLaunch() async {
+        // Every cold launch opens with the brand intro. The first run plays it
+        // inside onboarding; later launches play it on its own while the
+        // session restores, and the app starts once it ends.
+        let hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
+        let intro = hasCompletedOnboarding ? Task { await LaunchIntroWindowController.shared.play() } : nil
         // Holmes requires an account. The SDK keeps the session between
         // launches, so this only asks when no valid session exists.
         let signedIn = await AuthService.shared.restoreSession()
+        await intro?.value
         observeSignOut()
-        let hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
         if !hasCompletedOnboarding {
             showOnboarding(requiresSignIn: !signedIn)
         } else if signedIn {
