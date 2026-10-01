@@ -45,6 +45,18 @@ struct AuthValidationTests {
         expect(AuthValidation.problem(mode: .createAccount, name: "Ann", email: "a@b.co", password: "12345678") == nil,
                "Eight character password is fine")
 
+        // Email verification resend cooldown.
+        let sentAt = Date(timeIntervalSince1970: 1_000_000)
+        expect(EmailVerification.secondsUntilResend(lastSent: nil, now: sentAt) == 0, "Nothing sent yet means resend now")
+        expect(EmailVerification.secondsUntilResend(lastSent: sentAt, now: sentAt) == 60, "Just sent waits the full minute")
+        expect(EmailVerification.secondsUntilResend(lastSent: sentAt, now: sentAt.addingTimeInterval(59.2)) == 1, "Partial seconds round up")
+        expect(EmailVerification.secondsUntilResend(lastSent: sentAt, now: sentAt.addingTimeInterval(60)) == 0, "A minute later resend is ready")
+        expect(EmailVerification.secondsUntilResend(lastSent: sentAt, now: sentAt.addingTimeInterval(-30)) == 0, "A clock moved back never blocks resend")
+        expect(EmailVerification.waitingMessage(email: " a@b.co ").contains("a@b.co."), "Waiting message names the address")
+        expect(EmailVerification.waitingMessage(email: "").contains("your email address"), "Waiting message falls back without an address")
+        expect(EmailVerification.redirectURL.hasPrefix("https://") && EmailVerification.redirectURL.hasSuffix("/verify/"),
+               "Verification link lands on the website verify page")
+
         // Error mapping.
         let invalid = AuthErrorMessages.message(code: 401, type: "user_invalid_credentials", mode: .signIn)
         expect(invalid.contains("don\u{2019}t match"), "Invalid credentials message")
