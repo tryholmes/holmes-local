@@ -96,6 +96,39 @@ enum AuthErrorMessages {
     }
 }
 
+// MARK: - Email verification
+
+enum EmailVerification {
+    /// Where the link in the verification email lands. The page on the Holmes
+    /// website confirms the address with Appwrite, then Holmes notices on its
+    /// next check. The host must stay registered as a Web platform in Appwrite.
+    static let redirectURL = "https://tryholmes.appwrite.network/verify/"
+
+    /// The shortest wait between two verification emails, so the Resend
+    /// button can't flood an inbox or trip Appwrite's rate limit.
+    static let resendCooldown: TimeInterval = 60
+
+    /// How often the waiting screen asks Appwrite whether the link was opened.
+    static let pollInterval: TimeInterval = 4
+
+    /// Whole seconds until another email may be sent; 0 when one can go now.
+    /// A clock that moved backwards counts as ready, so Resend never sticks.
+    static func secondsUntilResend(lastSent: Date?, now: Date) -> Int {
+        guard let lastSent else { return 0 }
+        let elapsed = now.timeIntervalSince(lastSent)
+        guard elapsed >= 0, elapsed < resendCooldown else { return 0 }
+        return Int((resendCooldown - elapsed).rounded(.up))
+    }
+
+    static func waitingMessage(email: String) -> String {
+        let address = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = address.isEmpty ? "your email address" : address
+        return "We sent a link to \(target). Open it to verify your email, and Holmes continues on its own."
+    }
+
+    static let sendFailed = "Holmes couldn\u{2019}t send the verification email. Try Resend in a moment."
+}
+
 // MARK: - Device facts
 
 struct DeviceFacts: Equatable {
