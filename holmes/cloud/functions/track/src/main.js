@@ -1,7 +1,8 @@
 import { Client, TablesDB, Users, ID } from 'node-appwrite';
 
 // Holmes calls this on launch ("install") and after signing in ("signin").
-// The email always comes from the verified Appwrite account, never the body.
+// The email always comes from the verified Appwrite account, never the body,
+// and signin is only recorded once that email address has been verified.
 const DATABASE_ID = 'holmes';
 const INSTALL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -102,6 +103,11 @@ export default async ({ req, res, error }) => {
 
     if (event === 'signin') {
       const user = await new Users(client).get(userId);
+      // Only verified accounts count. The app sends signin again once the
+      // link in the verification email is opened.
+      if (!user.emailVerification) {
+        return res.json({ ok: false, error: 'Verify your email before signing in.' }, 403);
+      }
       let isNewAccount = false;
       await upsert(db, 'users', userId, (existing) => {
         isNewAccount = !existing;
